@@ -1,0 +1,44 @@
+name: novel_app
+description: "Android 端小说阅读 APP - 支持本地导入、书源管理、书架管理、在线阅读、听书等功能"
+publish_to: 'none'
+
+version: 2.0.0+2
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  http: ^1.2.2
+  shared_preferences: ^2.3.4
+  cached_network_image: ^3.4.1
+  flutter_cache_manager: ^3.4.1
+  path_provider: ^2.1.5
+  flutter_tts: ^4.2.2
+  file_picker: ^8.1.7
+  uuid: ^4.5.1
+  crypto: ^3.0.7
+  encrypt: ^5.0.3
+  audioplayers: ^6.7.1
+  web_socket_channel: ^3.0.3
+  page_flip: ^0.2.5+1
+  audio_service: ^0.18.18
+  wakelock_plus: ^1.5.2
+  permission_handler: ^12.0.3
+  html: ^0.15.6
+  video_player: ^2.11.1
+  chewie: ^1.13.1
+  extended_image: ^10.0.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/app_icon.png
+    - assets/books/default/
