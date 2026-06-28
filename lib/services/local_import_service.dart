@@ -1,6 +1,7 @@
-﻿import 'dart:io';
+import 'dart:io';
 import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 class LocalImportService {
@@ -44,7 +45,7 @@ class LocalImportService {
       final novelId = _uuid.v4();
 
       // 复制文件到应用存储
-      final appDirDir = Directory('${_getAppDirPath()}$novelId');
+      final appDirDir = Directory('${await _getAppDirPath()}$novelId');
       if (!await appDirDir.exists()) {
         await appDirDir.create(recursive: true);
       }
@@ -72,10 +73,9 @@ class LocalImportService {
     }
   }
 
-  String _getAppDirPath() {
-    // 使用临时目录或应用文档目录的替代方案
-    final dir = Directory.systemTemp.path;
-    return '$dir/novel_app/local_books/';
+  Future<String> _getAppDirPath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return '${dir.path}/novel_app/local_books/';
   }
 
   List<Map<String, dynamic>> _parseChapters(String content, String novelId) {
