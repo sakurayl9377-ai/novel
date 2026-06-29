@@ -1,0 +1,12 @@
+﻿{
+  "versionName": "2.0.2",
+  "versionCode": 4,
+  "apkUrl": "http://49.232.137.85/app/app-release.apk",
+  "sha256": "366275517EA8B6156D371903665285EA1DFCA18E6B97555AE361BEA948C6A35F",
+  "force": false,
+  "notes": [
+    "隐藏科大讯飞 AppID、API Key、API Secret 输入内容",
+    "检查更新界面不再显示服务器地址",
+    "修复小说、动漫、漫画域名自动适配"
+  ]
+}

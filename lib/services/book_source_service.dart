@@ -10,25 +10,66 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/book_source.dart';
 import '../models/chapter.dart';
 import '../models/novel.dart';
+import 'site_domain_service.dart';
 import 'storage_service.dart';
 
 class BookSourceService {
-  static const String _homeCachePrefix = 'novel_home_cache_v1_';
+  static const String _homeCachePrefix = 'novel_home_cache_v2_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
+  static const String _bqgPrimaryOrigin = 'https://www.bqg475.cc';
+  static const String _bqgApexOrigin = 'https://bqg475.cc';
+  static const String _bqgBackupOrigin = 'https://www.bqg7777.xyz';
+  static const String _bqgApiOrigin = 'https://apibi.cc';
+  static const String _bqgWwwApiOrigin = 'https://www.apibi.cc';
+  static const String _bqgWebOrigin = 'https://www.bqg691.cc';
+  static const String _bqgLegacyOrigin = 'https://www.bqg995.xyz';
+  static const List<String> _bqgChapterApiOrigins = [
+    _bqgPrimaryOrigin,
+    _bqgApexOrigin,
+    _bqgBackupOrigin,
+    _bqgApiOrigin,
+    _bqgWwwApiOrigin,
+    _bqgWebOrigin,
+    _bqgLegacyOrigin,
+  ];
+  static const SiteDomainConfig _bqgDomain = SiteDomainConfig(
+    key: 'novel_bqg',
+    primaryOrigin: _bqgPrimaryOrigin,
+    fallbackOrigins: [
+      _bqgApexOrigin,
+      _bqgBackupOrigin,
+      _bqgApiOrigin,
+      _bqgWwwApiOrigin,
+      _bqgWebOrigin,
+      _bqgLegacyOrigin,
+    ],
+  );
   static final BookSource bqg995Source = BookSource(
     id: 'builtin_bqg995',
     name: '笔趣阁',
-    baseUrl: 'https://www.bqg995.xyz',
-    searchUrl: 'https://www.bqg995.xyz/api/search?q={keyword}',
+    baseUrl: _bqgPrimaryOrigin,
+    searchUrl: '$_bqgPrimaryOrigin/api/search?q={keyword}',
     enabled: true,
     weight: 100,
   );
 
+  BookSourceService({this.httpClient});
+
+  final http.Client? httpClient;
   final StorageService _storage = StorageService();
+  final SiteDomainService _domainService = SiteDomainService.instance;
+
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) {
+    final client = httpClient;
+    if (client != null) {
+      return client.get(uri, headers: headers);
+    }
+    return http.get(uri, headers: headers);
+  }
 
   bool isBqg995Source(BookSource source) {
     final host = Uri.tryParse(source.baseUrl)?.host.toLowerCase() ?? '';
-    return host == 'www.bqg995.xyz' || host == 'bqg995.xyz';
+    return _isKnownBqgHost(host);
   }
 
   Future<List<BookSource>> ensureOnlyBqg995Source() async {
@@ -42,10 +83,11 @@ class BookSourceService {
       }
     }
 
+    final currentOrigin = await _domainService.currentOrigin(_bqgDomain);
     final normalized = (savedBqg ?? bqg995Source).copyWith(
       name: bqg995Source.name,
-      baseUrl: bqg995Source.baseUrl,
-      searchUrl: bqg995Source.searchUrl,
+      baseUrl: currentOrigin,
+      searchUrl: '$currentOrigin/api/search?q={keyword}',
       enabled: true,
       weight: bqg995Source.weight,
     );
@@ -54,7 +96,7 @@ class BookSourceService {
   }
 
   Future<NovelHomeData> fetchHome({bool forceRefresh = false}) async {
-    final sources = _searchableSources(await getEnabledSources());
+    final sources = await _searchableSources(await getEnabledSources());
 
     for (final source in sources) {
       try {
@@ -91,9 +133,10 @@ class BookSourceService {
       name: category.sourceName,
       baseUrl: category.sourceBaseUrl,
     );
-    final response = await http
-        .get(Uri.parse(category.url), headers: _headers(category.sourceBaseUrl))
-        .timeout(const Duration(seconds: 15));
+    final response = await _get(
+      Uri.parse(category.url),
+      headers: _headers(category.sourceBaseUrl),
+    ).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) return const [];
     final document = html_parser.parse(_decodeBody(response));
     return _parseHtmlNovelItems(document, source).take(60).toList();
@@ -103,26 +146,24 @@ class BookSourceService {
     final bookId = _extractBookId(novel.chapterUrl) ?? _extractBqgId(novel.id);
     if (bookId == null) return novel;
 
-    final baseUrl = _originOf(novel.chapterUrl).isNotEmpty
-        ? _originOf(novel.chapterUrl)
-        : _originOf(bqg995Source.baseUrl);
-    if (baseUrl.isEmpty) return novel;
+    for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
+      try {
+        final response = await _get(
+          Uri.parse('$baseUrl/api/book?id=$bookId'),
+          headers: _headers(baseUrl),
+        ).timeout(const Duration(seconds: 10));
+        if (response.statusCode != 200) continue;
+        await _rememberBqgResponseOrigin(response);
+        final responseOrigin = _originOfResponse(response, fallback: baseUrl);
 
-    try {
-      final response = await http
-          .get(
-            Uri.parse('$baseUrl/api/book?id=$bookId'),
-            headers: _headers(baseUrl),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) return novel;
-
-      final data = jsonDecode(_decodeBody(response));
-      if (data is! Map) return novel;
-      return _mergeBqgBookDetail(novel, data, baseUrl, bookId);
-    } catch (_) {
-      return novel;
+        final data = jsonDecode(_decodeBody(response));
+        if (data is! Map) continue;
+        return _mergeBqgBookDetail(novel, data, responseOrigin, bookId);
+      } catch (_) {
+        continue;
+      }
     }
+    return novel;
   }
 
   Future<NovelHomeData?> _readCachedHome(
@@ -162,39 +203,51 @@ class BookSourceService {
 
   bool _isBqgApiSource(BookSource source) {
     final host = Uri.tryParse(source.baseUrl)?.host.toLowerCase() ?? '';
-    return host.contains('bqg995') || host.contains('bqg78');
+    return _isKnownBqgHost(host);
   }
 
   Future<NovelHomeData> _fetchBqgApiHome(BookSource source) async {
-    final base = _originOf(source.baseUrl).isEmpty
-        ? source.baseUrl
+    Map<dynamic, dynamic>? decoded;
+    String base = _originOf(source.baseUrl).isEmpty
+        ? _bqgPrimaryOrigin
         : _originOf(source.baseUrl);
-    final response = await http
-        .get(
-          Uri.parse('$base/api/index?sort=index'),
-          headers: _headers(source.baseUrl),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (response.statusCode != 200) return const NovelHomeData.empty();
 
-    final decoded = jsonDecode(_decodeBody(response));
-    if (decoded is! Map) return const NovelHomeData.empty();
+    for (final candidate in await _bqgOriginCandidates(source.baseUrl)) {
+      try {
+        final response = await _get(
+          Uri.parse('$candidate/api/index?sort=index'),
+          headers: _headers(candidate),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+        final data = jsonDecode(_decodeBody(response));
+        if (data is! Map) continue;
+        await _rememberBqgResponseOrigin(response);
+        decoded = data;
+        base = _originOfResponse(response, fallback: candidate);
+        break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    if (decoded == null) return const NovelHomeData.empty();
+    final normalizedSource = source.copyWith(baseUrl: base);
 
     final sections = <NovelHomeSection>[];
     final featured = _parseBqgApiNovels(
       decoded['hotlist'],
-      source,
+      normalizedSource,
       defaultStatus: '推荐',
     );
 
     void addSection(String key, String title) {
-      final items = _parseBqgApiNovels(decoded[key], source);
+      final items = _parseBqgApiNovels(decoded![key], normalizedSource);
       if (items.isEmpty) return;
       sections.add(
         NovelHomeSection(
           title: title,
           items: items,
-          category: _bqgCategoryForSection(source, title),
+          category: _bqgCategoryForSection(normalizedSource, title),
         ),
       );
     }
@@ -210,10 +263,10 @@ class BookSourceService {
     addSection('uplist', '最近更新');
 
     return NovelHomeData(
-      sourceName: source.name,
+      sourceName: normalizedSource.name,
       featured: featured,
       sections: sections,
-      categories: _bqgCategories(source),
+      categories: _bqgCategories(normalizedSource),
     );
   }
 
@@ -258,27 +311,31 @@ class BookSourceService {
   }
 
   Future<List<Novel>> _fetchBqgApiCategory(NovelCategory category) async {
-    final base = _originOf(category.sourceBaseUrl).isEmpty
-        ? category.sourceBaseUrl
-        : _originOf(category.sourceBaseUrl);
-    final source = BookSource(
-      id: category.sourceId,
-      name: category.sourceName,
-      baseUrl: category.sourceBaseUrl,
-    );
-    final response = await http
-        .get(
+    for (final base in await _bqgOriginCandidates(category.sourceBaseUrl)) {
+      try {
+        final response = await _get(
           Uri.parse(
             '$base/api/sort?sort=${Uri.encodeComponent(category.apiSort)}',
           ),
-          headers: _headers(category.sourceBaseUrl),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (response.statusCode != 200) return const [];
+          headers: _headers(base),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+        await _rememberBqgResponseOrigin(response);
+        final source = BookSource(
+          id: category.sourceId,
+          name: category.sourceName,
+          baseUrl: _originOfResponse(response, fallback: base),
+        );
 
-    final decoded = jsonDecode(_decodeBody(response));
-    final raw = decoded is Map ? decoded['data'] : decoded;
-    return _parseBqgApiNovels(raw, source).take(60).toList();
+        final decoded = jsonDecode(_decodeBody(response));
+        final raw = decoded is Map ? decoded['data'] : decoded;
+        final novels = _parseBqgApiNovels(raw, source).take(60).toList();
+        if (novels.isNotEmpty) return novels;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
   }
 
   List<Novel> _parseBqgApiNovels(
@@ -330,8 +387,83 @@ class BookSourceService {
   String _bqgCoverUrl(String baseUrl, String rawId) {
     final id = int.tryParse(rawId);
     if (id == null) return '';
-    final origin = _originOf(baseUrl).isEmpty ? baseUrl : _originOf(baseUrl);
+    final origin = _bqgBestOrigin(baseUrl);
     return '$origin/bookimg/${id ~/ 1000}/$id.jpg';
+  }
+
+  bool _isKnownBqgHost(String host) {
+    final lowerHost = host.toLowerCase();
+    return lowerHost.contains('bqg') ||
+        lowerHost == Uri.parse(_bqgPrimaryOrigin).host ||
+        lowerHost == Uri.parse(_bqgApexOrigin).host ||
+        lowerHost == Uri.parse(_bqgBackupOrigin).host ||
+        lowerHost == Uri.parse(_bqgApiOrigin).host ||
+        lowerHost == Uri.parse(_bqgWwwApiOrigin).host ||
+        lowerHost == Uri.parse(_bqgWebOrigin).host ||
+        lowerHost == Uri.parse(_bqgLegacyOrigin).host;
+  }
+
+  String _bqgBestOrigin(String urlOrOrigin) {
+    final origin = _originOf(urlOrOrigin);
+    if (origin.isEmpty) return _bqgPrimaryOrigin;
+    final host = Uri.tryParse(origin)?.host.toLowerCase() ?? '';
+    if (host == Uri.parse(_bqgApiOrigin).host ||
+        host == Uri.parse(_bqgWwwApiOrigin).host ||
+        host == Uri.parse(_bqgWebOrigin).host ||
+        host == Uri.parse(_bqgLegacyOrigin).host) {
+      return _bqgPrimaryOrigin;
+    }
+    return _isKnownBqgHost(host) ? origin : _bqgPrimaryOrigin;
+  }
+
+  Future<List<String>> _bqgOriginCandidates(String preferredUrl) async {
+    final preferredOrigin = _originOf(preferredUrl);
+    return _domainService.originCandidates(
+      _bqgDomain,
+      preferredOrigin: preferredOrigin,
+    );
+  }
+
+  Future<List<String>> _bqgChapterApiOriginCandidates(
+    String preferredUrl,
+  ) async {
+    final candidates = <String>[];
+
+    void add(String origin) {
+      if (origin.isNotEmpty && !candidates.contains(origin)) {
+        candidates.add(origin);
+      }
+    }
+
+    for (final origin in await _bqgOriginCandidates(preferredUrl)) {
+      add(origin);
+    }
+    for (final origin in _bqgChapterApiOrigins) {
+      add(origin);
+    }
+    return candidates;
+  }
+
+  Future<void> _rememberBqgResponseOrigin(http.Response response) async {
+    final uri = response.request?.url;
+    if (uri == null || !_isKnownBqgHost(uri.host)) return;
+    await _domainService.rememberOrigin(_bqgDomain, uri);
+  }
+
+  String _originOfResponse(http.Response response, {required String fallback}) {
+    final uri = response.request?.url;
+    if (uri != null && uri.hasScheme && uri.host.isNotEmpty) {
+      return SiteDomainService.originOf(uri);
+    }
+    return _originOf(fallback).isEmpty ? fallback : _originOf(fallback);
+  }
+
+  String _replaceUrlOrigin(String url, String origin) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      return _normalizeUrl(origin, url);
+    }
+    return SiteDomainService.replaceOrigin(uri, origin).toString();
   }
 
   String _bqgNovelId(BookSource source, String rawId) {
@@ -383,9 +515,10 @@ class BookSourceService {
   }
 
   Future<NovelHomeData> _fetchHtmlHome(BookSource source) async {
-    final response = await http
-        .get(Uri.parse(source.baseUrl), headers: _headers(source.baseUrl))
-        .timeout(const Duration(seconds: 15));
+    final response = await _get(
+      Uri.parse(source.baseUrl),
+      headers: _headers(source.baseUrl),
+    ).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) return const NovelHomeData.empty();
 
     final document = html_parser.parse(_decodeBody(response));
@@ -701,7 +834,7 @@ class BookSourceService {
   }
 
   Future<List<Novel>> searchBooks(String keyword) async {
-    final sources = _searchableSources(await getEnabledSources());
+    final sources = await _searchableSources(await getEnabledSources());
     final results = <Novel>[];
 
     for (final source in sources) {
@@ -716,19 +849,28 @@ class BookSourceService {
     return results;
   }
 
-  List<BookSource> _searchableSources(List<BookSource> savedSources) {
+  Future<List<BookSource>> _searchableSources(
+    List<BookSource> savedSources,
+  ) async {
+    final currentOrigin = await _domainService.currentOrigin(_bqgDomain);
     for (final source in savedSources) {
       if (source.enabled && isBqg995Source(source)) {
         return [
           source.copyWith(
             name: bqg995Source.name,
-            searchUrl: bqg995Source.searchUrl,
+            baseUrl: currentOrigin,
+            searchUrl: '$currentOrigin/api/search?q={keyword}',
             weight: bqg995Source.weight,
           ),
         ];
       }
     }
-    return [bqg995Source];
+    return [
+      bqg995Source.copyWith(
+        baseUrl: currentOrigin,
+        searchUrl: '$currentOrigin/api/search?q={keyword}',
+      ),
+    ];
   }
 
   Future<List<Novel>> _searchFromSource(
@@ -738,25 +880,30 @@ class BookSourceService {
     final novels = <Novel>[];
     final seen = <String>{};
 
-    for (final url in _buildSearchUrls(source, keyword)) {
+    for (final url in await _buildSearchUrls(source, keyword)) {
       try {
-        final response = await http
-            .get(Uri.parse(url), headers: _headers(source.baseUrl))
-            .timeout(const Duration(seconds: 10));
+        final response = await _get(
+          Uri.parse(url),
+          headers: _headers(source.baseUrl),
+        ).timeout(const Duration(seconds: 10));
 
         if (response.statusCode != 200) continue;
+        await _rememberBqgResponseOrigin(response);
+        final responseSource = source.copyWith(
+          baseUrl: _originOfResponse(response, fallback: source.baseUrl),
+        );
 
         final body = _decodeBody(response);
-        var parsedNovels = _parseJsonSearchResults(body, source);
+        var parsedNovels = _parseJsonSearchResults(body, responseSource);
         if (parsedNovels.isEmpty) {
           parsedNovels = await _searchJsonEndpointIfNeeded(
             body,
-            source,
+            responseSource,
             keyword,
           );
         }
         if (parsedNovels.isEmpty) {
-          parsedNovels = _parseSearchResults(body, source, keyword);
+          parsedNovels = _parseSearchResults(body, responseSource, keyword);
         }
 
         for (final novel in parsedNovels) {
@@ -815,9 +962,10 @@ class BookSourceService {
           Uri.encodeComponent(keyword);
 
       try {
-        final response = await http
-            .get(Uri.parse(url), headers: _headers(source.baseUrl))
-            .timeout(const Duration(seconds: 10));
+        final response = await _get(
+          Uri.parse(url),
+          headers: _headers(source.baseUrl),
+        ).timeout(const Duration(seconds: 10));
         if (response.statusCode != 200) continue;
         final results = _parseJsonSearchResults(_decodeBody(response), source);
         if (results.isNotEmpty) return results;
@@ -926,17 +1074,10 @@ class BookSourceService {
     return const [];
   }
 
-  String _buildSearchUrl(BookSource source, String keyword) {
-    if (source.searchUrl.isNotEmpty) {
-      return source.searchUrl.replaceAll(
-        '{keyword}',
-        Uri.encodeComponent(keyword),
-      );
-    }
-    return '${source.baseUrl}/search?q=${Uri.encodeComponent(keyword)}';
-  }
-
-  List<String> _buildSearchUrls(BookSource source, String keyword) {
+  Future<List<String>> _buildSearchUrls(
+    BookSource source,
+    String keyword,
+  ) async {
     final encoded = Uri.encodeComponent(keyword);
     final urls = <String>[];
 
@@ -944,18 +1085,22 @@ class BookSourceService {
       if (url.isNotEmpty && !urls.contains(url)) urls.add(url);
     }
 
-    final base = source.baseUrl.endsWith('/')
-        ? source.baseUrl.substring(0, source.baseUrl.length - 1)
-        : source.baseUrl;
-    add('$base/api/search?q=$encoded');
-    add(_buildSearchUrl(source, keyword));
-    add('$base/search?q=$encoded');
-    add('$base/search?keyword=$encoded');
-    add('$base/search.html?q=$encoded');
-    add('$base/search.html?keyword=$encoded');
-    add('$base/search.htm?keyword=$encoded');
-    add('$base/modules/article/search.php?searchkey=$encoded');
-    add('$base/s.php?ie=utf-8&s=$encoded');
+    for (final base in await _bqgOriginCandidates(source.baseUrl)) {
+      add('$base/api/search?q=$encoded');
+      add(
+        source
+            .copyWith(baseUrl: base, searchUrl: '$base/api/search?q={keyword}')
+            .searchUrl
+            .replaceAll('{keyword}', encoded),
+      );
+      add('$base/search?q=$encoded');
+      add('$base/search?keyword=$encoded');
+      add('$base/search.html?q=$encoded');
+      add('$base/search.html?keyword=$encoded');
+      add('$base/search.htm?keyword=$encoded');
+      add('$base/modules/article/search.php?searchkey=$encoded');
+      add('$base/s.php?ie=utf-8&s=$encoded');
+    }
     return urls;
   }
 
@@ -1245,22 +1390,31 @@ class BookSourceService {
     if (apiChapters.isNotEmpty) return apiChapters;
 
     final chapters = <Chapter>[];
-    try {
-      final response = await http
-          .get(Uri.parse(novel.chapterUrl), headers: _headers(novel.chapterUrl))
-          .timeout(const Duration(seconds: 10));
+    for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
+      try {
+        final url = _replaceUrlOrigin(novel.chapterUrl, baseUrl);
+        final response = await _get(
+          Uri.parse(url),
+          headers: _headers(baseUrl),
+        ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        chapters.addAll(
-          _extractChapterLinks(
-            _decodeBody(response),
-            novel.id,
-            novel.chapterUrl,
-          ),
-        );
+        if (response.statusCode == 200) {
+          await _rememberBqgResponseOrigin(response);
+          chapters.addAll(
+            _extractChapterLinks(
+              _decodeBody(response),
+              novel.id,
+              _replaceUrlOrigin(
+                novel.chapterUrl,
+                _originOfResponse(response, fallback: baseUrl),
+              ),
+            ),
+          );
+          if (chapters.isNotEmpty) break;
+        }
+      } catch (_) {
+        continue;
       }
-    } catch (_) {
-      return const [];
     }
     return chapters;
   }
@@ -1269,53 +1423,60 @@ class BookSourceService {
     final bookId = _extractBookId(novel.chapterUrl);
     if (bookId == null) return const [];
 
-    final baseUrl = _originOf(novel.chapterUrl);
-    if (baseUrl.isEmpty) return const [];
-
-    try {
-      final bookResponse = await http
-          .get(
-            Uri.parse('$baseUrl/api/book?id=$bookId'),
-            headers: _headers(baseUrl),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (bookResponse.statusCode != 200) return const [];
-
-      final bookData = jsonDecode(_decodeBody(bookResponse));
-      if (bookData is! Map) return const [];
-      final dirId = (bookData['dirid'] ?? bookData['id'] ?? bookId).toString();
-
-      final listResponse = await http
-          .get(
-            Uri.parse('$baseUrl/api/booklist?id=$dirId'),
-            headers: _headers(baseUrl),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (listResponse.statusCode != 200) return const [];
-
-      final listData = jsonDecode(_decodeBody(listResponse));
-      final rawList = listData is Map ? listData['list'] : null;
-      if (rawList is! List) return const [];
-
-      final chapters = <Chapter>[];
-      for (final item in rawList) {
-        final title = item.toString().trim();
-        if (title.isEmpty) continue;
-        final chapterId = chapters.length + 1;
-        chapters.add(
-          Chapter(
-            id: '${novel.id}_ch${chapters.length}',
-            novelId: novel.id,
-            title: title,
-            index: chapters.length,
-            url: '$baseUrl/#/book/$bookId/$chapterId.html',
-          ),
+    for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
+      try {
+        final bookResponse = await _get(
+          Uri.parse('$baseUrl/api/book?id=$bookId'),
+          headers: _headers(baseUrl),
+        ).timeout(const Duration(seconds: 10));
+        if (bookResponse.statusCode != 200) continue;
+        await _rememberBqgResponseOrigin(bookResponse);
+        final responseBaseUrl = _originOfResponse(
+          bookResponse,
+          fallback: baseUrl,
         );
+
+        final bookData = jsonDecode(_decodeBody(bookResponse));
+        if (bookData is! Map) continue;
+        final dirId = (bookData['dirid'] ?? bookData['id'] ?? bookId)
+            .toString();
+
+        final listResponse = await _get(
+          Uri.parse('$responseBaseUrl/api/booklist?id=$dirId'),
+          headers: _headers(responseBaseUrl),
+        ).timeout(const Duration(seconds: 10));
+        if (listResponse.statusCode != 200) continue;
+        await _rememberBqgResponseOrigin(listResponse);
+        final listBaseUrl = _originOfResponse(
+          listResponse,
+          fallback: responseBaseUrl,
+        );
+
+        final listData = jsonDecode(_decodeBody(listResponse));
+        final rawList = listData is Map ? listData['list'] : null;
+        if (rawList is! List) continue;
+
+        final chapters = <Chapter>[];
+        for (final item in rawList) {
+          final title = item.toString().trim();
+          if (title.isEmpty) continue;
+          final chapterId = chapters.length + 1;
+          chapters.add(
+            Chapter(
+              id: '${novel.id}_ch${chapters.length}',
+              novelId: novel.id,
+              title: title,
+              index: chapters.length,
+              url: '$listBaseUrl/#/book/$bookId/$chapterId.html',
+            ),
+          );
+        }
+        if (chapters.isNotEmpty) return chapters;
+      } catch (_) {
+        continue;
       }
-      return chapters;
-    } catch (_) {
-      return const [];
     }
+    return const [];
   }
 
   String? _extractBookId(String url) {
@@ -1414,13 +1575,18 @@ class BookSourceService {
     final apiContent = await _getApiChapterContent(chapter);
     if (apiContent.isNotEmpty) return apiContent;
 
-    for (final url in _chapterContentUrlCandidates(source, chapter.url)) {
+    for (final url in await _chapterContentUrlCandidates(source, chapter.url)) {
       try {
-        final response = await http
-            .get(Uri.parse(url), headers: _headers(source.baseUrl))
-            .timeout(const Duration(seconds: 15));
+        final baseUrl = _originOf(url).isEmpty
+            ? source.baseUrl
+            : _originOf(url);
+        final response = await _get(
+          Uri.parse(url),
+          headers: _headers(baseUrl),
+        ).timeout(const Duration(seconds: 15));
 
         if (response.statusCode == 200) {
+          await _rememberBqgResponseOrigin(response);
           final content = _extractContent(_decodeBody(response));
           if (content.isNotEmpty) return content;
         }
@@ -1436,29 +1602,28 @@ class BookSourceService {
     final chapterId = _extractChapterId(chapter.url);
     if (bookId == null || chapterId == null) return '';
 
-    try {
-      final token = _bqgToken({
-        'id': int.parse(bookId),
-        'chapterid': chapterId,
-      });
-      final response = await http
-          .get(
-            Uri.parse(
-              'https://apibi.cc/api/chapter?token=${Uri.encodeComponent(token)}',
-            ),
-            headers: _headers('https://www.bqg995.xyz'),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) return '';
+    final token = _bqgToken({'id': int.parse(bookId), 'chapterid': chapterId});
+    for (final baseUrl in await _bqgChapterApiOriginCandidates(chapter.url)) {
+      try {
+        final response = await _get(
+          Uri.parse('$baseUrl/api/chapter?token=${Uri.encodeComponent(token)}'),
+          headers: _headers(baseUrl),
+        ).timeout(const Duration(seconds: 10));
+        if (response.statusCode != 200) continue;
+        if (_isKnownBqgHost(Uri.parse(baseUrl).host)) {
+          await _rememberBqgResponseOrigin(response);
+        }
 
-      final data = jsonDecode(_decodeBody(response));
-      if (data is! Map) return '';
-      final txt = (data['txt'] ?? '').toString().trim();
-      if (txt.isEmpty) return '';
-      return _cleanChapterText(txt.replaceAll('\n', '\n\n'));
-    } catch (_) {
-      return '';
+        final data = jsonDecode(_decodeBody(response));
+        if (data is! Map) continue;
+        final txt = (data['txt'] ?? '').toString().trim();
+        if (txt.isEmpty) continue;
+        return _cleanChapterText(txt.replaceAll('\n', '\n\n'));
+      } catch (_) {
+        continue;
+      }
     }
+    return '';
   }
 
   int? _extractChapterId(String url) {
@@ -1485,18 +1650,23 @@ class BookSourceService {
     return encrypter.encrypt(jsonEncode(params), iv: iv).base64;
   }
 
-  List<String> _chapterContentUrlCandidates(BookSource source, String rawUrl) {
+  Future<List<String>> _chapterContentUrlCandidates(
+    BookSource source,
+    String rawUrl,
+  ) async {
     final candidates = <String>[];
     void add(String url) {
       if (url.isNotEmpty && !candidates.contains(url)) candidates.add(url);
     }
 
-    add(_normalizeUrl(source.baseUrl, rawUrl));
-    add(_normalizeHashRouteUrl(source.baseUrl, rawUrl));
+    for (final baseUrl in await _bqgOriginCandidates(source.baseUrl)) {
+      add(_normalizeUrl(baseUrl, rawUrl));
+      add(_normalizeHashRouteUrl(baseUrl, rawUrl));
 
-    final hashIndex = rawUrl.indexOf('#/');
-    if (hashIndex >= 0) {
-      add(_normalizeUrl(source.baseUrl, rawUrl.substring(hashIndex + 1)));
+      final hashIndex = rawUrl.indexOf('#/');
+      if (hashIndex >= 0) {
+        add(_normalizeUrl(baseUrl, rawUrl.substring(hashIndex + 1)));
+      }
     }
 
     return candidates;

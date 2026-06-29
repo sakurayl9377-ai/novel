@@ -269,6 +269,37 @@ class _ReadingScreenState extends State<ReadingScreen>
     _clearPausedTtsAnchor();
   }
 
+  int _chapterProgressPercentForPosition(int charPosition) {
+    if (_content.isEmpty) return 0;
+    final safePosition = charPosition.clamp(0, _content.length).toInt();
+    return ((safePosition / _content.length) * 100).clamp(0.0, 100.0).round();
+  }
+
+  int _displayChapterProgressPercent(TtsProvider ttsProvider) {
+    if ((ttsProvider.isSpeaking ||
+            ttsProvider.isPaused ||
+            ttsProvider.isStarting) &&
+        ttsProvider.currentStartOffset >= 0) {
+      return _chapterProgressPercentForPosition(ttsProvider.currentStartOffset);
+    }
+    return _chapterProgressPercentForPosition(_lastCharPosition);
+  }
+
+  void _updateReadingPosition(
+    int page,
+    int charPosition,
+    double scrollPosition,
+  ) {
+    final oldPercent = _chapterProgressPercentForPosition(_lastCharPosition);
+    _currentPageIndex = page;
+    _lastCharPosition = charPosition.clamp(0, _content.length).toInt();
+    _lastScrollPosition = scrollPosition;
+    final newPercent = _chapterProgressPercentForPosition(_lastCharPosition);
+    if (oldPercent != newPercent && mounted) {
+      setState(() {});
+    }
+  }
+
   Future<void> _goToNextChapter() async {
     if (_currentChapterIndex < widget.chapters.length - 1) {
       final ttsProvider = context.read<TtsProvider>();
@@ -760,6 +791,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     final ttsProvider = context.watch<TtsProvider>();
     final bgColor = _parseColor(settings.backgroundColor);
     final isNight = settings.nightMode;
+    final chapterProgressPercent = _displayChapterProgressPercent(ttsProvider);
 
     return PopScope(
       canPop: _isLeaving,
@@ -828,13 +860,19 @@ class _ReadingScreenState extends State<ReadingScreen>
                             isNightMode: isNight,
                             onReadingPositionChanged:
                                 (page, charPosition, scrollPosition) {
-                                  _currentPageIndex = page;
-                                  _lastCharPosition = charPosition;
-                                  _lastScrollPosition = scrollPosition;
+                                  _updateReadingPosition(
+                                    page,
+                                    charPosition,
+                                    scrollPosition,
+                                  );
                                 },
                             onReadingPositionSettled:
                                 (page, charPosition, scrollPosition) {
-                                  _currentPageIndex = page;
+                                  _updateReadingPosition(
+                                    page,
+                                    charPosition,
+                                    scrollPosition,
+                                  );
                                   unawaited(
                                     _saveProgressNow(
                                       charPosition: charPosition,
@@ -856,6 +894,11 @@ class _ReadingScreenState extends State<ReadingScreen>
                 ],
               ),
             ),
+            if (_content.isNotEmpty && !readingProvider.showSettings)
+              _buildChapterProgressBadge(
+                percent: chapterProgressPercent,
+                isNight: isNight,
+              ),
             if (readingProvider.showSettings)
               Positioned.fill(
                 child: GestureDetector(
@@ -886,6 +929,45 @@ class _ReadingScreenState extends State<ReadingScreen>
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChapterProgressBadge({
+    required int percent,
+    required bool isNight,
+  }) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final bottomOffset = bottomInset + (_showTtsPanel ? 230.0 : 18.0);
+    final adjustedBottomOffset = _showControls && !_showTtsPanel
+        ? bottomInset + 86.0
+        : bottomOffset;
+
+    return Positioned(
+      right: 16,
+      bottom: adjustedBottomOffset,
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: isNight ? 0.34 : 0.28),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: isNight ? 0.12 : 0.18),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              '$percent%',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                height: 1,
+              ),
+            ),
+          ),
         ),
       ),
     );

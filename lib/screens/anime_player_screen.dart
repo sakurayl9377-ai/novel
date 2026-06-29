@@ -29,13 +29,6 @@ class AnimePlayerScreen extends StatefulWidget {
 }
 
 class _AnimePlayerScreenState extends State<AnimePlayerScreen> {
-  static const Map<String, String> _videoHeaders = {
-    'User-Agent':
-        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-    'Referer': 'https://www.yinhuadm.xyz/',
-  };
-
   final StorageService _storageService = StorageService();
   VideoPlayerController? _videoController;
   ChewieController? _chewieController;
@@ -45,6 +38,7 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen> {
   AnimeWatchHistory? _resumeHistory;
   bool _isLoading = true;
   String? _errorMessage;
+  bool _hasAppliedVideoVolume = false;
 
   List<AnimeEpisode> get _episodes => widget.source.episodes;
 
@@ -104,15 +98,17 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen> {
     }
 
     await _disposePlayer();
+    _hasAppliedVideoVolume = false;
 
     final startAt = _shouldResume(episode, resumeHistory)
         ? resumeHistory!.position
         : null;
     final videoController = VideoPlayerController.networkUrl(
       Uri.parse(episode.url),
-      httpHeaders: _videoHeaders,
+      httpHeaders: _videoHeaders(episode.url),
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
     );
+    unawaited(videoController.setVolume(_AnimeVideoVolume.current));
 
     final chewieController = ChewieController(
       videoPlayerController: videoController,
@@ -179,6 +175,19 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen> {
     await videoController?.dispose();
   }
 
+  Map<String, String> _videoHeaders(String url) {
+    final uri = Uri.tryParse(url);
+    final origin = uri == null || uri.host.isEmpty
+        ? ''
+        : '${uri.scheme}://${uri.host}/';
+    return {
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+      'Referer': origin.isNotEmpty ? origin : 'https://www.yinhuadm.xyz/',
+    };
+  }
+
   Future<void> _restoreSystemUi() async {
     await SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
@@ -201,6 +210,10 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen> {
     final controller = _videoController;
     if (controller == null || !mounted) return;
     final value = controller.value;
+    if (value.isInitialized && !_hasAppliedVideoVolume) {
+      _hasAppliedVideoVolume = true;
+      unawaited(controller.setVolume(_AnimeVideoVolume.current));
+    }
     if (value.hasError && _errorMessage == null) {
       setState(() => _errorMessage = value.errorDescription ?? '鎾斁澶辫触锛岃閲嶈瘯');
     }
@@ -424,6 +437,15 @@ class _AnimeVideoControls extends StatefulWidget {
 
 enum _VideoGestureMode { none, seek, volume }
 
+class _AnimeVideoVolume {
+  static const double defaultVolume = 0.5;
+  static double current = defaultVolume;
+
+  static void set(double volume) {
+    current = volume.clamp(0.0, 1.0).toDouble();
+  }
+}
+
 class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
   ChewieController? _chewieController;
   VideoPlayerController? _videoController;
@@ -437,8 +459,8 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
   _VideoGestureMode _gestureMode = _VideoGestureMode.none;
   double _gestureStartPositionMs = 0;
   double _gesturePreviewPositionMs = 0;
-  double _gestureStartVolume = 1;
-  double _currentVolume = 1;
+  double _gestureStartVolume = _AnimeVideoVolume.defaultVolume;
+  double _currentVolume = _AnimeVideoVolume.current;
   double? _volumePreview;
 
   @override
@@ -450,6 +472,8 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
     _chewieController = chewieController;
     _videoController = chewieController.videoPlayerController
       ..addListener(_handleVideoChanged);
+    _currentVolume = _AnimeVideoVolume.current;
+    unawaited(_videoController?.setVolume(_currentVolume));
     _restartHideTimer();
   }
 
@@ -624,12 +648,13 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
     final nextVolume = (_gestureStartVolume - offset.dy / size.height)
         .clamp(0.0, 1.0)
         .toDouble();
-    _currentVolume = nextVolume;
-    unawaited(controller.setVolume(nextVolume));
+    _AnimeVideoVolume.set(nextVolume);
+    _currentVolume = _AnimeVideoVolume.current;
+    unawaited(controller.setVolume(_currentVolume));
     setState(() {
       _controlsVisible = true;
       _gestureMode = mode;
-      _volumePreview = nextVolume;
+      _volumePreview = _currentVolume;
     });
   }
 

@@ -2,7 +2,7 @@ name: novel_app
 description: "Android 端小说阅读 APP - 支持本地导入、书源管理、书架管理、在线阅读、听书等功能"
 publish_to: 'none'
 
-version: 2.0.0+2
+version: 2.0.4+6
 
 environment:
   sdk: ^3.12.1
@@ -28,6 +28,7 @@ dependencies:
   audio_service: ^0.18.18
   wakelock_plus: ^1.5.2
   permission_handler: ^12.0.3
+  package_info_plus: ^9.0.1
   html: ^0.15.6
   video_player: ^2.11.1
   chewie: ^1.13.1
