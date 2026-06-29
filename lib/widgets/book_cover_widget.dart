@@ -38,6 +38,7 @@ class BookCoverWidget extends StatelessWidget {
           Image.network(
             novel.coverUrl,
             fit: BoxFit.cover,
+            headers: _imageHeaders(novel.coverUrl),
             errorBuilder: (_, _, _) => _buildPlaceholder(),
             loadingBuilder: (_, child, loadingProgress) {
               if (loadingProgress == null) return child;
@@ -123,5 +124,18 @@ class BookCoverWidget extends StatelessWidget {
   String _getFirstChars(String text, int count) {
     if (text.characters.length <= count) return text;
     return text.characters.take(count).toString();
+  }
+
+  Map<String, String> _imageHeaders(String url) {
+    final uri = Uri.tryParse(url);
+    final origin = uri == null || uri.host.isEmpty
+        ? ''
+        : '${uri.scheme}://${uri.host}/';
+    return {
+      if (origin.isNotEmpty) 'Referer': origin,
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
+          'Chrome/125.0 Mobile Safari/537.36',
+    };
   }
 }

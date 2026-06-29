@@ -790,12 +790,7 @@ class AnimeCover extends StatelessWidget {
       imageUrl: imageUrl,
       cacheManager: AppImageCacheService.manager,
       fit: fit,
-      httpHeaders: const {
-        'Referer': 'https://www.yinhuadm.xyz/',
-        'User-Agent':
-            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-      },
+      httpHeaders: animeImageHeaders(imageUrl),
       errorWidget: (context, url, error) {
         final fallbackUrl = _fallbackImageUrl(imageUrl);
         if (fallbackUrl != null) {
@@ -803,12 +798,7 @@ class AnimeCover extends StatelessWidget {
             imageUrl: fallbackUrl,
             cacheManager: AppImageCacheService.manager,
             fit: fit,
-            httpHeaders: const {
-              'Referer': 'https://www.yinhuadm.xyz/',
-              'User-Agent':
-                  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-            },
+            httpHeaders: animeImageHeaders(fallbackUrl),
             errorWidget: (context, url, error) => const ColoredBox(
               color: AppTheme.dividerColor,
               child: Center(child: Icon(Icons.broken_image_outlined)),
@@ -841,6 +831,19 @@ class AnimeCover extends StatelessWidget {
     if (cdnPath == path && !path.startsWith('upload/')) return null;
     return 'https://img-dm.l-il.cn/$cdnPath';
   }
+}
+
+Map<String, String> animeImageHeaders(String imageUrl) {
+  final uri = Uri.tryParse(imageUrl);
+  final origin = uri == null || uri.host.isEmpty
+      ? ''
+      : '${uri.scheme}://${uri.host}/';
+  return {
+    'Referer': origin.isNotEmpty ? origin : 'https://www.yinhuadm.xyz/',
+    'User-Agent':
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
+  };
 }
 
 class _SectionHeader extends StatelessWidget {

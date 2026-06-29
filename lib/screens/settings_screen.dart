@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../config/theme.dart';
 import '../models/anime_watch_history.dart';
 import '../models/manga_read_history.dart';
 import '../models/tts_settings.dart';
 import '../providers/reading_provider.dart';
 import '../providers/tts_provider.dart';
+import '../services/app_update_service.dart';
 import '../services/storage_service.dart';
 import 'anime_player_screen.dart';
 import 'anime_screen.dart';
@@ -13,8 +16,36 @@ import 'bookshelf_screen.dart';
 import 'manga_reader_screen.dart';
 import 'manga_screen.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final AppUpdateService _updateService = AppUpdateService();
+
+  bool _isCheckingUpdate = false;
+  bool _isDownloadingUpdate = false;
+  double? _downloadProgress;
+  String _appVersionName = '2.0.4';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _appVersionName = packageInfo.version);
+    } catch (_) {
+      // Keep the bundled fallback if package metadata is unavailable.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,19 +201,43 @@ class SettingsScreen extends StatelessWidget {
           _buildMenuItem(
             icon: Icons.info_outline,
             title: '关于应用',
-            subtitle: 'v1.0.0',
+            subtitle: 'Sakura v$_appVersionName',
             onTap: () {},
           ),
           _buildMenuItem(
-            icon: Icons.favorite_border,
-            title: '评个分吧',
-            onTap: () {},
+            icon: Icons.history_edu_outlined,
+            title: '更新日志',
+            subtitle: '查看每个版本更新内容',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const UpdateLogScreen()),
+              );
+            },
+          ),
+          _buildMenuItem(
+            icon: Icons.system_update_alt_outlined,
+            title: _isDownloadingUpdate ? '正在下载更新' : '检查更新',
+            subtitle: _updateSubtitle,
+            trailing: _isCheckingUpdate || _isDownloadingUpdate
+                ? SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.2,
+                      value: _downloadProgress,
+                    ),
+                  )
+                : null,
+            onTap: _isCheckingUpdate || _isDownloadingUpdate
+                ? null
+                : _checkForUpdate,
           ),
           const SizedBox(height: 32),
-          const Center(
+          Center(
             child: Text(
-              'Sakura v2.0.0',
-              style: TextStyle(fontSize: 12, color: AppTheme.textHint),
+              'Sakura v$_appVersionName',
+              style: const TextStyle(fontSize: 12, color: AppTheme.textHint),
             ),
           ),
           const SizedBox(height: 16),
@@ -225,6 +280,304 @@ class SettingsScreen extends StatelessWidget {
           trailing ??
           const Icon(Icons.chevron_right, size: 20, color: AppTheme.textHint),
       onTap: onTap,
+    );
+  }
+
+  String get _updateSubtitle {
+    if (_isDownloadingUpdate) {
+      final progress = _downloadProgress;
+      if (progress != null) {
+        return '已下载 ${(progress * 100).clamp(0, 100).toStringAsFixed(0)}%';
+      }
+      return '正在下载 APK';
+    }
+    if (_isCheckingUpdate) return '正在检查服务器版本';
+    return '检查是否有新版本';
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_isCheckingUpdate || _isDownloadingUpdate) return;
+    setState(() => _isCheckingUpdate = true);
+
+    AppUpdateCheckResult result;
+    try {
+      result = await _updateService.checkForUpdate();
+    } catch (error) {
+      if (mounted) {
+        _showMessage('检查更新失败：${_friendlyUpdateError(error)}');
+      }
+      return;
+    } finally {
+      if (mounted) setState(() => _isCheckingUpdate = false);
+    }
+
+    if (!mounted) return;
+    final update = result.update;
+    if (!result.hasUpdate || update == null) {
+      _showMessage('已是最新版本 v${result.currentVersionName}');
+      return;
+    }
+
+    final confirmed = await _confirmUpdate(update);
+    if (confirmed == true && mounted) {
+      await _downloadAndInstall(update);
+    }
+  }
+
+  Future<bool?> _confirmUpdate(AppUpdateInfo update) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: !update.force,
+      builder: (ctx) => AlertDialog(
+        title: Text('发现新版本 ${update.versionName}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('版本号：${update.versionCode}'),
+            if (update.notes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              for (final note in update.notes)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('• $note'),
+                ),
+            ],
+          ],
+        ),
+        actions: [
+          if (!update.force)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('稍后'),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('立即更新'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _downloadAndInstall(AppUpdateInfo update) async {
+    setState(() {
+      _isDownloadingUpdate = true;
+      _downloadProgress = null;
+    });
+
+    var wakelockWasEnabled = false;
+    var wakelockChanged = false;
+    try {
+      try {
+        wakelockWasEnabled = await WakelockPlus.enabled;
+        await WakelockPlus.enable();
+        wakelockChanged = !wakelockWasEnabled;
+      } catch (_) {
+        // Keep updating even if the device refuses the screen wakelock.
+      }
+
+      final apk = await _updateService.downloadApk(
+        update,
+        onProgress: (received, total) {
+          if (!mounted || total <= 0) return;
+          setState(() => _downloadProgress = received / total);
+        },
+      );
+      if (!mounted) return;
+      setState(() => _downloadProgress = 1);
+      await _updateService.installApk(apk);
+    } catch (error) {
+      if (mounted) {
+        _showMessage('更新失败：${_friendlyUpdateError(error)}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDownloadingUpdate = false;
+          _downloadProgress = null;
+        });
+      }
+      if (wakelockChanged) {
+        try {
+          await WakelockPlus.disable();
+        } catch (_) {
+          // Nothing else to do if wakelock cleanup fails.
+        }
+      }
+    }
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _friendlyUpdateError(Object error) {
+    final text = error.toString().replaceFirst('Exception: ', '');
+    if (text.contains('checksum')) return '安装包校验失败';
+    if (text.contains('Invalid update config')) return '服务器版本配置不正确';
+    if (text.contains('Update check failed')) return '服务器版本文件无法访问';
+    if (text.contains('APK download failed')) return '安装包下载失败';
+    if (text.contains('INSTALL_FAILED') || text.contains('installApk')) {
+      return '安装包已下载，调起安装失败，请重新点击立即更新';
+    }
+    if (text.contains('SocketException') ||
+        text.contains('TimeoutException') ||
+        text.contains('ClientException') ||
+        text.contains('HttpException') ||
+        text.contains('HandshakeException')) {
+      return '网络连接失败，请稍后再试';
+    }
+    return '更新失败，请稍后再试';
+  }
+}
+
+class UpdateLogScreen extends StatelessWidget {
+  const UpdateLogScreen({super.key});
+
+  static const List<_UpdateLogEntry> _entries = [
+    _UpdateLogEntry(
+      versionName: '2.0.4',
+      versionCode: 6,
+      dateLabel: '2026-06-30',
+      notes: [
+        '小说阅读页右下角新增当前章节阅读百分比',
+        '动漫视频播放默认音量调整为 50%',
+        '设置页新增更新日志，集中查看历史版本内容',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '2.0.3',
+      versionCode: 5,
+      dateLabel: '2026-06-30',
+      notes: [
+        '更新下载期间保持屏幕常亮，降低息屏导致失败的概率',
+        '已下载并校验通过的安装包会直接复用，不再重复下载',
+        '支持断点续传，网络中断后再次更新可继续下载',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '2.0.2',
+      versionCode: 4,
+      dateLabel: '2026-06-30',
+      notes: [
+        '隐藏科大讯飞 AppID、API Key、API Secret 输入内容',
+        '检查更新界面不再显示服务器地址',
+        '修复小说、动漫、漫画域名自动适配',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '2.0.1',
+      versionCode: 3,
+      dateLabel: '2026-06-30',
+      notes: ['新增 App 内检查更新', '支持下载 APK 并调用系统安装', '修复小说首页域名问题'],
+    ),
+    _UpdateLogEntry(
+      versionName: '2.0.0',
+      versionCode: 2,
+      dateLabel: '2026-06-29',
+      notes: ['整理小说阅读、漫画阅读、动漫播放等主要功能', '完善书架、历史记录和阅读设置体验'],
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('更新日志')),
+      body: ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        itemCount: _entries.length,
+        separatorBuilder: (_, _) => const Divider(height: 28),
+        itemBuilder: (context, index) => _UpdateLogItem(entry: _entries[index]),
+      ),
+    );
+  }
+}
+
+class _UpdateLogEntry {
+  const _UpdateLogEntry({
+    required this.versionName,
+    required this.versionCode,
+    required this.dateLabel,
+    required this.notes,
+  });
+
+  final String versionName;
+  final int versionCode;
+  final String dateLabel;
+  final List<String> notes;
+}
+
+class _UpdateLogItem extends StatelessWidget {
+  const _UpdateLogItem({required this.entry});
+
+  final _UpdateLogEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Sakura v${entry.versionName}',
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.textPrimary,
+                ),
+              ),
+            ),
+            Text(
+              entry.dateLabel,
+              style: const TextStyle(fontSize: 12, color: AppTheme.textHint),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '版本号：${entry.versionCode}',
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+        const SizedBox(height: 10),
+        for (final note in entry.notes)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 7),
+                  child: SizedBox(
+                    width: 4,
+                    height: 4,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    note,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.45,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
@@ -807,6 +1160,23 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
     Navigator.pop(context);
   }
 
+  Widget _buildCredentialField({
+    required TextEditingController controller,
+    required String label,
+  }) {
+    return TextField(
+      controller: controller,
+      obscureText: true,
+      enableSuggestions: false,
+      autocorrect: false,
+      keyboardType: TextInputType.visiblePassword,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -857,29 +1227,16 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
             },
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _appIdController,
-            decoration: const InputDecoration(
-              labelText: 'AppID',
-              border: OutlineInputBorder(),
-            ),
-          ),
+          _buildCredentialField(controller: _appIdController, label: 'AppID'),
           const SizedBox(height: 12),
-          TextField(
+          _buildCredentialField(
             controller: _apiKeyController,
-            decoration: const InputDecoration(
-              labelText: 'API Key',
-              border: OutlineInputBorder(),
-            ),
+            label: 'API Key',
           ),
           const SizedBox(height: 12),
-          TextField(
+          _buildCredentialField(
             controller: _apiSecretController,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'API Secret',
-              border: OutlineInputBorder(),
-            ),
+            label: 'API Secret',
           ),
           const SizedBox(height: 24),
           const Text(

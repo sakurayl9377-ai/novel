@@ -6,9 +6,19 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga.dart';
+import 'site_domain_service.dart';
 
 class MangaService {
   static final Uri siteUri = Uri.parse('https://cn.bzmgcn.com/');
+  static const SiteDomainConfig _domain = SiteDomainConfig(
+    key: 'manga_baozi',
+    primaryOrigin: 'https://cn.bzmgcn.com',
+    fallbackOrigins: [
+      'https://cn.cnbzmg.com',
+      'https://www.bzmgcn.com',
+      'https://www.baozimh.com',
+    ],
+  );
   static const String _homeHtmlCacheKey = 'manga_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'manga_home_html_cache_time_v1';
   static const String _chapterImagesCachePrefix =
@@ -47,29 +57,33 @@ class MangaService {
     ),
   ];
 
+  final SiteDomainService _domainService = SiteDomainService.instance;
+
   Future<MangaHomeData> fetchHome({bool forceRefresh = false}) async {
     final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
     if (!forceRefresh && cachedHtml != null) {
       final document = html_parser.parse(cachedHtml);
-      return _BaoziHomeParser(siteUri).parse(document);
+      return _BaoziHomeParser(await _currentSiteUri()).parse(document);
     }
 
     try {
-      final response = await http
-          .get(siteUri, headers: _headers())
-          .timeout(const Duration(seconds: 15));
+      final response = await _getPage(
+        siteUri,
+        timeout: const Duration(seconds: 15),
+      );
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
+      final baseUri = _responseSiteUri(response);
       final html = _decodeBody(response);
       await _writeCachedHomeHtml(html);
       final document = html_parser.parse(html);
-      return _BaoziHomeParser(siteUri).parse(document);
+      return _BaoziHomeParser(baseUri).parse(document);
     } catch (_) {
       final fallbackHtml = await _readCachedHomeHtml(allowExpired: true);
       if (fallbackHtml == null) rethrow;
       final document = html_parser.parse(fallbackHtml);
-      return _BaoziHomeParser(siteUri).parse(document);
+      return _BaoziHomeParser(await _currentSiteUri()).parse(document);
     }
   }
 
@@ -94,15 +108,14 @@ class MangaService {
   }
 
   Future<MangaListResult> fetchList(String url, {int page = 1}) async {
-    final uri = _listPageUri(url, page);
-    final response = await http
-        .get(uri, headers: _headers(referer: siteUri.toString()))
-        .timeout(const Duration(seconds: 15));
+    final uri = await _listPageUri(url, page);
+    final response = await _getPage(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
+    final baseUri = _responseSiteUri(response);
     final document = html_parser.parse(_decodeBody(response));
-    final items = _BaoziHomeParser(siteUri).parseListItems(document);
+    final items = _BaoziHomeParser(baseUri).parseListItems(document);
     return MangaListResult(
       items: items,
       page: page,
@@ -115,37 +128,36 @@ class MangaService {
     final query = keyword.trim();
     if (query.isEmpty) return const [];
 
-    final uri = siteUri.replace(path: '/search', queryParameters: {'q': query});
-    final response = await http
-        .get(uri, headers: _headers(referer: siteUri.toString()))
-        .timeout(const Duration(seconds: 15));
+    final site = await _currentSiteUri();
+    final uri = site.replace(path: '/search', queryParameters: {'q': query});
+    final response = await _getPage(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
+    final baseUri = _responseSiteUri(response);
     final document = html_parser.parse(_decodeBody(response));
-    return _BaoziHomeParser(siteUri).parseListItems(document);
+    return _BaoziHomeParser(baseUri).parseListItems(document);
   }
 
   Future<Manga> fetchDetail(String id) async {
     final comicId = id.trim();
     if (comicId.isEmpty) throw Exception('invalid manga id');
 
-    final uri = siteUri.resolve('/comic/$comicId');
-    final response = await http
-        .get(uri, headers: _headers(referer: siteUri.toString()))
-        .timeout(const Duration(seconds: 15));
+    final uri = (await _currentSiteUri()).resolve('/comic/$comicId');
+    final response = await _getPage(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
+    final baseUri = _responseSiteUri(response);
     final document = html_parser.parse(_decodeBody(response));
-    return _BaoziDetailParser(siteUri).parse(document, comicId);
+    return _BaoziDetailParser(baseUri).parse(document, comicId);
   }
 
   Future<List<String>> fetchChapterImages(
     MangaChapter chapter, {
     bool forceRefresh = false,
   }) async {
-    final uri = _pageUri(chapter.url);
+    final uri = await _pageUri(chapter.url);
     if (!forceRefresh) {
       final cachedImages = await _readCachedChapterImages(
         uri,
@@ -155,14 +167,16 @@ class MangaService {
     }
 
     try {
-      final response = await http
-          .get(uri, headers: _headers(referer: siteUri.toString()))
-          .timeout(const Duration(seconds: 20));
+      final response = await _getPage(
+        uri,
+        timeout: const Duration(seconds: 20),
+      );
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
+      final baseUri = _responseSiteUri(response);
       final document = html_parser.parse(_decodeBody(response));
-      final images = _BaoziDetailParser(siteUri).parseDirectImages(document);
+      final images = _BaoziDetailParser(baseUri).parseDirectImages(document);
       if (images.isNotEmpty) {
         await _writeCachedChapterImages(uri, images);
       }
@@ -226,20 +240,41 @@ class MangaService {
     return _chapterImagesCachePrefix + base64Url.encode(utf8.encode('$uri'));
   }
 
-  Uri _listPageUri(String url, int page) {
-    final uri = _pageUri(url);
+  Future<Uri> _listPageUri(String url, int page) async {
+    final uri = await _pageUri(url);
     if (page <= 1) return uri;
     return uri.replace(
       queryParameters: {...uri.queryParameters, 'page': page.toString()},
     );
   }
 
-  Uri _pageUri(String url) {
-    final uri = siteUri.resolve(url.replaceAll('&amp;', '&'));
-    if (_isBaoziPageHost(uri.host) && uri.host != siteUri.host) {
-      return uri.replace(host: siteUri.host);
+  Future<Uri> _pageUri(String url) async {
+    final site = await _currentSiteUri();
+    final uri = site.resolve(url.replaceAll('&amp;', '&'));
+    if (_isBaoziPageHost(uri.host) && uri.host != site.host) {
+      return uri.replace(host: site.host);
     }
     return uri;
+  }
+
+  Future<Uri> _currentSiteUri() async {
+    final origin = await _domainService.currentOrigin(_domain);
+    return Uri.parse('$origin/');
+  }
+
+  Future<http.Response> _getPage(Uri uri, {required Duration timeout}) async {
+    return _domainService.get(
+      _domain,
+      uri,
+      headers: _headers(referer: '${await _currentSiteUri()}'),
+      timeout: timeout,
+    );
+  }
+
+  Uri _responseSiteUri(http.Response response) {
+    final url = response.request?.url;
+    if (url == null || url.host.isEmpty) return siteUri;
+    return Uri.parse('${SiteDomainService.originOf(url)}/');
   }
 
   bool _isBaoziPageHost(String host) {

@@ -1,0 +1,12 @@
+{
+  "versionName": "2.0.4",
+  "versionCode": 6,
+  "apkUrl": "http://49.232.137.85/app/app-release.apk",
+  "sha256": "3BB5EF92C8244FEA9441299F39523E6AB51D55B508C0C964BC2B72B0659EBCCC",
+  "force": false,
+  "notes": [
+    "小说阅读页右下角新增当前章节阅读百分比",
+    "动漫视频播放默认音量调整为 50%",
+    "设置页新增更新日志，集中查看历史版本内容"
+  ]
+}

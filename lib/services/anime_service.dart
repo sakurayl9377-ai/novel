@@ -7,10 +7,15 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/anime.dart';
+import 'site_domain_service.dart';
 
 class AnimeService {
   static final Uri siteUri = Uri.parse('https://www.yinhuadm.xyz/');
-  static final Uri _apiUri = siteUri.resolve('/api.php/provide/vod/');
+  static const SiteDomainConfig _domain = SiteDomainConfig(
+    key: 'anime_yinhua',
+    primaryOrigin: 'https://www.yinhuadm.xyz',
+    fallbackOrigins: ['https://www.yhdm6go.top', 'https://www.yinhuadm.com'],
+  );
   static const String _homeHtmlCacheKey = 'anime_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'anime_home_html_cache_time_v1';
   static const Duration _homeCacheTtl = Duration(hours: 4);
@@ -21,30 +26,34 @@ class AnimeService {
     'Accept': 'text/html,application/json;q=0.9,*/*;q=0.8',
   };
 
+  final SiteDomainService _domainService = SiteDomainService.instance;
+
   Future<AnimeHomeData> fetchHome({bool forceRefresh = false}) async {
     final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
     if (!forceRefresh && cachedHtml != null) {
       final document = html_parser.parse(cachedHtml);
-      return _AnimeHomeParser(siteUri).parse(document);
+      return _AnimeHomeParser(await _currentSiteUri()).parse(document);
     }
 
     try {
-      final response = await http
-          .get(siteUri, headers: _headers)
-          .timeout(const Duration(seconds: 15));
+      final response = await _get(
+        siteUri,
+        timeout: const Duration(seconds: 15),
+      );
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
 
+      final baseUri = _responseSiteUri(response);
       final html = utf8.decode(response.bodyBytes);
       await _writeCachedHomeHtml(html);
       final document = html_parser.parse(html);
-      return _AnimeHomeParser(siteUri).parse(document);
+      return _AnimeHomeParser(baseUri).parse(document);
     } catch (_) {
       final fallbackHtml = await _readCachedHomeHtml(allowExpired: true);
       if (fallbackHtml == null) rethrow;
       final document = html_parser.parse(fallbackHtml);
-      return _AnimeHomeParser(siteUri).parse(document);
+      return _AnimeHomeParser(await _currentSiteUri()).parse(document);
     }
   }
 
@@ -80,50 +89,63 @@ class AnimeService {
     final query = keyword.trim();
     if (query.isEmpty) return const [];
 
-    final uri = _apiUri.replace(
+    final uri = (await _apiUri()).replace(
       queryParameters: {'ac': 'detail', 'wd': query, 'pg': page.toString()},
     );
-    final data = await _fetchApi(uri);
+    final api = await _fetchApi(uri);
+    final data = api.data;
     final list = data['list'];
     if (list is! List) return const [];
     return list
         .whereType<Map>()
-        .map((item) => Anime.fromJson(Map<String, dynamic>.from(item)))
+        .map(
+          (item) =>
+              _animeFromJson(Map<String, dynamic>.from(item), api.baseUri),
+        )
         .toList();
   }
 
   Future<Anime> fetchDetail(int id) async {
-    final uri = _apiUri.replace(
+    final uri = (await _apiUri()).replace(
       queryParameters: {'ac': 'detail', 'ids': id.toString()},
     );
-    final data = await _fetchApi(uri);
+    final api = await _fetchApi(uri);
+    final data = api.data;
     final list = data['list'];
-    if (list is! List || list.isEmpty || list.first is! Map) {
+    if (list is! List || list.isEmpty) {
       throw Exception('detail not found');
     }
-    return Anime.fromJson(Map<String, dynamic>.from(list.first as Map));
+    final first = list.first;
+    if (first is! Map) {
+      throw Exception('detail not found');
+    }
+    return _animeFromJson(Map<String, dynamic>.from(first), api.baseUri);
   }
 
   Future<AnimeListResult> _fetchCategory(
     int typeId, {
     required int page,
   }) async {
-    final uri = _apiUri.replace(
+    final uri = (await _apiUri()).replace(
       queryParameters: {
         'ac': 'detail',
         't': typeId.toString(),
         'pg': page.toString(),
       },
     );
-    final data = await _fetchApi(uri);
+    final api = await _fetchApi(uri);
+    final data = api.data;
     final list = data['list'];
-    final items = list is List
-        ? list
-              .whereType<Map>()
-              .map((item) => Anime.fromJson(Map<String, dynamic>.from(item)))
-              .map(_homeItemFromAnime)
-              .toList()
-        : <AnimeHomeItem>[];
+    final items = <AnimeHomeItem>[];
+    if (list is List) {
+      for (final item in list.whereType<Map>()) {
+        final anime = _animeFromJson(
+          Map<String, dynamic>.from(item),
+          api.baseUri,
+        );
+        items.add(_homeItemFromAnime(anime, api.baseUri));
+      }
+    }
     final pageCount = _asInt(data['pagecount']);
     final currentPage = _asInt(data['page']);
     return AnimeListResult(
@@ -138,15 +160,14 @@ class AnimeService {
     String url, {
     required int page,
   }) async {
-    final uri = _listPageUri(url, page);
-    final response = await http
-        .get(uri, headers: _headers)
-        .timeout(const Duration(seconds: 15));
+    final uri = await _listPageUri(url, page);
+    final response = await _get(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
+    final baseUri = _responseSiteUri(response);
     final document = html_parser.parse(utf8.decode(response.bodyBytes));
-    final items = _AnimeHomeParser(siteUri).parseListItems(document);
+    final items = _AnimeHomeParser(baseUri).parseListItems(document);
     return AnimeListResult(
       items: items,
       page: page,
@@ -155,29 +176,76 @@ class AnimeService {
     );
   }
 
-  Future<Map<String, dynamic>> _fetchApi(Uri uri) async {
-    final response = await http
-        .get(uri, headers: _headers)
-        .timeout(const Duration(seconds: 15));
+  Future<_AnimeApiResponse> _fetchApi(Uri uri) async {
+    final response = await _get(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
+    final baseUri = _responseSiteUri(response);
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     if (decoded is! Map<String, dynamic>) {
       throw Exception('invalid response');
     }
-    return decoded;
+    return _AnimeApiResponse(decoded, baseUri);
   }
 
-  AnimeHomeItem _homeItemFromAnime(Anime anime) {
+  Anime _animeFromJson(Map<String, dynamic> json, Uri baseUri) {
+    return Anime.fromJson(_normalizeAnimeJson(json, baseUri));
+  }
+
+  Map<String, dynamic> _normalizeAnimeJson(
+    Map<String, dynamic> json,
+    Uri baseUri,
+  ) {
+    final normalized = Map<String, dynamic>.from(json);
+    for (final key in ['vod_pic', 'vod_pic_slide']) {
+      final value = normalized[key]?.toString() ?? '';
+      if (value.isEmpty ||
+          value.startsWith('http://') ||
+          value.startsWith('https://') ||
+          value.startsWith('//')) {
+        continue;
+      }
+      normalized[key] = baseUri
+          .resolve(value.replaceFirst(RegExp(r'^/+'), ''))
+          .toString();
+    }
+    return normalized;
+  }
+
+  AnimeHomeItem _homeItemFromAnime(Anime anime, Uri baseUri) {
     return AnimeHomeItem(
       id: anime.id,
       title: anime.title,
-      url: siteUri.resolve('/v/${anime.id}.html').toString(),
+      url: baseUri.resolve('/v/${anime.id}.html').toString(),
       imageUrl: anime.coverUrl,
       status: anime.status,
       description: anime.description,
     );
+  }
+
+  Future<Uri> _apiUri() async {
+    return (await _currentSiteUri()).resolve('/api.php/provide/vod/');
+  }
+
+  Future<Uri> _currentSiteUri() async {
+    final origin = await _domainService.currentOrigin(_domain);
+    return Uri.parse('$origin/');
+  }
+
+  Future<http.Response> _get(Uri uri, {required Duration timeout}) {
+    return _domainService.get(
+      _domain,
+      uri,
+      headers: _headers,
+      timeout: timeout,
+    );
+  }
+
+  Uri _responseSiteUri(http.Response response) {
+    final url = response.request?.url;
+    if (url == null || url.host.isEmpty) return siteUri;
+    return Uri.parse('${SiteDomainService.originOf(url)}/');
   }
 
   int? _extractTypeId(String url) {
@@ -187,8 +255,8 @@ class AnimeService {
     return int.tryParse(match.group(1) ?? '');
   }
 
-  Uri _listPageUri(String url, int page) {
-    final uri = siteUri.resolve(url);
+  Future<Uri> _listPageUri(String url, int page) async {
+    final uri = (await _currentSiteUri()).resolve(url);
     if (page <= 1) return uri;
 
     final labelMatch = RegExp(r'^/label/([^/]+)\.html$').firstMatch(uri.path);
@@ -205,6 +273,13 @@ class AnimeService {
     if (value is int) return value;
     return int.tryParse(value?.toString() ?? '') ?? 0;
   }
+}
+
+class _AnimeApiResponse {
+  const _AnimeApiResponse(this.data, this.baseUri);
+
+  final Map<String, dynamic> data;
+  final Uri baseUri;
 }
 
 class AnimeHomeData {

@@ -691,7 +691,7 @@ class MangaCover extends StatelessWidget {
       imageUrl: imageUrl,
       cacheManager: AppImageCacheService.manager,
       fit: fit,
-      httpHeaders: mangaImageHeaders(),
+      httpHeaders: mangaImageHeaders(imageUrl: imageUrl),
       errorWidget: (context, url, error) => const ColoredBox(
         color: AppTheme.dividerColor,
         child: Center(child: Icon(Icons.broken_image_outlined)),
@@ -706,9 +706,20 @@ class MangaCover extends StatelessWidget {
   }
 }
 
-Map<String, String> mangaImageHeaders({String referer = ''}) {
+Map<String, String> mangaImageHeaders({
+  String imageUrl = '',
+  String referer = '',
+}) {
+  final uri = Uri.tryParse(imageUrl);
+  final origin = uri == null || uri.host.isEmpty
+      ? ''
+      : '${uri.scheme}://${uri.host}/';
   return {
-    'Referer': referer.isEmpty ? 'https://cn.bzmgcn.com/' : referer,
+    'Referer': referer.isNotEmpty
+        ? referer
+        : origin.isNotEmpty
+        ? origin
+        : 'https://cn.bzmgcn.com/',
     'User-Agent':
         'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
         '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',

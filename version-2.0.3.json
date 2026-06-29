@@ -1,0 +1,12 @@
+{
+  "versionName": "2.0.3",
+  "versionCode": 5,
+  "apkUrl": "http://49.232.137.85/app/app-release.apk",
+  "sha256": "F9CAE0343521984D8D37DBFD8001050836053DA50CA9ABD2E6A55F6A0B104BF5",
+  "force": false,
+  "notes": [
+    "更新下载期间保持屏幕常亮，降低息屏导致失败的概率",
+    "已下载并校验通过的安装包会直接复用，不再重复下载",
+    "支持断点续传，网络中断后再次更新可继续下载"
+  ]
+}
