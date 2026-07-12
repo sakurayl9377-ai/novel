@@ -1,4 +1,3 @@
-﻿
 class BookSource {
   final String id;
   final String name;
@@ -97,7 +96,8 @@ class BookSource {
     bookListRule: json['bookListRule'] as String?,
     chapterRule: json['chapterRule'] as String?,
     contentRule: json['contentRule'] as String?,
-    addedAt: json['addedAt'] != null ? DateTime.parse(json['addedAt'] as String) : DateTime.now(),
+    addedAt: json['addedAt'] != null
+        ? DateTime.parse(json['addedAt'] as String)
+        : DateTime.now(),
   );
 }
-

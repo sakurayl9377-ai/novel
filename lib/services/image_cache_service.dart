@@ -8,8 +8,8 @@ class AppImageCacheService {
   static final CacheManager manager = CacheManager(
     Config(
       cacheKey,
-      stalePeriod: const Duration(days: 14),
-      maxNrOfCacheObjects: 1200,
+      stalePeriod: const Duration(days: 21),
+      maxNrOfCacheObjects: 1600,
       repo: JsonCacheInfoRepository(databaseName: cacheKey),
       fileService: HttpFileService(),
     ),

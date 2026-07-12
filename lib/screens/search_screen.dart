@@ -8,13 +8,22 @@ import '../models/novel.dart';
 import '../providers/book_source_provider.dart';
 import '../providers/bookshelf_provider.dart';
 import '../services/book_source_service.dart';
+import '../services/ai_creation_service.dart';
 import '../widgets/book_cover_widget.dart';
 import 'book_detail_screen.dart';
+import 'ai_creation_screen.dart';
 
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key, this.autofocus = true});
+  const SearchScreen({
+    super.key,
+    this.autofocus = true,
+    this.initialKeyword = '',
+    this.autoOpenFirst = false,
+  });
 
   final bool autofocus;
+  final String initialKeyword;
+  final bool autoOpenFirst;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -22,6 +31,7 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final BookSourceService _service = BookSourceService();
+  final AiCreationService _aiCreationService = AiCreationService();
   final TextEditingController _searchController = TextEditingController();
 
   bool _isLoadingHome = true;
@@ -30,16 +40,22 @@ class _SearchScreenState extends State<SearchScreen> {
   String _searchedKeyword = '';
   NovelHomeData _homeData = const NovelHomeData.empty();
   List<Novel> _results = [];
+  List<Novel> _aiNovels = const [];
+  bool _autoOpenedInitial = false;
+  int _searchGeneration = 0;
 
   bool get _showingSearchResults => _searchedKeyword.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
+    _searchController.text = widget.initialKeyword.trim();
     unawaited(_loadHome());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(context.read<BookSourceProvider>().loadSources());
+      final initial = widget.initialKeyword.trim();
+      if (initial.isNotEmpty) unawaited(_search(initial));
     });
   }
 
@@ -50,10 +66,15 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
+      final aiNovelsFuture = _aiCreationService.fetchNovels().catchError(
+        (_) => <Novel>[],
+      );
       final data = await _service.fetchHome(forceRefresh: forceRefresh);
+      final aiNovels = await aiNovelsFuture;
       if (!mounted) return;
       setState(() {
         _homeData = data;
+        _aiNovels = aiNovels;
         _isLoadingHome = false;
       });
     } catch (_) {
@@ -68,6 +89,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _search(String keyword) async {
     final query = keyword.trim();
     if (query.isEmpty) return;
+    final searchGeneration = ++_searchGeneration;
 
     setState(() {
       _isSearching = true;
@@ -78,13 +100,24 @@ class _SearchScreenState extends State<SearchScreen> {
 
     try {
       await context.read<BookSourceProvider>().searchBooks(query);
-      if (!mounted) return;
+      if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
         _results = context.read<BookSourceProvider>().searchResults;
         _isSearching = false;
       });
+      if (widget.autoOpenFirst &&
+          !_autoOpenedInitial &&
+          query == widget.initialKeyword.trim() &&
+          _results.isNotEmpty) {
+        _autoOpenedInitial = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && searchGeneration == _searchGeneration) {
+            _openNovel(_results.first);
+          }
+        });
+      }
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
         _errorMessage = '搜索失败，请稍后重试';
         _isSearching = false;
@@ -93,6 +126,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _clearSearch() {
+    _searchGeneration++;
     _searchController.clear();
     setState(() {
       _searchedKeyword = '';
@@ -118,8 +152,16 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
+  void _openAiCreation() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AiCreationScreen()),
+    );
+  }
+
   @override
   void dispose() {
+    _searchGeneration++;
     _searchController.dispose();
     super.dispose();
   }
@@ -224,6 +266,7 @@ class _SearchScreenState extends State<SearchScreen> {
         _buildCategories(isNight),
         if (_homeData.featured.isNotEmpty) _buildFeatured(isNight),
         for (final section in _homeData.sections) _buildGridSection(section),
+        if (_aiNovels.isNotEmpty) _buildAiCreationSection(isNight),
       ],
     );
   }
@@ -272,8 +315,6 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildCategories(bool isNight) {
-    if (_homeData.categories.isEmpty) return const SizedBox.shrink();
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
       child: Row(
@@ -346,6 +387,37 @@ class _SearchScreenState extends State<SearchScreen> {
             separatorBuilder: (context, index) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               final novel = _homeData.featured[index];
+              return _FeaturedNovelCard(
+                novel: novel,
+                isNight: isNight,
+                onTap: () => _openNovel(novel),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAiCreationSection(bool isNight) {
+    final items = _aiNovels.take(8).toList(growable: false);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          title: 'AI 创作区',
+          subtitle: '本站后台审核发布',
+          onMore: _openAiCreation,
+        ),
+        SizedBox(
+          height: 216,
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            scrollDirection: Axis.horizontal,
+            itemCount: items.length,
+            separatorBuilder: (context, index) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final novel = items[index];
               return _FeaturedNovelCard(
                 novel: novel,
                 isNight: isNight,

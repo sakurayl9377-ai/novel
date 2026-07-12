@@ -1,0 +1,12 @@
+{
+  "versionName": "4.1.10",
+  "versionCode": 48,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "1ADB4D118A94CA9F30FBB541FC1B55E4AA4403BBC1C56356A9BBF299EE719751",
+  "force": false,
+  "notes": [
+    "修复横屏播放器窗口仍被系统安全区向右缩进的问题，视频现在按物理屏幕尺寸全覆盖显示",
+    "科大讯飞语音配置改为 App 内置，不再读取或保存本地密钥",
+    "语音朗读设置页移除 AppID、API Key 和 API Secret 输入框"
+  ]
+}

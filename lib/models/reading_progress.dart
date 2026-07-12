@@ -1,4 +1,4 @@
-﻿class ReadingProgress {
+class ReadingProgress {
   final String novelId;
   final int chapterIndex;
   final double scrollPosition;
@@ -37,11 +37,14 @@
     'lastReadAt': lastReadAt.toIso8601String(),
   };
 
-  factory ReadingProgress.fromJson(Map<String, dynamic> json) => ReadingProgress(
-    novelId: json['novelId'] as String,
-    chapterIndex: json['chapterIndex'] as int? ?? 0,
-    scrollPosition: (json['scrollPosition'] as num?)?.toDouble() ?? 0.0,
-    charPosition: json['charPosition'] as int? ?? 0,
-    lastReadAt: json['lastReadAt'] != null ? DateTime.parse(json['lastReadAt'] as String) : DateTime.now(),
-  );
+  factory ReadingProgress.fromJson(Map<String, dynamic> json) =>
+      ReadingProgress(
+        novelId: json['novelId'] as String,
+        chapterIndex: json['chapterIndex'] as int? ?? 0,
+        scrollPosition: (json['scrollPosition'] as num?)?.toDouble() ?? 0.0,
+        charPosition: json['charPosition'] as int? ?? 0,
+        lastReadAt: json['lastReadAt'] != null
+            ? DateTime.parse(json['lastReadAt'] as String)
+            : DateTime.now(),
+      );
 }

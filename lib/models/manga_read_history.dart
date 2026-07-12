@@ -14,6 +14,7 @@ class MangaReadHistory {
     required this.chapters,
     this.pageIndex = 0,
     this.pageOffsetRatio = 0,
+    this.sourceKey = 'manga_baozi',
   });
 
   final String mangaId;
@@ -28,6 +29,7 @@ class MangaReadHistory {
   final List<MangaChapter> chapters;
   final int pageIndex;
   final double pageOffsetRatio;
+  final String sourceKey;
 
   double get progress {
     if (contentExtent <= 0) return scrollOffset > 0 ? 1 : 0;
@@ -58,6 +60,7 @@ class MangaReadHistory {
       'chapters': chapters.map((chapter) => chapter.toJson()).toList(),
       'pageIndex': pageIndex,
       'pageOffsetRatio': pageOffsetRatio,
+      'sourceKey': sourceKey,
     };
   }
 
@@ -75,6 +78,9 @@ class MangaReadHistory {
       chapters: _parseChapters(json['chapters']),
       pageIndex: _asInt(json['pageIndex']),
       pageOffsetRatio: _asDouble(json['pageOffsetRatio']),
+      sourceKey: _asString(json['sourceKey']).isEmpty
+          ? 'manga_baozi'
+          : _asString(json['sourceKey']),
     );
   }
 

@@ -33,6 +33,18 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local release archives, deployment snapshots, and machine-specific helpers
+/deploy-*/
+/tmp/
+/novel-admin-update-*.zip
+
+# Node/backend
+**/node_modules/
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+backend/data/uploads/
+backend/.env
+
 # Symbolication related
 app.*.symbols
 

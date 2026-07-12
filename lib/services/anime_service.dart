@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/anime.dart';
 import 'site_domain_service.dart';
+import 'swr_cache.dart';
 
 class AnimeService {
   static final Uri siteUri = Uri.parse('https://www.yinhuadm.xyz/');
@@ -19,6 +20,21 @@ class AnimeService {
   static const String _homeHtmlCacheKey = 'anime_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'anime_home_html_cache_time_v1';
   static const Duration _homeCacheTtl = Duration(hours: 4);
+  static final SwrCache<String, AnimeHomeData> _homeCache = SwrCache(
+    freshTtl: const Duration(minutes: 5),
+    staleTtl: const Duration(hours: 4),
+    maxEntries: 2,
+  );
+  static final SwrCache<String, AnimeListResult> _listCache = SwrCache(
+    freshTtl: const Duration(minutes: 12),
+    staleTtl: const Duration(hours: 2),
+    maxEntries: 80,
+  );
+  static final SwrCache<int, Anime> _detailCache = SwrCache(
+    freshTtl: const Duration(minutes: 30),
+    staleTtl: const Duration(hours: 12),
+    maxEntries: 60,
+  );
   static const Map<String, String> _headers = {
     'User-Agent':
         'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
@@ -28,33 +44,58 @@ class AnimeService {
 
   final SiteDomainService _domainService = SiteDomainService.instance;
 
+  static Map<String, int> get cacheTelemetryMetadata => {
+    ..._homeCache.stats.toTelemetryMetadata(prefix: 'animeHome'),
+    ..._listCache.stats.toTelemetryMetadata(prefix: 'animeList'),
+    ..._detailCache.stats.toTelemetryMetadata(prefix: 'animeDetail'),
+  };
+
   Future<AnimeHomeData> fetchHome({bool forceRefresh = false}) async {
-    final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
-    if (!forceRefresh && cachedHtml != null) {
-      final document = html_parser.parse(cachedHtml);
-      return _AnimeHomeParser(await _currentSiteUri()).parse(document);
+    const cacheKey = 'home';
+    if (!forceRefresh && _homeCache.containsUsable(cacheKey)) {
+      return _homeCache.get(cacheKey, loader: _fetchHomeUncached);
+    }
+
+    if (!forceRefresh) {
+      final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
+      if (cachedHtml != null) {
+        final document = html_parser.parse(cachedHtml);
+        final cached = _AnimeHomeParser(
+          await _currentSiteUri(),
+        ).parse(document);
+        _homeCache.put(cacheKey, cached);
+        unawaited(_homeCache.refresh(cacheKey, loader: _fetchHomeUncached));
+        return cached;
+      }
     }
 
     try {
-      final response = await _get(
-        siteUri,
-        timeout: const Duration(seconds: 15),
-      );
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-
-      final baseUri = _responseSiteUri(response);
-      final html = utf8.decode(response.bodyBytes);
-      await _writeCachedHomeHtml(html);
-      final document = html_parser.parse(html);
-      return _AnimeHomeParser(baseUri).parse(document);
+      return forceRefresh
+          ? await _homeCache.refresh(cacheKey, loader: _fetchHomeUncached)
+          : await _homeCache.get(cacheKey, loader: _fetchHomeUncached);
     } catch (_) {
       final fallbackHtml = await _readCachedHomeHtml(allowExpired: true);
       if (fallbackHtml == null) rethrow;
       final document = html_parser.parse(fallbackHtml);
-      return _AnimeHomeParser(await _currentSiteUri()).parse(document);
+      final fallback = _AnimeHomeParser(
+        await _currentSiteUri(),
+      ).parse(document);
+      _homeCache.put(cacheKey, fallback);
+      return fallback;
     }
+  }
+
+  Future<AnimeHomeData> _fetchHomeUncached() async {
+    final response = await _get(siteUri, timeout: const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+
+    final baseUri = _responseSiteUri(response);
+    final html = utf8.decode(response.bodyBytes);
+    await _writeCachedHomeHtml(html);
+    final document = html_parser.parse(html);
+    return _AnimeHomeParser(baseUri).parse(document);
   }
 
   Future<String?> _readCachedHomeHtml({required bool allowExpired}) async {
@@ -78,6 +119,17 @@ class AnimeService {
   }
 
   Future<AnimeListResult> fetchList(String url, {int page = 1}) async {
+    final cacheKey = '$url::$page';
+    return _listCache.get(
+      cacheKey,
+      loader: () => _fetchListUncached(url, page: page),
+    );
+  }
+
+  Future<AnimeListResult> _fetchListUncached(
+    String url, {
+    required int page,
+  }) async {
     final typeId = _extractTypeId(url);
     if (typeId != null) {
       return _fetchCategory(typeId, page: page);
@@ -106,6 +158,10 @@ class AnimeService {
   }
 
   Future<Anime> fetchDetail(int id) async {
+    return _detailCache.get(id, loader: () => _fetchDetailUncached(id));
+  }
+
+  Future<Anime> _fetchDetailUncached(int id) async {
     final uri = (await _apiUri()).replace(
       queryParameters: {'ac': 'detail', 'ids': id.toString()},
     );

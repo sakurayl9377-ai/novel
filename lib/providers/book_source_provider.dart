@@ -1,18 +1,28 @@
+import 'dart:async';
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 
 import '../models/book_source.dart';
 import '../models/chapter.dart';
 import '../models/novel.dart';
 import '../services/book_source_service.dart';
+import '../services/ai_creation_service.dart';
 import '../services/storage_service.dart';
 
 class BookSourceProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
   final BookSourceService _sourceService = BookSourceService();
+  final AiCreationService _aiCreationService = AiCreationService();
 
   List<BookSource> _sources = [];
   List<Novel> _searchResults = [];
-  final Map<String, List<Chapter>> _chapterCache = {};
+  static const int _chapterCacheMaxEntries = 24;
+  final LinkedHashMap<String, List<Chapter>> _chapterCache =
+      LinkedHashMap<String, List<Chapter>>();
+  final Map<String, Future<List<Chapter>>> _chapterInflight = {};
+  final Map<String, Future<void>> _chapterRefreshInflight = {};
+  final Map<String, DateTime> _chapterLastRefreshAttempt = {};
   bool _isSearching = false;
 
   List<BookSource> get sources => _sources;
@@ -74,34 +84,64 @@ class BookSourceProvider extends ChangeNotifier {
   }
 
   Future<Novel> getBookDetail(Novel novel) async {
+    if (AiCreationService.isAiNovel(novel)) {
+      return _aiCreationService.fetchNovel(novel);
+    }
     final detail = await _sourceService.fetchBookDetail(novel);
     return detail;
   }
 
   Future<List<Chapter>> getChapterList(Novel novel) async {
-    if (_chapterCache.containsKey(novel.id)) {
-      return _chapterCache[novel.id]!;
+    final memoryCached = _chapterCache.remove(novel.id);
+    if (memoryCached != null) {
+      _chapterCache[novel.id] = memoryCached;
+      _scheduleChapterRefresh(novel);
+      return memoryCached;
     }
 
+    final inflight = _chapterInflight[novel.id];
+    if (inflight != null) return inflight;
+    final future = _loadChapterList(novel);
+    _chapterInflight[novel.id] = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_chapterInflight[novel.id], future)) {
+        _chapterInflight.remove(novel.id);
+      }
+    }
+  }
+
+  Future<List<Chapter>> _loadChapterList(Novel novel) async {
     final cached = await _storage.getChapterList(novel.id);
     if (cached != null && cached.isNotEmpty) {
       final chapters = cached.map((d) => Chapter.fromJson(d)).toList();
       if (!_cacheLooksWrong(chapters)) {
-        _chapterCache[novel.id] = chapters;
+        _putChapterCache(novel.id, chapters);
+        _scheduleChapterRefresh(novel);
         return chapters;
       }
     }
 
-    final chapters = await _sourceService.getChapterList(novel);
+    final chapters = await _fetchChapterList(novel);
     if (chapters.isNotEmpty) {
-      _chapterCache[novel.id] = chapters;
+      _putChapterCache(novel.id, chapters);
       await _storage.saveChapterList(
         novel.id,
         chapters.map((c) => c.toJson()).toList(),
       );
     }
-
     return chapters;
+  }
+
+  List<Chapter> buildProvisionalChapterList(
+    Novel novel, {
+    int throughIndex = 0,
+  }) {
+    return _sourceService.buildProvisionalChapterList(
+      novel,
+      throughIndex: throughIndex,
+    );
   }
 
   bool _cacheLooksWrong(List<Chapter> chapters) {
@@ -116,11 +156,80 @@ class BookSourceProvider extends ChangeNotifier {
         );
   }
 
+  void _putChapterCache(String novelId, List<Chapter> chapters) {
+    _chapterCache.remove(novelId);
+    _chapterCache[novelId] = chapters;
+    while (_chapterCache.length > _chapterCacheMaxEntries) {
+      final evictedId = _chapterCache.keys.first;
+      _chapterCache.remove(evictedId);
+      _chapterLastRefreshAttempt.remove(evictedId);
+    }
+  }
+
+  void _scheduleChapterRefresh(Novel novel) {
+    final lastAttempt = _chapterLastRefreshAttempt[novel.id];
+    if (lastAttempt != null &&
+        DateTime.now().difference(lastAttempt) < const Duration(minutes: 15)) {
+      return;
+    }
+    if (_chapterRefreshInflight.containsKey(novel.id)) return;
+
+    _chapterLastRefreshAttempt[novel.id] = DateTime.now();
+    late final Future<void> task;
+    task = _refreshChapterList(novel).whenComplete(() {
+      if (identical(_chapterRefreshInflight[novel.id], task)) {
+        _chapterRefreshInflight.remove(novel.id);
+      }
+    });
+    _chapterRefreshInflight[novel.id] = task;
+    unawaited(task);
+  }
+
+  Future<void> _refreshChapterList(Novel novel) async {
+    try {
+      final chapters = await _fetchChapterList(novel, forceRefresh: true);
+      if (chapters.isEmpty || _cacheLooksWrong(chapters)) return;
+      final previous = _chapterCache[novel.id];
+      if (_sameChapterList(previous, chapters)) return;
+      _putChapterCache(novel.id, chapters);
+      await _storage.saveChapterList(
+        novel.id,
+        chapters.map((chapter) => chapter.toJson()).toList(),
+      );
+      notifyListeners();
+    } catch (_) {
+      _chapterLastRefreshAttempt.remove(novel.id);
+    }
+  }
+
+  bool _sameChapterList(List<Chapter>? first, List<Chapter> second) {
+    if (first == null || first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index].id != second[index].id ||
+          first[index].title != second[index].title ||
+          first[index].url != second[index].url) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Future<String> getChapterContent(Novel novel, Chapter chapter) async {
     final cached = await _storage.getChapterContent(novel.id, chapter.id);
     if (cached != null && cached.isNotEmpty) {
       if (!_isFailedContent(cached)) return cached;
       await _storage.deleteChapterContent(novel.id, chapter.id);
+    }
+
+    if (AiCreationService.isAiNovel(novel)) {
+      final content = await _aiCreationService.fetchChapterContent(
+        novel,
+        chapter,
+      );
+      if (content.isNotEmpty) {
+        await _storage.saveChapterContent(novel.id, chapter.id, content);
+      }
+      return content;
     }
 
     final source = _sources.firstWhere(
@@ -149,6 +258,16 @@ class BookSourceProvider extends ChangeNotifier {
     return content;
   }
 
+  Future<List<Chapter>> _fetchChapterList(
+    Novel novel, {
+    bool forceRefresh = false,
+  }) {
+    if (AiCreationService.isAiNovel(novel)) {
+      return _aiCreationService.fetchChapters(novel);
+    }
+    return _sourceService.getChapterList(novel, forceRefresh: forceRefresh);
+  }
+
   bool _isFailedContent(String content) {
     final normalized = content.trim().replaceAll(RegExp(r'\s+'), '');
     if (normalized.isEmpty) return true;
@@ -166,5 +285,7 @@ class BookSourceProvider extends ChangeNotifier {
 
   void clearChapterCache(String novelId) {
     _chapterCache.remove(novelId);
+    _chapterLastRefreshAttempt.remove(novelId);
+    _sourceService.invalidateChapterList(novelId);
   }
 }

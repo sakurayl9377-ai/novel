@@ -1,0 +1,57 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:provider/provider.dart';
+
+import '../../config/theme.dart';
+import '../../models/interaction_models.dart';
+import '../../models/interaction_user.dart';
+import '../../models/local_library.dart';
+import '../../providers/interaction_auth_provider.dart';
+import '../../services/interaction_service.dart';
+import '../../widgets/interaction_ui.dart';
+import 'controller/profile_controller.dart';
+import 'controller/profile_assistant_service.dart';
+import '../../screens/anime_detail_screen.dart';
+import '../../screens/anime_screen.dart';
+import '../../screens/bookshelf_screen.dart';
+import '../../screens/chat_room_list_screen.dart';
+import '../../screens/growth_center_screen.dart';
+import '../../screens/horse_race_game_screen.dart';
+import '../../screens/interaction_auth_screen.dart';
+import '../../screens/local_library_screens.dart';
+import '../../screens/manga_detail_screen.dart';
+import '../../screens/message_center_screen.dart';
+import '../../screens/search_screen.dart';
+import '../../screens/settings_screen.dart';
+
+export 'controller/profile_controller.dart';
+
+part 'models/view_data.dart';
+part 'profile_shell.dart';
+part 'controller/profile_assistant_state_extension.dart';
+part 'pages/history_follow_pages.dart';
+part 'pages/interactions_page.dart';
+part 'sections/header_section.dart';
+part 'sections/stats_signin_sections.dart';
+part 'sections/services_section.dart';
+part 'pages/daily_rewards_page.dart';
+part 'pages/edit_profile_page.dart';
+part 'pages/edit_profile_widgets.dart';
+part 'pages/member_shop_pages.dart';
+part 'pages/settings_space_pages.dart';
+part 'sections/growth_section.dart';
+part 'sections/benefits_section.dart';
+part 'sections/benefit_detail_widgets.dart';
+part 'sections/shop_section.dart';
+part 'shared/forms_widgets.dart';
+part 'shared/assistant_widgets.dart';
+part 'shared/avatar_widgets.dart';
+part 'shared/misc_widgets.dart';
+part 'shared/state_widgets.dart';

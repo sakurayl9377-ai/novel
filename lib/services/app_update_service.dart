@@ -57,7 +57,7 @@ class AppUpdateService {
   }) : _temporaryDirectoryProvider =
            temporaryDirectoryProvider ?? getTemporaryDirectory;
 
-  static const String updateJsonUrl = 'http://49.232.137.85/app/version.json';
+  static const String updateJsonUrl = 'https://49.232.137.85/app3/version.json';
   static const MethodChannel _channel = MethodChannel(
     'com.novel.novel_app/app_update',
   );
@@ -75,7 +75,13 @@ class AppUpdateService {
       throw Exception('Update check failed: ${response.statusCode}');
     }
 
-    final decoded = jsonDecode(_decodeBody(response));
+    final body = _decodeBody(response);
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(body);
+    } on FormatException {
+      throw Exception('Update config is not JSON');
+    }
     if (decoded is! Map) {
       throw Exception('Invalid update config');
     }
@@ -225,7 +231,7 @@ class AppUpdateService {
     if (!await file.exists()) return false;
     if (await file.length() <= 0) return false;
     if (update.sha256.isEmpty) return false;
-    final digest = crypto.sha256.convert(await file.readAsBytes());
+    final digest = await crypto.sha256.bind(file.openRead()).first;
     return digest.toString().toLowerCase() == update.sha256;
   }
 

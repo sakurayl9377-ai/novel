@@ -1,0 +1,12 @@
+{
+  "versionName": "4.1.9",
+  "versionCode": 47,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "BFCECEB138F6ECE49114579DB413A446B1FA162CC37C1C85E1E975B83A1D5893",
+  "force": false,
+  "notes": [
+    "修复横屏视频未覆盖刘海或挖孔短边区域的问题，画面现在铺满整个物理屏幕",
+    "修复 Android 听书暂停按钮无效的问题，继续播放会从暂停位置恢复",
+    "修复切换科大讯飞后仍使用系统 TTS 的问题，不再静默回退朗读引擎"
+  ]
+}

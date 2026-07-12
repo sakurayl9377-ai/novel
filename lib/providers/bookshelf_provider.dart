@@ -22,7 +22,7 @@ class BookshelfProvider extends ChangeNotifier {
     _books = booksData.map((d) => Novel.fromJson(d)).toList();
     _progressByNovelId.clear();
     for (final book in _books) {
-      final progressData = await _storage.getReadingProgress(book.id);
+      final progressData = await _storage.getNovelReadingProgress(book);
       if (progressData != null) {
         _progressByNovelId[book.id] = ReadingProgress.fromJson(progressData);
       }
@@ -55,7 +55,7 @@ class BookshelfProvider extends ChangeNotifier {
     final index = _books.indexWhere((b) => b.id == novel.id);
     if (index >= 0) {
       _books[index] = novel;
-      final progressData = await _storage.getReadingProgress(novel.id);
+      final progressData = await _storage.getNovelReadingProgress(novel);
       if (progressData != null) {
         _progressByNovelId[novel.id] = ReadingProgress.fromJson(progressData);
       }

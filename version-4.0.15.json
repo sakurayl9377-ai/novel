@@ -1,0 +1,10 @@
+{
+  "versionName": "4.0.15",
+  "versionCode": 30,
+  "apkUrl": "http://49.232.137.85/app3/app-release.apk",
+  "sha256": "225EAEE3F3CBFCE72EDF1E2AFB5530876D922F87E39BA8007FAD23D24C6C0218",
+  "force": false,
+  "notes": [
+    "个人页机器人入口恢复为全身站立样式，并固定显示在页面右下角"
+  ]
+}

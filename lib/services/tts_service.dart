@@ -177,9 +177,15 @@ class TtsService {
       );
       _chunkIndex = 0;
       final token = _speakToken;
-      return settings.useIflytek && settings.hasIflytekCredentials
-          ? await _speakIflytekChunk(token)
-          : await _speakSystemChunk(token);
+      if (settings.useIflytek) {
+        if (!settings.hasIflytekCredentials) {
+          _lastErrorMessage = '科大讯飞配置不完整，请填写 AppID、API Key 和 API Secret';
+          onErrorMessage?.call(_lastErrorMessage);
+          return false;
+        }
+        return _speakIflytekChunk(token);
+      }
+      return _speakSystemChunk(token);
     } catch (e) {
       _lastErrorMessage = e.toString();
       onErrorMessage?.call(_lastErrorMessage);
@@ -213,6 +219,22 @@ class TtsService {
     try {
       if (settings.useIflytek) {
         await _audioPlayer.pause();
+        if (_audioPlayer.state != PlayerState.paused) return false;
+        _isPaused = true;
+        return true;
+      }
+
+      // flutter_tts.pause() is not implemented consistently by Android TTS
+      // engines. Some engines report success while speech keeps playing. Stop
+      // the native utterance instead and keep _currentPos so resume() can
+      // restart from the last progress callback.
+      if (Platform.isAndroid) {
+        _isStopping = true;
+        await _flutterTts.stop().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => null,
+        );
+        _isSpeaking = false;
         _isPaused = true;
         return true;
       }
@@ -224,6 +246,8 @@ class TtsService {
       return _isPaused;
     } catch (e) {
       return false;
+    } finally {
+      _isStopping = false;
     }
   }
 

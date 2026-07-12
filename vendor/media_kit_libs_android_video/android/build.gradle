@@ -1,0 +1,73 @@
+import java.security.MessageDigest
+
+group 'com.alexmercerind.media_kit_libs_android_video'
+version '1.3.8'
+
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'com.alexmercerind.media_kit_libs_android_video'
+    compileSdkVersion 36
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        minSdkVersion 16
+    }
+}
+
+def vendoredArtifacts = [
+    'default-arm64-v8a.jar': [
+        size: 5729978L,
+        md5: '83df25b61193af8fa815e373143ac9af',
+        sha256: '4363dfa5d3d415b91c1f16f6fb90c3fe59a77dfd3f9b824d2b24b492d6b09df9',
+    ],
+    'default-armeabi-v7a.jar': [
+        size: 5499353L,
+        md5: '22e21526fefc0a2b8f17adbec9f57590',
+        sha256: '8ead114fc5a43348d89dc0eb8f41823e549b15115c29f73ee26973f973620995',
+    ],
+    'default-x86_64.jar': [
+        size: 6516632L,
+        md5: '6fa26bf0459b11f1c0b0dbc29e5b940d',
+        sha256: '90268cd15f0766e07fb8e427388c621161177c9eb343c544f327bd63232bb236',
+    ],
+]
+
+def digest = { File file, String algorithm ->
+    MessageDigest.getInstance(algorithm)
+        .digest(file.bytes)
+        .encodeHex()
+        .toString()
+}
+
+tasks.register('verifyVendoredLibmpv') {
+    inputs.files(vendoredArtifacts.keySet().collect { file("libs/$it") })
+    doLast {
+        vendoredArtifacts.each { name, expected ->
+            def artifact = file("libs/$name")
+            if (!artifact.isFile()) {
+                throw new GradleException("Missing vendored libmpv artifact: $artifact")
+            }
+            if (artifact.length() != expected.size) {
+                throw new GradleException("Invalid size for $name: ${artifact.length()} != ${expected.size}")
+            }
+            def md5 = digest(artifact, 'MD5')
+            def sha256 = digest(artifact, 'SHA-256')
+            if (md5 != expected.md5 || sha256 != expected.sha256) {
+                throw new GradleException("Checksum mismatch for $name (MD5=$md5 SHA256=$sha256)")
+            }
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('verifyVendoredLibmpv')
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+}

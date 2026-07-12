@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="mainGrad" x1="92" y1="96" x2="418" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".28" stop-color="#dfe8ff"/>
+      <stop offset=".58" stop-color="#9fb4df"/>
+      <stop offset="1" stop-color="#6e84b9"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="166" y1="40" x2="344" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff4ba"/>
+      <stop offset=".42" stop-color="#f2b83f"/>
+      <stop offset=".72" stop-color="#c5841f"/>
+      <stop offset="1" stop-color="#fff0a8"/>
+    </linearGradient>
+    <radialGradient id="gemGrad" cx="50%" cy="38%" r="58%">
+      <stop offset="0" stop-color="#fff6ff"/>
+      <stop offset=".48" stop-color="#ff9bc7"/>
+      <stop offset="1" stop-color="#c74c77"/>
+    </radialGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="ringShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#6e84b9" flood-opacity=".28"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#9fb4df" flood-opacity=".42"/>
+    </filter>
+  </defs>
+  <circle cx="256" cy="256" r="218" stroke="#6e84b9" stroke-opacity=".2" stroke-width="6"/>
+  <circle cx="256" cy="256" r="202" stroke="url(#mainGrad)" stroke-width="15" filter="url(#ringShadow)"/>
+  <circle cx="256" cy="256" r="187.5" stroke="#ffffff" stroke-opacity=".82" stroke-width="4"/>
+  <circle cx="256" cy="256" r="214.5" stroke="#dfe8ff" stroke-opacity=".74" stroke-width="4"/>
+  
+  <g><g transform="translate(103.18 414.25) rotate(312.00) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(35.72 283.60) rotate(350.86) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(68.85 140.35) rotate(389.71) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(182.16 46.64) rotate(428.57) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(329.18 48.53) rotate(467.43) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(444.85 139.30) rotate(506.29) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(474.29 283.36) rotate(545.14) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g>
+<g transform="translate(410.21 415.69) rotate(584.00) scale(0.505)"><path d="M0,-20 C18,-18 30,-6 34,8 C18,16 2,12 -12,0 C-6,-9 -3,-15 0,-20 Z" fill="#9fb4df" stroke="#ffffff" stroke-width="1.5"/><path d="M-4,-8 C8,-5 18,0 29,8" fill="none" stroke="#ffffff" stroke-width="1" opacity=".55"/></g></g>
+  <g><g transform="translate(105.96 95.10) rotate(-43.00) scale(0.38)"><path d="M0,-24 C18,-20 29,-5 24,10 C18,28 -18,28 -24,10 C-29,-5 -18,-20 0,-24 Z" fill="#c9d9ff" stroke="#ffffff" stroke-width="2"/></g>
+<g transform="translate(256.00 32.00) rotate(0.00) scale(0.38)"><path d="M0,-24 C18,-20 29,-5 24,10 C18,28 -18,28 -24,10 C-29,-5 -18,-20 0,-24 Z" fill="#dfe8ff" stroke="#ffffff" stroke-width="2"/></g>
+<g transform="translate(411.50 89.25) rotate(43.00) scale(0.38)"><path d="M0,-24 C18,-20 29,-5 24,10 C18,28 -18,28 -24,10 C-29,-5 -18,-20 0,-24 Z" fill="#c9d9ff" stroke="#ffffff" stroke-width="2"/></g></g>
+  <g filter="url(#softGlow)"></g>
+  
+  <g filter="url(#softGlow)"><g transform="translate(256.00 68.00) rotate(0.00) scale(0.38)"><path d="M0,-24 C18,-20 29,-5 24,10 C18,28 -18,28 -24,10 C-29,-5 -18,-20 0,-24 Z" fill="#c9d9ff" stroke="#ffffff" stroke-width="2"/></g></g>
+  <g filter="url(#softGlow)"><circle cx="256" cy="468" r="9" fill="#c9d9ff" stroke="#ffffff" stroke-width="3"/></g>
+</svg>

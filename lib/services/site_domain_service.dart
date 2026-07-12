@@ -21,6 +21,7 @@ class SiteDomainService {
   static final SiteDomainService instance = SiteDomainService._();
 
   final Map<String, String> _memoryOrigins = {};
+  final http.Client _client = http.Client();
 
   Future<String> currentOrigin(SiteDomainConfig config) async {
     final memory = _memoryOrigins[config.key];
@@ -130,43 +131,38 @@ class SiteDomainService {
     required Map<String, String> headers,
     required Duration timeout,
   }) async {
-    final client = http.Client();
-    try {
-      var current = uri;
-      for (var redirects = 0; redirects <= 5; redirects++) {
-        final request = http.Request('GET', current)
-          ..followRedirects = false
-          ..headers.addAll(headers);
-        final streamed = await client.send(request).timeout(timeout);
-        final bodyBytes = await streamed.stream.toBytes().timeout(timeout);
+    var current = uri;
+    for (var redirects = 0; redirects <= 5; redirects++) {
+      final request = http.Request('GET', current)
+        ..followRedirects = false
+        ..headers.addAll(headers);
+      final streamed = await _client.send(request).timeout(timeout);
+      final bodyBytes = await streamed.stream.toBytes().timeout(timeout);
 
-        final location = streamed.headers['location'];
-        final isRedirect =
-            streamed.statusCode >= 300 &&
-            streamed.statusCode < 400 &&
-            location != null &&
-            location.isNotEmpty;
-        if (isRedirect) {
-          final next = current.resolve(location);
-          await rememberOrigin(config, next);
-          current = next;
-          continue;
-        }
-
-        return http.Response.bytes(
-          bodyBytes,
-          streamed.statusCode,
-          request: request,
-          headers: streamed.headers,
-          reasonPhrase: streamed.reasonPhrase,
-          isRedirect: streamed.isRedirect,
-          persistentConnection: streamed.persistentConnection,
-        );
+      final location = streamed.headers['location'];
+      final isRedirect =
+          streamed.statusCode >= 300 &&
+          streamed.statusCode < 400 &&
+          location != null &&
+          location.isNotEmpty;
+      if (isRedirect) {
+        final next = current.resolve(location);
+        await rememberOrigin(config, next);
+        current = next;
+        continue;
       }
-      throw Exception('Too many redirects: $uri');
-    } finally {
-      client.close();
+
+      return http.Response.bytes(
+        bodyBytes,
+        streamed.statusCode,
+        request: request,
+        headers: streamed.headers,
+        reasonPhrase: streamed.reasonPhrase,
+        isRedirect: streamed.isRedirect,
+        persistentConnection: streamed.persistentConnection,
+      );
     }
+    throw Exception('Too many redirects: $uri');
   }
 
   static bool _isValidOrigin(String? origin) {

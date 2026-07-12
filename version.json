@@ -1,0 +1,10 @@
+{
+  "versionName": "4.1.13",
+  "versionCode": 51,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "69C73CFC5943E633A40C7FBB4BCBA959729CDF70A685C25DC8A61E4C3D857A42",
+  "force": false,
+  "notes": [
+    "修复小说阅读页底部功能栏的设置入口，设置面板现在可正常打开。"
+  ]
+}

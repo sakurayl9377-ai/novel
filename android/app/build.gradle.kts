@@ -32,6 +32,11 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            // Self-hosted release APKs target physical Android devices only.
+            // Debug adds x86_64 below so emulator builds remain available.
+            abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {
@@ -44,9 +49,26 @@ android {
     }
 
     buildTypes {
+        debug {
+            ndk {
+                abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            }
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
+            ndk {
+                abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+            }
         }
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        // Flutter's Gradle plugin restores its default fat-APK ABI list after
+        // DSL evaluation. Apply the physical-device release policy at the
+        // variant packaging layer so debug x86_64 emulators keep working.
+        variant.packaging.jniLibs.excludes.add("lib/x86_64/**")
     }
 }
 

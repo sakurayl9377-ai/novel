@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Novel App 运营后台</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">N</div>
+          <div>
+            <h1>运营后台</h1>
+            <p>Novel App</p>
+          </div>
+        </div>
+
+        <div class="nav-section creator-access">AI 创作</div>
+        <nav class="nav creator-access" aria-label="AI 创作导航">
+          <button data-view="aiNovels">
+            <span>小说投稿</span>
+            <small>上传作品、连载章节与查看审核状态</small>
+          </button>
+        </nav>
+
+        <div class="nav-section">运营</div>
+        <nav class="nav" aria-label="后台导航">
+          <button data-view="dashboard" class="active">
+            <span>总览</span>
+            <small>状态与待处理</small>
+          </button>
+          <button data-view="comments">
+            <span>内容审核</span>
+            <small>评论按作品/章节管理</small>
+          </button>
+          <button data-view="contentOps">
+            <span>内容运营</span>
+            <small>目录、推荐位与灰度配置</small>
+          </button>
+          <button data-view="growthOps">
+            <span>增长运营</span>
+            <small>推荐、榜单、活动与赛马赛季</small>
+          </button>
+          <button data-view="finance">
+            <span>资金流水</span>
+            <small>积分与樱花币账变</small>
+          </button>
+          <button data-view="race">
+            <span>赛马运营</span>
+            <small>轮次、下注与公平审计</small>
+          </button>
+          <button data-view="notifications">
+            <span>通知发布</span>
+            <small>全员消息与发送记录</small>
+          </button>
+        </nav>
+
+        <div class="nav-section">用户与风控</div>
+        <nav class="nav" aria-label="用户与风控导航">
+          <button data-view="users">
+            <span>用户</span>
+            <small>身份与活跃度</small>
+          </button>
+          <button data-view="versions">
+            <span>版本</span>
+            <small>APK 覆盖与设备</small>
+          </button>
+          <button data-view="analytics">
+            <span>质量分析</span>
+            <small>崩溃、卡顿与功能转化</small>
+          </button>
+          <button data-view="growth">
+            <span>成长</span>
+            <small>等级、积分与权限</small>
+          </button>
+          <button data-view="reports">
+            <span>举报</span>
+            <small>队列与处理</small>
+          </button>
+        </nav>
+        <div class="nav-section">社区内容</div>
+        <nav class="nav" aria-label="社区内容导航">
+          <button data-view="danmaku">
+            <span>弹幕</span>
+            <small>视频池与播放源</small>
+          </button>
+          <button data-view="chat">
+            <span>聊天室</span>
+            <small>消息、屏蔽词与违规</small>
+          </button>
+        </nav>
+        <div class="nav-section">系统</div>
+        <nav class="nav" aria-label="系统导航">
+          <button data-view="releases">
+            <span>发布管理</span>
+            <small>线上版本与备份状态</small>
+          </button>
+          <button data-view="audit">
+            <span>审计日志</span>
+            <small>管理员操作追踪</small>
+          </button>
+          <button data-view="settings">
+            <span>配置</span>
+            <small>讯飞密钥与服务开关</small>
+          </button>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h2 id="viewTitle">总览</h2>
+            <p id="viewHint">查看服务状态、活跃对象和待处理风险。</p>
+          </div>
+          <div class="session">
+            <span id="currentUser"></span>
+            <button id="logoutButton" class="button muted hidden">退出</button>
+          </div>
+        </header>
+
+        <section id="loginPanel" class="login-panel">
+          <form id="loginForm" class="login-box">
+            <h2>后台登录</h2>
+            <p>普通用户登录后仅可使用小说投稿与连载上传功能。</p>
+            <label>
+              邮箱
+              <input
+                name="email"
+                autocomplete="username"
+                placeholder="admin@admin.local"
+              />
+            </label>
+            <label>
+              密码
+              <input
+                name="password"
+                type="password"
+                autocomplete="current-password"
+              />
+            </label>
+            <button type="submit" class="button primary">登录</button>
+            <p id="loginMessage"></p>
+          </form>
+        </section>
+
+        <section id="appPanel" class="hidden">
+          <div class="toolbar" id="toolbar">
+            <input
+              id="searchInput"
+              placeholder="搜索内容、用户、目标 ID、房间或播放源"
+            />
+            <select id="statusFilter" class="hidden">
+              <option value="">全部状态</option>
+            </select>
+            <button id="refreshButton" class="button">刷新</button>
+          </div>
+          <div id="viewRoot" class="view-root"></div>
+        </section>
+      </section>
+    </main>
+    <script defer src="./admin-core.js"></script>
+    <script defer src="./admin-content.js"></script>
+    <script defer src="./admin-community.js"></script>
+    <script defer src="./admin-growth.js"></script>
+    <script defer src="./admin-operations.js"></script>
+    <script defer src="./admin-ai-novels.js"></script>
+    <script defer src="./app.js"></script>
+  </body>
+</html>

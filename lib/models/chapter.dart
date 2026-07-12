@@ -1,4 +1,4 @@
-﻿class Chapter {
+class Chapter {
   final String id;
   final String novelId;
   final String title;
@@ -60,6 +60,8 @@
     index: json['index'] as int? ?? 0,
     url: json['url'] as String? ?? '',
     isLoaded: json['isLoaded'] as bool? ?? false,
-    addedAt: json['addedAt'] != null ? DateTime.parse(json['addedAt'] as String) : DateTime.now(),
+    addedAt: json['addedAt'] != null
+        ? DateTime.parse(json['addedAt'] as String)
+        : DateTime.now(),
   );
 }

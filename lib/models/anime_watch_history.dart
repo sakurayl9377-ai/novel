@@ -12,6 +12,7 @@ class AnimeWatchHistory {
     required this.durationMs,
     required this.updatedAtMs,
     required this.episodes,
+    this.sourceKey = 'anime_yinhua',
   });
 
   final int animeId;
@@ -24,6 +25,7 @@ class AnimeWatchHistory {
   final int durationMs;
   final int updatedAtMs;
   final List<AnimeEpisode> episodes;
+  final String sourceKey;
 
   Duration get position => Duration(milliseconds: positionMs);
   Duration get duration => Duration(milliseconds: durationMs);
@@ -62,6 +64,7 @@ class AnimeWatchHistory {
       'episodes': episodes
           .map((episode) => {'title': episode.title, 'url': episode.url})
           .toList(),
+      'sourceKey': sourceKey,
     };
   }
 
@@ -77,6 +80,9 @@ class AnimeWatchHistory {
       durationMs: _asInt(json['durationMs']),
       updatedAtMs: _asInt(json['updatedAtMs']),
       episodes: _parseEpisodes(json['episodes']),
+      sourceKey: _asString(json['sourceKey']).isEmpty
+          ? 'anime_yinhua'
+          : _asString(json['sourceKey']),
     );
   }
 

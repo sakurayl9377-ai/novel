@@ -12,6 +12,8 @@ import '../providers/reading_provider.dart';
 import '../providers/book_source_provider.dart';
 import '../providers/tts_provider.dart';
 import '../services/tts_media_control_service.dart';
+import '../services/app_telemetry_service.dart';
+import '../utils/auth_gate.dart';
 import '../widgets/reading_settings_panel.dart';
 import '../widgets/page_turn_view.dart';
 
@@ -20,6 +22,7 @@ class ReadingScreen extends StatefulWidget {
 
   final Novel novel;
   final List<Chapter> chapters;
+  final bool chaptersAreProvisional;
   final int startChapterIndex;
   final int startCharPosition;
   final double startScrollPosition;
@@ -28,6 +31,7 @@ class ReadingScreen extends StatefulWidget {
     super.key,
     required this.novel,
     this.chapters = const [],
+    this.chaptersAreProvisional = false,
     this.startChapterIndex = 0,
     this.startCharPosition = 0,
     this.startScrollPosition = 0,
@@ -38,8 +42,9 @@ class ReadingScreen extends StatefulWidget {
 }
 
 class _ReadingScreenState extends State<ReadingScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _currentChapterIndex = 0;
+  late List<Chapter> _chapters;
   int _currentPageIndex = 0;
   int _restoreCharPosition = 0;
   String _content = '';
@@ -54,17 +59,31 @@ class _ReadingScreenState extends State<ReadingScreen>
   int? _pausedTtsPageIndex;
   int? _pausedTtsCharPosition;
   bool _ttsMediaControlsBound = false;
+  bool _handlingTtsMediaChapterChange = false;
   TtsMediaControlService? _ttsMediaControlService;
   TtsProvider? _ttsProvider;
   Future<void> _progressSaveChain = Future.value();
   late AnimationController _animController;
   late Animation<double> _fadeAnimation;
+  late final AppTelemetryScreenTrace _telemetryTrace;
+  static const int _guestChapterLimit = 10;
 
   @override
   void initState() {
     super.initState();
+    _telemetryTrace = AppTelemetryService.instance.openScreen(
+      'novel_reader',
+      metadata: {
+        'contentId': widget.novel.id,
+        'sourceId': widget.novel.sourceId,
+        'local': widget.novel.isLocal,
+        'startChapter': widget.startChapterIndex,
+        'provisionalCatalog': widget.chaptersAreProvisional,
+      },
+    );
+    _chapters = List<Chapter>.of(widget.chapters);
     _currentChapterIndex = widget.startChapterIndex
-        .clamp(0, widget.chapters.isEmpty ? 0 : widget.chapters.length - 1)
+        .clamp(0, _chapters.isEmpty ? 0 : _chapters.length - 1)
         .toInt();
     _restoreCharPosition = widget.startCharPosition;
     _lastCharPosition = widget.startCharPosition;
@@ -77,7 +96,51 @@ class _ReadingScreenState extends State<ReadingScreen>
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
     );
+    WidgetsBinding.instance.addObserver(this);
+    context.read<ReadingProvider>().setChapters(_chapters);
     _loadCurrentChapter();
+    if (widget.chaptersAreProvisional) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_hydrateChapterCatalog());
+      });
+    }
+  }
+
+  Future<void> _hydrateChapterCatalog() async {
+    if (widget.novel.isLocal) return;
+    try {
+      final chapters = await context.read<BookSourceProvider>().getChapterList(
+        widget.novel,
+      );
+      if (!mounted || chapters.isEmpty) return;
+      final currentIndex = _currentChapterIndex.clamp(0, chapters.length - 1);
+      setState(() {
+        _chapters = chapters;
+        _currentChapterIndex = currentIndex;
+      });
+      final readingProvider = context.read<ReadingProvider>();
+      readingProvider.setChapters(chapters);
+      readingProvider.setCurrentChapter(chapters[currentIndex]);
+    } catch (_) {
+      // The provisional chapter remains readable when the catalog is offline.
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.inactive &&
+        state != AppLifecycleState.paused &&
+        state != AppLifecycleState.hidden) {
+      return;
+    }
+    final ttsProvider = _ttsProvider;
+    if (ttsProvider == null) return;
+    final ttsActive =
+        ttsProvider.isSpeaking ||
+        ttsProvider.isPaused ||
+        ttsProvider.isStarting;
+    if (!ttsActive) return;
+    unawaited(_showTtsMediaControls(playing: !ttsProvider.isPaused));
   }
 
   @override
@@ -91,8 +154,10 @@ class _ReadingScreenState extends State<ReadingScreen>
     _ttsMediaControlService = mediaControlService;
     mediaControlService.bindControls(
       owner: this,
+      onPrevious: _handleMediaPrevious,
       onPlay: _handleMediaPlay,
       onPause: _handleMediaPause,
+      onNext: _handleMediaNext,
       onStop: _stopTts,
     );
     ttsProvider.bindSleepTimer(
@@ -106,10 +171,17 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   Future<void> _loadCurrentChapter() async {
+    final stopwatch = Stopwatch()..start();
+    final canOpen = await _ensureChapterUnlocked(
+      _currentChapterIndex,
+      showError: true,
+    );
+    if (!canOpen) return;
+    if (!mounted) return;
+
     if (widget.novel.isLocal) {
-      if (widget.chapters.isNotEmpty &&
-          _currentChapterIndex < widget.chapters.length) {
-        final chapter = widget.chapters[_currentChapterIndex];
+      if (_chapters.isNotEmpty && _currentChapterIndex < _chapters.length) {
+        final chapter = _chapters[_currentChapterIndex];
         final restorePosition = _restoreCharPosition
             .clamp(0, chapter.content.length)
             .toInt();
@@ -125,6 +197,18 @@ class _ReadingScreenState extends State<ReadingScreen>
           _currentPageIndex = pageIndex;
         });
       }
+      AppTelemetryService.instance.trackEvent(
+        'content_load',
+        screen: 'novel_reader',
+        durationMs: stopwatch.elapsedMilliseconds,
+        success: _content.isNotEmpty,
+        metadata: {
+          'contentType': 'novel',
+          'local': true,
+          'chapterIndex': _currentChapterIndex,
+          'characters': _content.length,
+        },
+      );
       return;
     }
 
@@ -134,9 +218,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     });
 
     try {
-      if (widget.chapters.isNotEmpty &&
-          _currentChapterIndex < widget.chapters.length) {
-        final chapter = widget.chapters[_currentChapterIndex];
+      if (_chapters.isNotEmpty && _currentChapterIndex < _chapters.length) {
+        final chapter = _chapters[_currentChapterIndex];
         final sourceProvider = context.read<BookSourceProvider>();
         final content = await sourceProvider.getChapterContent(
           widget.novel,
@@ -164,13 +247,37 @@ class _ReadingScreenState extends State<ReadingScreen>
           _lastScrollPosition = restorePosition == 0 ? 0 : _lastScrollPosition;
           _currentPageIndex = pageIndex;
         });
+        AppTelemetryService.instance.trackEvent(
+          'content_load',
+          screen: 'novel_reader',
+          durationMs: stopwatch.elapsedMilliseconds,
+          success: formattedContent.isNotEmpty,
+          metadata: {
+            'contentType': 'novel',
+            'local': false,
+            'chapterIndex': _currentChapterIndex,
+            'characters': formattedContent.length,
+          },
+        );
       } else if (mounted) {
         setState(() {
           _content = '';
           _contentError = '暂无章节可读。';
         });
       }
-    } catch (_) {
+    } catch (error) {
+      AppTelemetryService.instance.trackEvent(
+        'content_load',
+        screen: 'novel_reader',
+        durationMs: stopwatch.elapsedMilliseconds,
+        success: false,
+        metadata: {
+          'contentType': 'novel',
+          'local': false,
+          'chapterIndex': _currentChapterIndex,
+          'errorType': error.runtimeType.toString(),
+        },
+      );
       if (mounted) {
         setState(() {
           _content = '';
@@ -236,7 +343,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     );
     final readingProvider = context.read<ReadingProvider>();
     final bookshelfProvider = context.read<BookshelfProvider>();
-    await readingProvider.saveProgress(widget.novel.id, progress);
+    await readingProvider.saveProgress(widget.novel, progress);
     await bookshelfProvider.updateNovel(updatedNovel);
   }
 
@@ -259,6 +366,29 @@ class _ReadingScreenState extends State<ReadingScreen>
   void _showTtsControls() {
     context.read<ReadingProvider>().hideSettings();
     setState(() => _showTtsPanel = true);
+  }
+
+  Future<void> _showReadingSettings() async {
+    if (!mounted) return;
+
+    final readingProvider = context.read<ReadingProvider>();
+    readingProvider.hideSettings();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) {
+        return Consumer<ReadingProvider>(
+          builder: (context, provider, _) => ReadingSettingsPanel(
+            settings: provider.settings,
+            onFontSizeChanged: provider.updateFontSize,
+            onFontFamilyChanged: provider.updateFontFamily,
+            onBackgroundChanged: provider.updateBackgroundColor,
+            onPageTurnModeChanged: provider.updatePageTurnMode,
+          ),
+        );
+      },
+    );
   }
 
   void _resetChapterPosition() {
@@ -301,14 +431,18 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   Future<void> _goToNextChapter() async {
-    if (_currentChapterIndex < widget.chapters.length - 1) {
+    if (_currentChapterIndex < _chapters.length - 1) {
+      final targetIndex = _currentChapterIndex + 1;
+      final canOpen = await _ensureChapterUnlocked(targetIndex);
+      if (!canOpen) return;
+      if (!mounted) return;
       final ttsProvider = context.read<TtsProvider>();
       await _saveProgressNow(
         charPosition: _currentProgressPosition(ttsProvider),
       );
       unawaited(ttsProvider.stopSpeaking());
       setState(() {
-        _currentChapterIndex++;
+        _currentChapterIndex = targetIndex;
         _showControls = false;
         _showTtsPanel = false;
         _resetChapterPosition();
@@ -322,13 +456,17 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _goToPrevChapter() async {
     if (_currentChapterIndex > 0) {
+      final targetIndex = _currentChapterIndex - 1;
+      final canOpen = await _ensureChapterUnlocked(targetIndex);
+      if (!canOpen) return;
+      if (!mounted) return;
       final ttsProvider = context.read<TtsProvider>();
       await _saveProgressNow(
         charPosition: _currentProgressPosition(ttsProvider),
       );
       unawaited(ttsProvider.stopSpeaking());
       setState(() {
-        _currentChapterIndex--;
+        _currentChapterIndex = targetIndex;
         _showControls = false;
         _showTtsPanel = false;
         _resetChapterPosition();
@@ -341,15 +479,17 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   String get _currentChapterTitle {
-    if (widget.chapters.isNotEmpty &&
-        _currentChapterIndex < widget.chapters.length) {
-      return widget.chapters[_currentChapterIndex].title;
+    if (_chapters.isNotEmpty && _currentChapterIndex < _chapters.length) {
+      return _chapters[_currentChapterIndex].title;
     }
     return '语音朗读';
   }
 
   Future<void> _showTtsMediaControls({required bool playing}) async {
-    await context.read<TtsProvider>().mediaControlService.show(
+    final service =
+        _ttsMediaControlService ??
+        context.read<TtsProvider>().mediaControlService;
+    await service.show(
       novel: widget.novel,
       chapterTitle: _currentChapterTitle,
       playing: playing,
@@ -376,15 +516,68 @@ class _ReadingScreenState extends State<ReadingScreen>
     }
   }
 
+  Future<void> _handleMediaPrevious() => _handleMediaChapterChange(-1);
+
+  Future<void> _handleMediaNext() => _handleMediaChapterChange(1);
+
+  Future<void> _handleMediaChapterChange(int delta) async {
+    if (!mounted || _handlingTtsMediaChapterChange || delta == 0) return;
+    final targetIndex = _currentChapterIndex + delta;
+    if (targetIndex < 0 || targetIndex >= _chapters.length) {
+      final ttsProvider = context.read<TtsProvider>();
+      await _showTtsMediaControls(
+        playing: ttsProvider.isSpeaking && !ttsProvider.isPaused,
+      );
+      return;
+    }
+
+    _handlingTtsMediaChapterChange = true;
+    try {
+      final canOpen = await _ensureChapterUnlocked(targetIndex);
+      if (!canOpen || !mounted) return;
+
+      final ttsProvider = context.read<TtsProvider>();
+      await _saveProgressNow(
+        charPosition: _currentProgressPosition(ttsProvider),
+      );
+      await ttsProvider.stopSpeaking(clearSleepTimer: false);
+      _clearPausedTtsAnchor();
+      if (!mounted) return;
+
+      setState(() {
+        _currentChapterIndex = targetIndex;
+        _showControls = false;
+        _showTtsPanel = true;
+        _resetChapterPosition();
+      });
+      await _loadCurrentChapter();
+      if (!mounted || _content.isEmpty) return;
+
+      await _saveProgressNow(charPosition: 0, scrollPosition: 0);
+      await _startTts(startPosition: 0);
+    } finally {
+      _handlingTtsMediaChapterChange = false;
+    }
+  }
+
   Future<bool> _handleTtsChapterComplete() async {
     if (!mounted) return false;
 
-    final hasNext = _currentChapterIndex < widget.chapters.length - 1;
+    final hasNext = _currentChapterIndex < _chapters.length - 1;
     if (!hasNext) {
       await _saveProgressNow(
         charPosition: _content.length,
         scrollPosition: _lastScrollPosition,
       );
+      if (mounted) {
+        setState(() => _showTtsPanel = false);
+      }
+      return false;
+    }
+
+    final nextChapterIndex = _currentChapterIndex + 1;
+    final canOpen = await _ensureChapterUnlocked(nextChapterIndex);
+    if (!canOpen) {
       if (mounted) {
         setState(() => _showTtsPanel = false);
       }
@@ -398,7 +591,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!mounted) return false;
 
     setState(() {
-      _currentChapterIndex++;
+      _currentChapterIndex = nextChapterIndex;
       _showControls = false;
       _showTtsPanel = true;
       _resetChapterPosition();
@@ -417,13 +610,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (_content.isNotEmpty) {
       final readingProvider = context.read<ReadingProvider>();
       final ttsProvider = context.read<TtsProvider>();
-      final notificationAllowed = await ttsProvider.mediaControlService
-          .ensureNotificationPermission();
-      if (!notificationAllowed && mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('允许通知权限后，锁屏播放器才能显示')));
-      }
+      final messenger = ScaffoldMessenger.of(context);
       if (readingProvider.settings.pageTurnMode !=
           ReadingSettings.defaultPageTurnMode) {
         await readingProvider.updatePageTurnMode(
@@ -444,6 +631,7 @@ class _ReadingScreenState extends State<ReadingScreen>
         speechStartOffset.clamp(0, _content.length),
       );
       setState(() => _showTtsPanel = true);
+      await _showTtsMediaControls(playing: true);
       final started = await ttsProvider.startSpeaking(
         textToRead,
         startOffset: speechStartOffset,
@@ -452,13 +640,12 @@ class _ReadingScreenState extends State<ReadingScreen>
         await _showTtsMediaControls(playing: true);
       }
       if (!started && mounted) {
+        await ttsProvider.mediaControlService.stop();
         final message = ttsProvider.lastErrorMessage.isNotEmpty
             ? ttsProvider.lastErrorMessage
             : '语音朗读启动失败，请检查语音设置';
         setState(() => _showTtsPanel = false);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message)));
+        messenger.showSnackBar(SnackBar(content: Text(message)));
       }
       return started;
     }
@@ -493,6 +680,13 @@ class _ReadingScreenState extends State<ReadingScreen>
     final paused = await ttsProvider.pauseSpeaking();
     if (paused) {
       await _showTtsMediaControls(playing: false);
+    } else {
+      _clearPausedTtsAnchor();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('暂停失败，请重试')));
+      }
     }
   }
 
@@ -543,9 +737,19 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!_isLeaving) {
       unawaited(_saveProgressNow(charPosition: _lastCharPosition));
     }
+    WidgetsBinding.instance.removeObserver(this);
     _ttsMediaControlService?.unbindControls(this);
     _ttsProvider?.unbindSleepTimer(this);
     _ttsProvider?.unbindCompletion(this);
+    _telemetryTrace.close(
+      metadata: {
+        'chapterIndex': _currentChapterIndex,
+        'progressPercent': _chapterProgressPercentForPosition(
+          _lastCharPosition,
+        ),
+        'ttsUsed': _ttsProvider != null,
+      },
+    );
     _animController.dispose();
     super.dispose();
   }
@@ -894,39 +1098,10 @@ class _ReadingScreenState extends State<ReadingScreen>
                 ],
               ),
             ),
-            if (_content.isNotEmpty && !readingProvider.showSettings)
+            if (_content.isNotEmpty)
               _buildChapterProgressBadge(
                 percent: chapterProgressPercent,
                 isNight: isNight,
-              ),
-            if (readingProvider.showSettings)
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: () {
-                    readingProvider.hideSettings();
-                    setState(() {
-                      _showControls = false;
-                      _showTtsPanel = false;
-                    });
-                    _animController.reverse();
-                  },
-                  child: Container(
-                    color: Colors.transparent,
-                    alignment: Alignment.bottomCenter,
-                    child: ReadingSettingsPanel(
-                      settings: settings,
-                      onFontSizeChanged: (size) =>
-                          readingProvider.updateFontSize(size),
-                      onFontFamilyChanged: (family) =>
-                          readingProvider.updateFontFamily(family),
-                      onBackgroundChanged: (color) =>
-                          readingProvider.updateBackgroundColor(color),
-                      onPageTurnModeChanged: (mode) =>
-                          readingProvider.updatePageTurnMode(mode),
-                    ),
-                  ),
-                ),
               ),
           ],
         ),
@@ -1005,9 +1180,8 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Widget _buildTopBar(bool isNight) {
     final chapterTitle =
-        widget.chapters.isNotEmpty &&
-            _currentChapterIndex < widget.chapters.length
-        ? widget.chapters[_currentChapterIndex].title
+        _chapters.isNotEmpty && _currentChapterIndex < _chapters.length
+        ? _chapters[_currentChapterIndex].title
         : '加载中...';
 
     return Container(
@@ -1057,7 +1231,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   Widget _buildBottomBar(bool isNight, TtsProvider ttsProvider) {
-    final hasNext = _currentChapterIndex < widget.chapters.length - 1;
+    final hasNext = _currentChapterIndex < _chapters.length - 1;
     final hasPrev = _currentChapterIndex > 0;
     final ttsActive =
         ttsProvider.isSpeaking ||
@@ -1093,14 +1267,12 @@ class _ReadingScreenState extends State<ReadingScreen>
               isNight,
               _showChapterList,
             ),
-            Consumer<ReadingProvider>(
-              builder: (ctx, rp, _) => _ctrlBtn(
-                Icons.text_fields,
-                '设置',
-                true,
-                isNight,
-                () => rp.toggleSettings(),
-              ),
+            _ctrlBtn(
+              Icons.text_fields,
+              '设置',
+              true,
+              isNight,
+              () => unawaited(_showReadingSettings()),
             ),
             _ctrlBtn(
               ttsActive
@@ -1548,7 +1720,7 @@ class _ReadingScreenState extends State<ReadingScreen>
                       ),
                       const Spacer(),
                       Text(
-                        '共 ${widget.chapters.length} 章',
+                        '共 ${_chapters.length} 章',
                         style: const TextStyle(
                           fontSize: 13,
                           color: AppTheme.textSecondary,
@@ -1561,9 +1733,9 @@ class _ReadingScreenState extends State<ReadingScreen>
                 Expanded(
                   child: ListView.builder(
                     controller: scrollController,
-                    itemCount: widget.chapters.length,
+                    itemCount: _chapters.length,
                     itemBuilder: (context, index) {
-                      final chapter = widget.chapters[index];
+                      final chapter = _chapters[index];
                       final isCurrent = index == _currentChapterIndex;
                       return ListTile(
                         selected: isCurrent,
@@ -1593,7 +1765,9 @@ class _ReadingScreenState extends State<ReadingScreen>
                             : null,
                         onTap: () async {
                           Navigator.pop(context);
-                          final ttsProvider = context.read<TtsProvider>();
+                          final canOpen = await _ensureChapterUnlocked(index);
+                          if (!canOpen || !mounted) return;
+                          final ttsProvider = this.context.read<TtsProvider>();
                           await _saveProgressNow(
                             charPosition: _currentProgressPosition(ttsProvider),
                           );
@@ -1621,6 +1795,26 @@ class _ReadingScreenState extends State<ReadingScreen>
         );
       },
     );
+  }
+
+  Future<bool> _ensureChapterUnlocked(
+    int chapterIndex, {
+    bool showError = false,
+  }) async {
+    final canOpen = await ensureLoggedInForContent(
+      context,
+      allowed: chapterIndex < _guestChapterLimit,
+      title: '登录后继续阅读',
+      message: '未登录可试看小说前 10 章，登录后可继续阅读后续章节。',
+    );
+    if (!canOpen && showError && mounted) {
+      setState(() {
+        _isLoadingContent = false;
+        _content = '';
+        _contentError = '登录后可继续阅读后续章节。';
+      });
+    }
+    return canOpen;
   }
 }
 

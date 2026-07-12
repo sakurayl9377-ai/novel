@@ -1,0 +1,12 @@
+{
+  "avdName": "Pixel_10_Pro",
+  "deviceSerial": "emulator-5554",
+  "scale": 0.6,
+  "window": {
+    "x": 80,
+    "y": 40,
+    "width": 430,
+    "height": 760
+  },
+  "waitForBoot": true
+}

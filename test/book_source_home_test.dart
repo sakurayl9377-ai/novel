@@ -7,9 +7,14 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:novel_app/services/book_source_service.dart';
 import 'package:novel_app/services/storage_service.dart';
+import 'package:novel_app/models/novel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
+  sqfliteFfiInit();
+  databaseFactory = databaseFactoryFfi;
+
   testWidgets('fetchHome uses the current BQG domain and parses API data', (
     tester,
   ) async {
@@ -50,6 +55,82 @@ void main() {
     expect(home.featured.single.coverUrl, contains('www.bqg475.cc/bookimg/'));
     expect(requestedHosts, ['www.bqg475.cc']);
   });
+
+  testWidgets('detail and catalog share one book metadata request', (
+    tester,
+  ) async {
+    await _initStorage(tester);
+    var bookRequests = 0;
+    var catalogRequests = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/book') {
+        bookRequests++;
+        return http.Response(
+          jsonEncode({
+            'id': '990001',
+            'dirid': 'catalog-990001',
+            'title': '并行加载测试',
+            'author': '测试作者',
+          }),
+          200,
+          request: request,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path == '/api/booklist') {
+        catalogRequests++;
+        return http.Response(
+          jsonEncode({
+            'list': ['第一章', '第二章', '第三章'],
+          }),
+          200,
+          request: request,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response('not found', 404, request: request);
+    });
+    final service = BookSourceService(httpClient: client);
+    final novel = Novel(
+      id: 'builtin_bqg995_bqg_990001',
+      title: '并行加载测试',
+      chapterUrl: 'https://www.bqg475.cc/#/book/990001/',
+      sourceId: 'builtin_bqg995',
+    );
+
+    final result = await tester.runAsync(
+      () => Future.wait([
+        service.fetchBookDetail(novel),
+        service.getChapterList(novel),
+      ]),
+    );
+
+    expect((result![0] as Novel).author, '测试作者');
+    expect((result[1] as List).length, 3);
+    expect(bookRequests, 1);
+    expect(catalogRequests, 1);
+  });
+
+  test(
+    'provisional catalog makes the requested chapter immediately readable',
+    () {
+      final service = BookSourceService();
+      final novel = Novel(
+        id: 'builtin_bqg995_bqg_990002',
+        title: '快速阅读测试',
+        chapterUrl: 'https://www.bqg475.cc/#/book/990002/',
+      );
+
+      final chapters = service.buildProvisionalChapterList(
+        novel,
+        throughIndex: 8,
+      );
+
+      expect(chapters, hasLength(9));
+      expect(chapters[8].index, 8);
+      expect(chapters[8].url, endsWith('/990002/9.html'));
+    },
+  );
 }
 
 Future<void> _initStorage(WidgetTester tester) async {

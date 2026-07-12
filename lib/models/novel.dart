@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 
 class Novel {
   final String id;
@@ -37,8 +37,8 @@ class Novel {
     DateTime? lastReadAt,
     this.currentChapterIndex = 0,
     this.totalChapters = 0,
-  })  : addedAt = addedAt ?? DateTime.now(),
-        lastReadAt = lastReadAt ?? DateTime.now();
+  }) : addedAt = addedAt ?? DateTime.now(),
+       lastReadAt = lastReadAt ?? DateTime.now();
 
   Novel copyWith({
     String? id,
@@ -114,8 +114,12 @@ class Novel {
     rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
     status: json['status'] as String? ?? '连载中',
     chapterCount: json['chapterCount'] as int? ?? 0,
-    addedAt: json['addedAt'] != null ? DateTime.parse(json['addedAt'] as String) : DateTime.now(),
-    lastReadAt: json['lastReadAt'] != null ? DateTime.parse(json['lastReadAt'] as String) : DateTime.now(),
+    addedAt: json['addedAt'] != null
+        ? DateTime.parse(json['addedAt'] as String)
+        : DateTime.now(),
+    lastReadAt: json['lastReadAt'] != null
+        ? DateTime.parse(json['lastReadAt'] as String)
+        : DateTime.now(),
     currentChapterIndex: json['currentChapterIndex'] as int? ?? 0,
     totalChapters: json['totalChapters'] as int? ?? 0,
   );

@@ -10,6 +10,23 @@ subprojects {
         project.extensions.findByType(com.android.build.api.dsl.CommonExtension::class.java)?.apply {
             compileSdk = 36
         }
+
+        if (project.name == "audio_service") {
+            project.extensions
+                .findByType(com.android.build.api.dsl.LibraryExtension::class.java)
+                ?.sourceSets
+                ?.getByName("main")
+                ?.java
+                ?.srcDir(rootProject.file("audio_service_patch/src/main/java"))
+
+            // Replace only AudioService.java; keep the hosted plugin's Dart,
+            // resources and remaining Android classes unchanged.
+            project.tasks
+                .withType(org.gradle.api.tasks.compile.JavaCompile::class.java)
+                .configureEach {
+                    exclude("com/ryanheise/audioservice/AudioService.java")
+                }
+        }
     }
 }
 

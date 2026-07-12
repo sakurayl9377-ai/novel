@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:html/dom.dart' as dom;
@@ -7,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga.dart';
 import 'site_domain_service.dart';
+import 'swr_cache.dart';
 
 class MangaService {
   static final Uri siteUri = Uri.parse('https://cn.bzmgcn.com/');
@@ -25,6 +27,28 @@ class MangaService {
       'manga_chapter_images_cache_v1_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
   static const Duration _chapterImagesCacheTtl = Duration(days: 7);
+  static const int _maxChapterImageCacheEntries = 80;
+  static final SwrCache<String, MangaHomeData> _homeCache = SwrCache(
+    freshTtl: const Duration(minutes: 5),
+    staleTtl: const Duration(hours: 4),
+    maxEntries: 2,
+  );
+  static final SwrCache<String, MangaListResult> _listCache = SwrCache(
+    freshTtl: const Duration(minutes: 12),
+    staleTtl: const Duration(hours: 2),
+    maxEntries: 80,
+  );
+  static final SwrCache<String, Manga> _detailCache = SwrCache(
+    freshTtl: const Duration(minutes: 30),
+    staleTtl: const Duration(hours: 12),
+    maxEntries: 60,
+  );
+  static final SwrCache<String, List<String>> _chapterImagesMemoryCache =
+      SwrCache(
+        freshTtl: const Duration(minutes: 30),
+        staleTtl: _chapterImagesCacheTtl,
+        maxEntries: _maxChapterImageCacheEntries,
+      );
   static const Map<String, String> _baseHeaders = {
     'User-Agent':
         'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
@@ -59,32 +83,63 @@ class MangaService {
 
   final SiteDomainService _domainService = SiteDomainService.instance;
 
+  static Map<String, int> get cacheTelemetryMetadata => {
+    ..._homeCache.stats.toTelemetryMetadata(prefix: 'mangaHome'),
+    ..._listCache.stats.toTelemetryMetadata(prefix: 'mangaList'),
+    ..._detailCache.stats.toTelemetryMetadata(prefix: 'mangaDetail'),
+    ..._chapterImagesMemoryCache.stats.toTelemetryMetadata(
+      prefix: 'mangaChapterImages',
+    ),
+  };
+
   Future<MangaHomeData> fetchHome({bool forceRefresh = false}) async {
-    final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
-    if (!forceRefresh && cachedHtml != null) {
-      final document = html_parser.parse(cachedHtml);
-      return _BaoziHomeParser(await _currentSiteUri()).parse(document);
+    const cacheKey = 'home';
+    if (!forceRefresh && _homeCache.containsUsable(cacheKey)) {
+      return _homeCache.get(cacheKey, loader: _fetchHomeUncached);
+    }
+
+    if (!forceRefresh) {
+      final cachedHtml = await _readCachedHomeHtml(allowExpired: false);
+      if (cachedHtml != null) {
+        final document = html_parser.parse(cachedHtml);
+        final cached = _BaoziHomeParser(
+          await _currentSiteUri(),
+        ).parse(document);
+        _homeCache.put(cacheKey, cached);
+        unawaited(_homeCache.refresh(cacheKey, loader: _fetchHomeUncached));
+        return cached;
+      }
     }
 
     try {
-      final response = await _getPage(
-        siteUri,
-        timeout: const Duration(seconds: 15),
-      );
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-      final baseUri = _responseSiteUri(response);
-      final html = _decodeBody(response);
-      await _writeCachedHomeHtml(html);
-      final document = html_parser.parse(html);
-      return _BaoziHomeParser(baseUri).parse(document);
+      return forceRefresh
+          ? await _homeCache.refresh(cacheKey, loader: _fetchHomeUncached)
+          : await _homeCache.get(cacheKey, loader: _fetchHomeUncached);
     } catch (_) {
       final fallbackHtml = await _readCachedHomeHtml(allowExpired: true);
       if (fallbackHtml == null) rethrow;
       final document = html_parser.parse(fallbackHtml);
-      return _BaoziHomeParser(await _currentSiteUri()).parse(document);
+      final fallback = _BaoziHomeParser(
+        await _currentSiteUri(),
+      ).parse(document);
+      _homeCache.put(cacheKey, fallback);
+      return fallback;
     }
+  }
+
+  Future<MangaHomeData> _fetchHomeUncached() async {
+    final response = await _getPage(
+      siteUri,
+      timeout: const Duration(seconds: 15),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+    final baseUri = _responseSiteUri(response);
+    final html = _decodeBody(response);
+    await _writeCachedHomeHtml(html);
+    final document = html_parser.parse(html);
+    return _BaoziHomeParser(baseUri).parse(document);
   }
 
   Future<String?> _readCachedHomeHtml({required bool allowExpired}) async {
@@ -108,6 +163,17 @@ class MangaService {
   }
 
   Future<MangaListResult> fetchList(String url, {int page = 1}) async {
+    final cacheKey = '$url::$page';
+    return _listCache.get(
+      cacheKey,
+      loader: () => _fetchListUncached(url, page: page),
+    );
+  }
+
+  Future<MangaListResult> _fetchListUncached(
+    String url, {
+    required int page,
+  }) async {
     final uri = await _listPageUri(url, page);
     final response = await _getPage(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
@@ -142,7 +208,13 @@ class MangaService {
   Future<Manga> fetchDetail(String id) async {
     final comicId = id.trim();
     if (comicId.isEmpty) throw Exception('invalid manga id');
+    return _detailCache.get(
+      comicId,
+      loader: () => _fetchDetailUncached(comicId),
+    );
+  }
 
+  Future<Manga> _fetchDetailUncached(String comicId) async {
     final uri = (await _currentSiteUri()).resolve('/comic/$comicId');
     final response = await _getPage(uri, timeout: const Duration(seconds: 15));
     if (response.statusCode != 200) {
@@ -158,37 +230,63 @@ class MangaService {
     bool forceRefresh = false,
   }) async {
     final uri = await _pageUri(chapter.url);
+    final cacheKey = uri.toString();
+    if (!forceRefresh && _chapterImagesMemoryCache.containsUsable(cacheKey)) {
+      return _chapterImagesMemoryCache.get(
+        cacheKey,
+        loader: () => _fetchChapterImagesUncached(uri),
+      );
+    }
+
     if (!forceRefresh) {
       final cachedImages = await _readCachedChapterImages(
         uri,
         allowExpired: false,
       );
-      if (cachedImages != null) return cachedImages;
+      if (cachedImages != null) {
+        _chapterImagesMemoryCache.put(cacheKey, cachedImages);
+        unawaited(
+          _chapterImagesMemoryCache.refresh(
+            cacheKey,
+            loader: () => _fetchChapterImagesUncached(uri),
+          ),
+        );
+        return cachedImages;
+      }
     }
 
     try {
-      final response = await _getPage(
-        uri,
-        timeout: const Duration(seconds: 20),
-      );
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
-      final baseUri = _responseSiteUri(response);
-      final document = html_parser.parse(_decodeBody(response));
-      final images = _BaoziDetailParser(baseUri).parseDirectImages(document);
-      if (images.isNotEmpty) {
-        await _writeCachedChapterImages(uri, images);
-      }
-      return images;
+      return forceRefresh
+          ? await _chapterImagesMemoryCache.refresh(
+              cacheKey,
+              loader: () => _fetchChapterImagesUncached(uri),
+            )
+          : await _chapterImagesMemoryCache.get(
+              cacheKey,
+              loader: () => _fetchChapterImagesUncached(uri),
+            );
     } catch (_) {
       final fallbackImages = await _readCachedChapterImages(
         uri,
         allowExpired: true,
       );
       if (fallbackImages == null) rethrow;
+      _chapterImagesMemoryCache.put(cacheKey, fallbackImages);
       return fallbackImages;
     }
+  }
+
+  Future<List<String>> _fetchChapterImagesUncached(Uri uri) async {
+    final response = await _getPage(uri, timeout: const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+    final baseUri = _responseSiteUri(response);
+    final document = html_parser.parse(_decodeBody(response));
+    final images = _BaoziDetailParser(baseUri).parseDirectImages(document);
+    if (images.isEmpty) throw Exception('chapter images not found');
+    await _writeCachedChapterImages(uri, images);
+    return images;
   }
 
   Future<void> warmChapterImages(MangaChapter chapter) async {
@@ -204,7 +302,8 @@ class MangaService {
     required bool allowExpired,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_chapterImagesCacheKey(uri));
+    final cacheKey = _chapterImagesCacheKey(uri);
+    final raw = prefs.getString(cacheKey);
     if (raw == null || raw.isEmpty) return null;
 
     try {
@@ -227,13 +326,47 @@ class MangaService {
   Future<void> _writeCachedChapterImages(Uri uri, List<String> images) async {
     if (images.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
+    final cacheKey = _chapterImagesCacheKey(uri);
     await prefs.setString(
-      _chapterImagesCacheKey(uri),
+      cacheKey,
       jsonEncode({
         'cachedAt': DateTime.now().millisecondsSinceEpoch,
         'images': images,
       }),
     );
+    await _pruneChapterImagesCache(prefs);
+  }
+
+  Future<void> _pruneChapterImagesCache(SharedPreferences prefs) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final liveEntries = <MapEntry<String, int>>[];
+    final removals = <String>[];
+    for (final key in prefs.getKeys()) {
+      if (!key.startsWith(_chapterImagesCachePrefix)) continue;
+      final raw = prefs.getString(key);
+      try {
+        final data = jsonDecode(raw ?? '') as Map<String, dynamic>;
+        final cachedAt = data['cachedAt'] as int? ?? 0;
+        if (cachedAt <= 0 ||
+            now - cachedAt > _chapterImagesCacheTtl.inMilliseconds) {
+          removals.add(key);
+        } else {
+          liveEntries.add(MapEntry(key, cachedAt));
+        }
+      } catch (_) {
+        removals.add(key);
+      }
+    }
+
+    liveEntries.sort((a, b) => b.value.compareTo(a.value));
+    if (liveEntries.length > _maxChapterImageCacheEntries) {
+      removals.addAll(
+        liveEntries
+            .skip(_maxChapterImageCacheEntries)
+            .map((entry) => entry.key),
+      );
+    }
+    await Future.wait(removals.toSet().map(prefs.remove));
   }
 
   String _chapterImagesCacheKey(Uri uri) {

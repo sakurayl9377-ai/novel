@@ -88,7 +88,7 @@ class LocalImportService {
           'content': '',
           'index': 0,
           'isLoaded': true,
-        }
+        },
       ];
     }
 
@@ -108,7 +108,7 @@ class LocalImportService {
           'content': content,
           'index': 0,
           'isLoaded': true,
-        }
+        },
       ];
     }
 
@@ -116,7 +116,9 @@ class LocalImportService {
     for (int i = 0; i < matches.length; i++) {
       final start = matches[i].start;
       final title = matches[i].group(0) ?? '第${i + 1}章';
-      final end = i + 1 < matches.length ? matches[i + 1].start : content.length;
+      final end = i + 1 < matches.length
+          ? matches[i + 1].start
+          : content.length;
       final chapterContent = content.substring(start, end).trim();
 
       chapters.add({

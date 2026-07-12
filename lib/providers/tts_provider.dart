@@ -37,12 +37,13 @@ class TtsProvider extends ChangeNotifier {
       _currentWord = word;
       notifyListeners();
     };
-    loadSettings();
+    _settingsLoadFuture = loadSettings();
   }
 
   final TtsService _ttsService = TtsService();
   final TtsMediaControlService _mediaControlService;
   final StorageService _storage = StorageService();
+  late final Future<void> _settingsLoadFuture;
   TtsSettings _settings = const TtsSettings();
   bool _isSpeaking = false;
   bool _isPaused = false;
@@ -71,6 +72,7 @@ class TtsProvider extends ChangeNotifier {
   String get currentWord => _currentWord;
   String get lastErrorMessage => _lastErrorMessage;
   TtsSettings get settings => _settings;
+  Future<void> get settingsLoaded => _settingsLoadFuture;
   TtsMediaControlService get mediaControlService => _mediaControlService;
   bool get hasSleepTimer => _sleepTimerEndsAt != null;
   DateTime? get sleepTimerEndsAt => _sleepTimerEndsAt;
@@ -119,6 +121,7 @@ class TtsProvider extends ChangeNotifier {
   }
 
   Future<void> updateSettings(TtsSettings settings) async {
+    await _settingsLoadFuture;
     final engineChanged = _settings.engine != settings.engine;
     if (engineChanged || _isSpeaking || _isStarting) {
       await _ttsService.stop();
@@ -139,6 +142,7 @@ class TtsProvider extends ChangeNotifier {
   }
 
   Future<bool> startSpeaking(String text, {int startOffset = 0}) async {
+    await _settingsLoadFuture;
     if (_isStarting) return false;
     _isStarting = true;
     _textStartOffset = startOffset;

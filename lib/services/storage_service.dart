@@ -1,30 +1,48 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/anime_watch_history.dart';
+import '../models/content_progress.dart';
+import '../models/local_library.dart';
 import '../models/manga_read_history.dart';
+import '../models/novel.dart';
+import 'legacy_local_library_migrator.dart';
+import 'legacy_progress_migrator.dart';
+import 'progress_sync_service.dart';
 
 class StorageService {
-  static const String _bookshelfKey = 'bookshelf';
   static const String _bookSourcesKey = 'book_sources';
   static const String _readingSettingsKey = 'reading_settings';
   static const String _ttsSettingsKey = 'tts_settings';
-  static const String _animeWatchHistoryKey = 'anime_watch_history';
-  static const String _mangaReadHistoryKey = 'manga_read_history';
-  static const String _readingProgressPrefix = 'progress_';
   static const Duration _animeWatchHistoryRetention = Duration(days: 30);
   static const Duration _mangaReadHistoryRetention = Duration(days: 30);
 
   late SharedPreferences _prefs;
   String? _dataDirPath;
+  Future<void>? _initFuture;
+  bool _didMigrateLegacyProgress = false;
+  bool _didMigrateLegacyLocalLibrary = false;
+  int _lastChapterCachePruneAtMs = 0;
+  int _downloadWritesSincePrune = 0;
+  static const int _chapterCacheMaxFiles = 3000;
+  static const int _chapterCacheMaxBytes = 300 * 1024 * 1024;
+  static const Duration _chapterCacheMaxAge = Duration(days: 90);
+  static const Duration _chapterCachePruneInterval = Duration(hours: 6);
 
   static final StorageService _instance = StorageService._internal();
   factory StorageService() => _instance;
   StorageService._internal();
 
-  Future<void> init() async {
+  bool get didMigrateLegacyProgress => _didMigrateLegacyProgress;
+  bool get didMigrateLegacyLocalLibrary => _didMigrateLegacyLocalLibrary;
+
+  Future<void> init() => _initFuture ??= _initialize();
+
+  Future<void> _initialize() async {
     _prefs = await SharedPreferences.getInstance();
     final dir = await getApplicationDocumentsDirectory();
     _dataDirPath = '${dir.path}/novel_app';
@@ -32,37 +50,157 @@ class StorageService {
     if (!await dataDir.exists()) {
       await dataDir.create(recursive: true);
     }
+    await appProgressDatabase.init();
+    final deviceId = await ProgressSyncService.instance.getDeviceId();
+    _didMigrateLegacyProgress = await LegacyProgressMigrator(
+      database: appProgressDatabase,
+      preferences: _prefs,
+      deviceId: deviceId,
+    ).migrate();
+    _didMigrateLegacyLocalLibrary = await LegacyLocalLibraryMigrator(
+      database: appProgressDatabase,
+      preferences: _prefs,
+    ).migrate();
   }
 
   // ============ 书架存储 ============
 
+  String? getString(String key) => _prefs.getString(key);
+
+  Future<bool> setString(String key, String value) {
+    return _prefs.setString(key, value);
+  }
+
+  Future<bool> remove(String key) {
+    return _prefs.remove(key);
+  }
+
   Future<List<Map<String, dynamic>>> getBookshelf() async {
-    final jsonStr = _prefs.getString(_bookshelfKey);
-    if (jsonStr == null) return [];
-    final list = jsonDecode(jsonStr) as List;
-    return list.cast<Map<String, dynamic>>();
+    await init();
+    return appProgressDatabase.listBookshelf();
   }
 
   Future<void> saveBookToShelf(Map<String, dynamic> bookData) async {
-    final books = await getBookshelf();
-    final index = books.indexWhere((b) => b['id'] == bookData['id']);
-    if (index >= 0) {
-      books[index] = bookData;
-    } else {
-      books.add(bookData);
-    }
-    await _prefs.setString(_bookshelfKey, jsonEncode(books));
+    await init();
+    await appProgressDatabase.saveBookshelfItem(Novel.fromJson(bookData));
   }
 
   Future<void> removeBookFromShelf(String bookId) async {
-    final books = await getBookshelf();
-    books.removeWhere((b) => b['id'] == bookId);
-    await _prefs.setString(_bookshelfKey, jsonEncode(books));
+    await init();
+    await appProgressDatabase.deleteBookshelfItem(bookId);
   }
 
   Future<bool> isBookOnShelf(String bookId) async {
-    final books = await getBookshelf();
-    return books.any((b) => b['id'] == bookId);
+    await init();
+    return appProgressDatabase.hasBookshelfItem(bookId);
+  }
+
+  Future<List<FavoriteFolder>> getFavoriteFolders() async {
+    await init();
+    var folders = await appProgressDatabase.listFavoriteFolders();
+    if (folders.every((item) => item.id != defaultFavoriteFolderId)) {
+      await appProgressDatabase.saveFavoriteFolder(
+        FavoriteFolder(
+          id: defaultFavoriteFolderId,
+          name: '默认收藏',
+          createdAtMs: DateTime.now().millisecondsSinceEpoch,
+        ),
+        sortOrder: -1,
+      );
+      folders = await appProgressDatabase.listFavoriteFolders();
+    }
+    return folders;
+  }
+
+  Future<FavoriteFolder> createFavoriteFolder(String name) async {
+    await init();
+    final trimmed = name.trim();
+    final folder = FavoriteFolder(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: trimmed.isEmpty ? '新收藏夹' : trimmed,
+      createdAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    await appProgressDatabase.saveFavoriteFolder(folder);
+    return folder;
+  }
+
+  Future<void> renameFavoriteFolder(String folderId, String name) async {
+    if (folderId == defaultFavoriteFolderId) return;
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    await init();
+    await appProgressDatabase.renameFavoriteFolder(folderId, trimmed);
+  }
+
+  Future<void> deleteFavoriteFolder(String folderId) async {
+    if (folderId == defaultFavoriteFolderId) return;
+    await init();
+    await appProgressDatabase.deleteFavoriteFolder(folderId);
+  }
+
+  Future<List<FavoriteItem>> getFavoriteItems({String? folderId}) async {
+    await init();
+    return appProgressDatabase.listFavoriteItems(folderId: folderId);
+  }
+
+  Future<bool> isFavorite(LibraryItemType type, String itemId) async {
+    await init();
+    return appProgressDatabase.hasFavoriteItem(type, itemId);
+  }
+
+  Future<void> saveFavoriteItem(FavoriteItem item) async {
+    await init();
+    final folderExists = (await appProgressDatabase.listFavoriteFolders()).any(
+      (folder) => folder.id == item.folderId,
+    );
+    final normalized = folderExists
+        ? item
+        : FavoriteItem(
+            id: item.id,
+            type: item.type,
+            itemId: item.itemId,
+            title: item.title,
+            coverUrl: item.coverUrl,
+            subtitle: item.subtitle,
+            folderId: defaultFavoriteFolderId,
+            createdAtMs: item.createdAtMs,
+          );
+    await appProgressDatabase.saveFavoriteItem(normalized);
+  }
+
+  Future<void> removeFavoriteItem(LibraryItemType type, String itemId) async {
+    await init();
+    await appProgressDatabase.deleteFavoriteItem(type, itemId);
+  }
+
+  Future<List<DownloadItem>> getDownloadItems() async {
+    await init();
+    return appProgressDatabase.listDownloadItems();
+  }
+
+  Future<List<DownloadItem>> recoverDownloadItems() async {
+    await init();
+    return appProgressDatabase.recoverInterruptedDownloads();
+  }
+
+  Future<void> saveDownloadItem(DownloadItem item) async {
+    await init();
+    await appProgressDatabase.saveDownloadItem(item);
+    _downloadWritesSincePrune += 1;
+    if (_downloadWritesSincePrune >= 100) {
+      _downloadWritesSincePrune = 0;
+      unawaited(appProgressDatabase.pruneDownloadHistory());
+    }
+  }
+
+  Future<void> deleteDownloadItem(String id) async {
+    await init();
+    await appProgressDatabase.deleteDownloadItem(id);
+  }
+
+  Future<void> clearDownloadItems() async {
+    await init();
+    await appProgressDatabase.clearDownloadItems();
   }
 
   // ============ 书源存储 ============
@@ -118,52 +256,105 @@ class StorageService {
   // ============ 阅读进度 ============
 
   Future<Map<String, dynamic>?> getReadingProgress(String novelId) async {
-    final jsonStr = _prefs.getString('$_readingProgressPrefix$novelId');
-    if (jsonStr == null) return null;
-    return jsonDecode(jsonStr) as Map<String, dynamic>;
+    return _getNovelProgress(ContentIdentity.legacyNovel(novelId));
+  }
+
+  Future<Map<String, dynamic>?> getNovelReadingProgress(Novel novel) {
+    return _getNovelProgress(ContentIdentity.novel(novel));
+  }
+
+  Future<Map<String, dynamic>?> _getNovelProgress(
+    ContentIdentity identity,
+  ) async {
+    await init();
+    final owner = ProgressSyncService.instance.activeOwnerUserId;
+    final exact = await appProgressDatabase.get(identity, ownerUserId: owner);
+    if (exact != null) return exact.payload;
+    final fallback = await appProgressDatabase.promoteLegacyNovel(
+      identity,
+      ownerUserId: owner,
+    );
+    return fallback?.payload;
   }
 
   Future<void> saveReadingProgress(
     String novelId,
     Map<String, dynamic> progress,
   ) async {
-    await _prefs.setString(
-      '$_readingProgressPrefix$novelId',
-      jsonEncode(progress),
+    await _saveNovelProgress(
+      ContentIdentity.legacyNovel(novelId),
+      progress,
+      metadata: const {},
     );
+  }
+
+  Future<void> saveNovelReadingProgress(
+    Novel novel,
+    Map<String, dynamic> progress,
+  ) {
+    return _saveNovelProgress(
+      ContentIdentity.novel(novel),
+      progress,
+      metadata: {
+        'title': novel.title,
+        'author': novel.author,
+        'coverUrl': novel.coverUrl,
+      },
+    );
+  }
+
+  Future<void> _saveNovelProgress(
+    ContentIdentity identity,
+    Map<String, dynamic> progress, {
+    required Map<String, dynamic> metadata,
+  }) async {
+    await init();
+    final updatedAtMs =
+        DateTime.tryParse(
+          progress['lastReadAt']?.toString() ?? '',
+        )?.millisecondsSinceEpoch ??
+        DateTime.now().millisecondsSinceEpoch;
+    await appProgressDatabase.saveLocal(
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      identity: identity,
+      subItemId: 'chapter:${_asInt(progress['chapterIndex'])}',
+      payload: progress,
+      metadata: metadata,
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: updatedAtMs,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   // ============ 动漫播放历史 ============
 
   Future<List<AnimeWatchHistory>> getAnimeWatchHistory() async {
-    final jsonStr = _prefs.getString(_animeWatchHistoryKey);
-    if (jsonStr == null) return const [];
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(jsonStr);
-    } catch (_) {
-      await _prefs.remove(_animeWatchHistoryKey);
-      return const [];
-    }
-    if (decoded is! List) {
-      await _prefs.remove(_animeWatchHistoryKey);
-      return const [];
-    }
-    final histories =
-        decoded
-            .whereType<Map>()
-            .map(
-              (item) =>
-                  AnimeWatchHistory.fromJson(item.cast<String, dynamic>()),
-            )
-            .where(_isRecentAnimeHistory)
-            .toList()
-          ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
-    await _prefs.setString(
-      _animeWatchHistoryKey,
-      jsonEncode(histories.map((item) => item.toJson()).toList()),
+    await init();
+    final cutoff = DateTime.now()
+        .subtract(_animeWatchHistoryRetention)
+        .millisecondsSinceEpoch;
+    final owner = ProgressSyncService.instance.activeOwnerUserId;
+    await appProgressDatabase.pruneVisibleBefore(
+      ContentType.anime,
+      cutoff,
+      ownerUserId: owner,
     );
-    return histories;
+    final rows = await appProgressDatabase.list(
+      ContentType.anime,
+      ownerUserId: owner,
+      updatedAfterMs: cutoff,
+    );
+    return rows
+        .map((row) {
+          try {
+            return AnimeWatchHistory.fromJson(row.payload);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<AnimeWatchHistory>()
+        .where(_isRecentAnimeHistory)
+        .toList(growable: false);
   }
 
   Future<void> saveAnimeWatchHistory(AnimeWatchHistory history) async {
@@ -172,30 +363,39 @@ class StorageService {
         history.episodeUrl.isEmpty) {
       return;
     }
-    final histories = await getAnimeWatchHistory();
-    final next =
-        [
-            history,
-            ...histories.where((item) => item.animeId != history.animeId),
-          ].where(_isRecentAnimeHistory).toList()
-          ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
-    await _prefs.setString(
-      _animeWatchHistoryKey,
-      jsonEncode(next.map((item) => item.toJson()).toList()),
+    await init();
+    await appProgressDatabase.saveLocal(
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      identity: ContentIdentity.anime(history.animeId),
+      subItemId: history.episodeTitle,
+      payload: history.toJson(),
+      metadata: {'title': history.title, 'coverUrl': history.coverUrl},
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: history.updatedAtMs,
     );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   Future<void> clearAnimeWatchHistory() async {
-    await _prefs.remove(_animeWatchHistoryKey);
+    await init();
+    await appProgressDatabase.deleteAllLocal(
+      ContentType.anime,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   Future<void> deleteAnimeWatchHistory(int animeId) async {
-    final histories = await getAnimeWatchHistory();
-    final next = histories.where((item) => item.animeId != animeId).toList();
-    await _prefs.setString(
-      _animeWatchHistoryKey,
-      jsonEncode(next.map((item) => item.toJson()).toList()),
+    await init();
+    await appProgressDatabase.deleteLocal(
+      ContentIdentity.anime(animeId),
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: DateTime.now().millisecondsSinceEpoch,
     );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   bool _isRecentAnimeHistory(AnimeWatchHistory history) {
@@ -208,33 +408,32 @@ class StorageService {
   // ============ 漫画阅读历史 ============
 
   Future<List<MangaReadHistory>> getMangaReadHistory() async {
-    final jsonStr = _prefs.getString(_mangaReadHistoryKey);
-    if (jsonStr == null) return const [];
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(jsonStr);
-    } catch (_) {
-      await _prefs.remove(_mangaReadHistoryKey);
-      return const [];
-    }
-    if (decoded is! List) {
-      await _prefs.remove(_mangaReadHistoryKey);
-      return const [];
-    }
-    final histories =
-        decoded
-            .whereType<Map>()
-            .map(
-              (item) => MangaReadHistory.fromJson(item.cast<String, dynamic>()),
-            )
-            .where(_isRecentMangaHistory)
-            .toList()
-          ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
-    await _prefs.setString(
-      _mangaReadHistoryKey,
-      jsonEncode(histories.map((item) => item.toJson()).toList()),
+    await init();
+    final cutoff = DateTime.now()
+        .subtract(_mangaReadHistoryRetention)
+        .millisecondsSinceEpoch;
+    final owner = ProgressSyncService.instance.activeOwnerUserId;
+    await appProgressDatabase.pruneVisibleBefore(
+      ContentType.manga,
+      cutoff,
+      ownerUserId: owner,
     );
-    return histories;
+    final rows = await appProgressDatabase.list(
+      ContentType.manga,
+      ownerUserId: owner,
+      updatedAfterMs: cutoff,
+    );
+    return rows
+        .map((row) {
+          try {
+            return MangaReadHistory.fromJson(row.payload);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<MangaReadHistory>()
+        .where(_isRecentMangaHistory)
+        .toList(growable: false);
   }
 
   Future<void> saveMangaReadHistory(MangaReadHistory history) async {
@@ -243,30 +442,39 @@ class StorageService {
         history.chapterUrl.isEmpty) {
       return;
     }
-    final histories = await getMangaReadHistory();
-    final next =
-        [
-            history,
-            ...histories.where((item) => item.mangaId != history.mangaId),
-          ].where(_isRecentMangaHistory).toList()
-          ..sort((a, b) => b.updatedAtMs.compareTo(a.updatedAtMs));
-    await _prefs.setString(
-      _mangaReadHistoryKey,
-      jsonEncode(next.map((item) => item.toJson()).toList()),
+    await init();
+    await appProgressDatabase.saveLocal(
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      identity: ContentIdentity.manga(history.mangaId),
+      subItemId: history.chapterTitle,
+      payload: history.toJson(),
+      metadata: {'title': history.title, 'coverUrl': history.coverUrl},
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: history.updatedAtMs,
     );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   Future<void> clearMangaReadHistory() async {
-    await _prefs.remove(_mangaReadHistoryKey);
+    await init();
+    await appProgressDatabase.deleteAllLocal(
+      ContentType.manga,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   Future<void> deleteMangaReadHistory(String mangaId) async {
-    final histories = await getMangaReadHistory();
-    final next = histories.where((item) => item.mangaId != mangaId).toList();
-    await _prefs.setString(
-      _mangaReadHistoryKey,
-      jsonEncode(next.map((item) => item.toJson()).toList()),
+    await init();
+    await appProgressDatabase.deleteLocal(
+      ContentIdentity.manga(mangaId),
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      deviceId: await ProgressSyncService.instance.getDeviceId(),
+      clientUpdatedAtMs: DateTime.now().millisecondsSinceEpoch,
     );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   bool _isRecentMangaHistory(MangaReadHistory history) {
@@ -279,10 +487,13 @@ class StorageService {
   // ============ 章节目录缓存 ============
 
   String _chapterListPath(String novelId) =>
-      '$_dataDirPath/chapters_$novelId.json';
+      '$_dataDirPath/chapters_${_cacheFileKey(novelId)}.json';
 
   String _chapterContentPath(String novelId, String chapterId) =>
-      '$_dataDirPath/content_${novelId}_$chapterId.txt';
+      '$_dataDirPath/content_${_cacheFileKey('$novelId::$chapterId')}.txt';
+
+  String _cacheFileKey(String value) =>
+      sha256.convert(utf8.encode(value)).toString();
 
   Future<void> saveChapterList(
     String novelId,
@@ -290,12 +501,14 @@ class StorageService {
   ) async {
     final file = File(_chapterListPath(novelId));
     await file.writeAsString(jsonEncode(chapters));
+    unawaited(_pruneChapterCacheIfNeeded());
   }
 
   Future<List<Map<String, dynamic>>?> getChapterList(String novelId) async {
     final file = File(_chapterListPath(novelId));
     if (await file.exists()) {
       final jsonStr = await file.readAsString();
+      unawaited(file.setLastModified(DateTime.now()));
       final list = jsonDecode(jsonStr) as List;
       return list.cast<Map<String, dynamic>>();
     }
@@ -309,12 +522,15 @@ class StorageService {
   ) async {
     final file = File(_chapterContentPath(novelId, chapterId));
     await file.writeAsString(content, flush: true);
+    unawaited(_pruneChapterCacheIfNeeded());
   }
 
   Future<String?> getChapterContent(String novelId, String chapterId) async {
     final file = File(_chapterContentPath(novelId, chapterId));
     if (await file.exists()) {
-      return await file.readAsString();
+      final content = await file.readAsString();
+      unawaited(file.setLastModified(DateTime.now()));
+      return content;
     }
     return null;
   }
@@ -324,5 +540,57 @@ class StorageService {
     if (await file.exists()) {
       await file.delete();
     }
+  }
+
+  Future<void> _pruneChapterCacheIfNeeded() async {
+    final now = DateTime.now();
+    final nowMs = now.millisecondsSinceEpoch;
+    if (nowMs - _lastChapterCachePruneAtMs <
+        _chapterCachePruneInterval.inMilliseconds) {
+      return;
+    }
+    _lastChapterCachePruneAtMs = nowMs;
+    final dataPath = _dataDirPath;
+    if (dataPath == null) return;
+    final directory = Directory(dataPath);
+    if (!await directory.exists()) return;
+    final entries = <({File file, FileStat stat})>[];
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final name = entity.uri.pathSegments.last;
+      if (!name.startsWith('content_') && !name.startsWith('chapters_')) {
+        continue;
+      }
+      try {
+        entries.add((file: entity, stat: await entity.stat()));
+      } catch (_) {
+        // A concurrently removed cache file can be ignored.
+      }
+    }
+    entries.sort(
+      (left, right) => left.stat.modified.compareTo(right.stat.modified),
+    );
+    var totalBytes = entries.fold<int>(0, (sum, item) => sum + item.stat.size);
+    var remainingFiles = entries.length;
+    final oldestAllowed = now.subtract(_chapterCacheMaxAge);
+    for (final entry in entries) {
+      final expired = entry.stat.modified.isBefore(oldestAllowed);
+      final overLimit =
+          remainingFiles > _chapterCacheMaxFiles ||
+          totalBytes > _chapterCacheMaxBytes;
+      if (!expired && !overLimit) break;
+      try {
+        await entry.file.delete();
+        totalBytes -= entry.stat.size;
+        remainingFiles -= 1;
+      } catch (_) {
+        // Cache pruning must never interrupt reading.
+      }
+    }
+  }
+
+  static int _asInt(dynamic value) {
+    if (value is int) return value;
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 }

@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../config/theme.dart';
+import '../services/bounded_task_scheduler.dart';
 import '../services/image_cache_service.dart';
 import '../services/manga_service.dart';
 import 'manga_detail_screen.dart';
@@ -19,6 +21,9 @@ class MangaScreen extends StatefulWidget {
 class _MangaScreenState extends State<MangaScreen> {
   final MangaService _service = MangaService();
   final TextEditingController _searchController = TextEditingController();
+  final BoundedTaskScheduler _imagePrefetchScheduler = BoundedTaskScheduler(
+    maxConcurrent: 3,
+  );
 
   bool _isLoadingHome = true;
   bool _isSearching = false;
@@ -26,6 +31,7 @@ class _MangaScreenState extends State<MangaScreen> {
   String _searchedKeyword = '';
   MangaHomeData _homeData = const MangaHomeData.empty();
   List<MangaHomeItem> _searchResults = [];
+  int _searchGeneration = 0;
 
   bool get _showingSearchResults => _searchedKeyword.isNotEmpty;
 
@@ -37,6 +43,7 @@ class _MangaScreenState extends State<MangaScreen> {
 
   @override
   void dispose() {
+    _searchGeneration++;
     _searchController.dispose();
     super.dispose();
   }
@@ -54,6 +61,7 @@ class _MangaScreenState extends State<MangaScreen> {
         _homeData = data;
         _isLoadingHome = false;
       });
+      _precacheHomeImages(data);
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -66,6 +74,7 @@ class _MangaScreenState extends State<MangaScreen> {
   Future<void> _search(String keyword) async {
     final query = keyword.trim();
     if (query.isEmpty) return;
+    final searchGeneration = ++_searchGeneration;
 
     setState(() {
       _isSearching = true;
@@ -76,13 +85,14 @@ class _MangaScreenState extends State<MangaScreen> {
 
     try {
       final results = await _service.search(query);
-      if (!mounted) return;
+      if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
         _searchResults = results;
         _isSearching = false;
       });
+      _precacheItemImages(results);
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
         _errorMessage = '搜索失败，请稍后重试';
         _isSearching = false;
@@ -91,11 +101,51 @@ class _MangaScreenState extends State<MangaScreen> {
   }
 
   void _clearSearch() {
+    _searchGeneration++;
     _searchController.clear();
     setState(() {
       _searchedKeyword = '';
       _searchResults = [];
       _errorMessage = null;
+    });
+  }
+
+  void _precacheHomeImages(MangaHomeData data) {
+    final urls = <String>{
+      for (final item in data.featured) item.imageUrl,
+      for (final section in data.sections.take(4))
+        for (final item in section.items.take(6)) item.imageUrl,
+    };
+    _precacheImageUrls(urls);
+  }
+
+  void _precacheItemImages(List<MangaHomeItem> items) {
+    _precacheImageUrls(items.map((item) => item.imageUrl));
+  }
+
+  void _precacheImageUrls(Iterable<String> urls) {
+    final uniqueUrls = urls.where((url) => url.isNotEmpty).take(32).toList();
+    if (uniqueUrls.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (var index = 0; index < uniqueUrls.length; index++) {
+        final url = uniqueUrls[index];
+        unawaited(
+          _imagePrefetchScheduler
+              .schedule(() {
+                if (!mounted) return Future<void>.value();
+                return precacheImage(
+                  CachedNetworkImageProvider(
+                    url,
+                    cacheManager: AppImageCacheService.manager,
+                    headers: mangaImageHeaders(imageUrl: url),
+                  ),
+                  context,
+                );
+              }, priority: uniqueUrls.length - index)
+              .catchError((_) {}),
+        );
+      }
     });
   }
 
@@ -213,6 +263,7 @@ class _MangaScreenState extends State<MangaScreen> {
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
+      scrollCacheExtent: const ScrollCacheExtent.pixels(900),
       padding: const EdgeInsets.only(bottom: 20),
       children: [
         _buildCategories(isNight),
@@ -340,6 +391,7 @@ class _MangaScreenState extends State<MangaScreen> {
           child: ListView.separated(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             scrollDirection: Axis.horizontal,
+            scrollCacheExtent: const ScrollCacheExtent.pixels(720),
             itemCount: _homeData.featured.length,
             separatorBuilder: (context, index) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
@@ -368,24 +420,37 @@ class _MangaScreenState extends State<MangaScreen> {
               ? () => _openMore(section.title, section.moreUrl)
               : null,
         ),
-        GridView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 14,
-            childAspectRatio: 0.6,
-          ),
-          itemCount: section.items.length.clamp(0, 12),
-          itemBuilder: (context, index) {
-            final item = section.items[index];
-            return _PosterMangaCard(item: item, onTap: () => _openItem(item));
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = _posterGridColumns(constraints.maxWidth);
+            return GridView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 14,
+                childAspectRatio: 0.6,
+              ),
+              itemCount: section.items.length.clamp(0, columns * 4),
+              itemBuilder: (context, index) {
+                final item = section.items[index];
+                return _PosterMangaCard(
+                  item: item,
+                  onTap: () => _openItem(item),
+                );
+              },
+            );
           },
         ),
       ],
     );
+  }
+
+  int _posterGridColumns(double width) {
+    final usableWidth = (width - 32).clamp(0, double.infinity);
+    return (usableWidth / 132).floor().clamp(3, 6).toInt();
   }
 
   Color _categoryColor(String value) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -6,18 +8,25 @@ import '../config/theme.dart';
 import '../models/anime_watch_history.dart';
 import '../models/manga_read_history.dart';
 import '../models/tts_settings.dart';
+import '../providers/interaction_auth_provider.dart';
 import '../providers/reading_provider.dart';
 import '../providers/tts_provider.dart';
 import '../services/app_update_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/interaction_ui.dart';
 import 'anime_player_screen.dart';
 import 'anime_screen.dart';
 import 'bookshelf_screen.dart';
+import 'chat_room_list_screen.dart';
+import 'interaction_auth_screen.dart';
 import 'manga_reader_screen.dart';
 import 'manga_screen.dart';
+import 'profile_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.initialCategory});
+
+  final String? initialCategory;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -29,11 +38,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isCheckingUpdate = false;
   bool _isDownloadingUpdate = false;
   double? _downloadProgress;
-  String _appVersionName = '2.0.4';
+  String _appVersionName = '4.0.11';
+  String? _activeCategory;
 
   @override
   void initState() {
     super.initState();
+    _activeCategory = widget.initialCategory;
     _loadAppVersion();
   }
 
@@ -49,199 +60,331 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('我的')),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        children: [
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppTheme.primaryColor, AppTheme.primaryDark],
+    final activeCategory = _activeCategory;
+    final openedAtCategory = widget.initialCategory?.trim().isNotEmpty == true;
+    return PopScope(
+      canPop: activeCategory == null || openedAtCategory,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _activeCategory != null && !openedAtCategory) {
+          setState(() => _activeCategory = null);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(activeCategory ?? '我的'),
+          leading: activeCategory == null
+              ? null
+              : IconButton(
+                  tooltip: '返回',
+                  onPressed: () {
+                    if (openedAtCategory) {
+                      Navigator.of(context).maybePop();
+                      return;
+                    }
+                    setState(() => _activeCategory = null);
+                  },
+                  icon: const Icon(Icons.arrow_back),
+                ),
+        ),
+        body: activeCategory == null
+            ? _buildHomeBody()
+            : _buildCategoryBody(activeCategory),
+      ),
+    );
+  }
+
+  Widget _buildHomeBody() {
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      children: [
+        _buildAccountCard(),
+        const SizedBox(height: 8),
+        _buildSection('功能分类'),
+        _buildCategoryCard(
+          icon: Icons.account_circle_outlined,
+          title: '账号互动',
+          subtitle: '个人页面、聊天室、登录状态',
+          onTap: () => setState(() => _activeCategory = '账号互动'),
+        ),
+        _buildCategoryCard(
+          icon: Icons.collections_bookmark_outlined,
+          title: '内容记录',
+          subtitle: '书架、动漫历史、漫画历史',
+          onTap: () => setState(() => _activeCategory = '内容记录'),
+        ),
+        _buildCategoryCard(
+          icon: Icons.tune_outlined,
+          title: '阅读设置',
+          subtitle: '字体、深色模式',
+          onTap: () => setState(() => _activeCategory = '阅读设置'),
+        ),
+        _buildCategoryCard(
+          icon: Icons.system_update_alt_outlined,
+          title: '应用维护',
+          subtitle: '缓存、更新、版本信息',
+          onTap: () => setState(() => _activeCategory = '应用维护'),
+        ),
+        const SizedBox(height: 28),
+        Center(
+          child: Text(
+            'Sakura v$_appVersionName',
+            style: const TextStyle(fontSize: 12, color: AppTheme.textHint),
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _buildCategoryBody(String category) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: switch (category) {
+        '账号互动' => _accountInteractionItems(),
+        '内容记录' => _contentRecordItems(),
+        '阅读设置' => _readingSettingItems(),
+        _ => _maintenanceItems(),
+      },
+    );
+  }
+
+  List<Widget> _accountInteractionItems() {
+    return [
+      _buildSection('账号互动'),
+      _buildMenuItem(
+        icon: Icons.person_outline,
+        title: '个人页面',
+        subtitle: '查看账号信息和登录状态',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const ProfileScreen()),
+          );
+        },
+      ),
+      _buildMenuItem(
+        icon: Icons.forum_outlined,
+        title: '全局聊天室',
+        subtitle: '和其他读者实时聊天',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const ChatRoomListScreen()),
+          );
+        },
+      ),
+    ];
+  }
+
+  List<Widget> _contentRecordItems() {
+    return [
+      _buildSection('内容记录'),
+      _buildMenuItem(
+        icon: Icons.menu_book_outlined,
+        title: '我的书架',
+        subtitle: '管理已加入和本地导入的小说',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const BookshelfScreen()),
+          );
+        },
+      ),
+      _buildMenuItem(
+        icon: Icons.history,
+        title: '动漫播放历史',
+        subtitle: '本地保存最近一个月',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const AnimeHistoryScreen()),
+          );
+        },
+      ),
+      _buildMenuItem(
+        icon: Icons.auto_stories_outlined,
+        title: '漫画阅读历史',
+        subtitle: '本地保存最近一个月',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MangaHistoryScreen()),
+          );
+        },
+      ),
+    ];
+  }
+
+  List<Widget> _readingSettingItems() {
+    return [
+      _buildSection('阅读设置'),
+      _buildMenuItem(
+        icon: Icons.text_fields,
+        title: '默认字体',
+        subtitle: '系统默认',
+        onTap: () {},
+      ),
+      Consumer<ReadingProvider>(
+        builder: (context, readingProvider, _) => _buildMenuItem(
+          icon: Icons.brightness_6,
+          title: '深色模式',
+          trailing: IgnorePointer(
+            child: Switch(
+              value: readingProvider.settings.nightMode,
+              onChanged: readingProvider.setNightMode,
+              activeTrackColor: AppTheme.primaryColor.withValues(alpha: 0.5),
+            ),
+          ),
+          onTap: () =>
+              readingProvider.setNightMode(!readingProvider.settings.nightMode),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _maintenanceItems() {
+    return [
+      _buildSection('应用维护'),
+      _buildMenuItem(
+        icon: Icons.delete_outline,
+        title: '清除缓存',
+        subtitle: '清除已缓存章节内容',
+        onTap: _confirmClearCache,
+      ),
+      _buildMenuItem(
+        icon: Icons.system_update_alt_outlined,
+        title: _isDownloadingUpdate ? '正在下载更新' : '检查更新',
+        subtitle: _updateSubtitle,
+        trailing: _isCheckingUpdate || _isDownloadingUpdate
+            ? SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.2,
+                  value: _downloadProgress,
+                ),
+              )
+            : null,
+        onTap: _isCheckingUpdate || _isDownloadingUpdate
+            ? null
+            : _checkForUpdate,
+      ),
+      _buildMenuItem(
+        icon: Icons.history_edu_outlined,
+        title: '更新日志',
+        subtitle: '查看每个版本更新内容',
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const UpdateLogScreen()),
+          );
+        },
+      ),
+      _buildMenuItem(
+        icon: Icons.info_outline,
+        title: '关于应用',
+        subtitle: 'Sakura v$_appVersionName',
+        onTap: () {
+          showAboutDialog(
+            context: context,
+            applicationName: 'Sakura',
+            applicationVersion: _appVersionName,
+            applicationIcon: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/images/app_icon.png',
+                width: 42,
+                height: 42,
               ),
-              borderRadius: BorderRadius.circular(12),
+            ),
+          );
+        },
+      ),
+    ];
+  }
+
+  void _confirmClearCache() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除缓存'),
+        content: const Text('将清除所有缓存的章节内容，阅读进度不受影响。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('确认清除'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCategoryCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      child: Material(
+        color: Theme.of(context).cardColor,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              border: Border.all(color: AppTheme.dividerColor),
+              borderRadius: BorderRadius.circular(8),
             ),
             child: Row(
               children: [
                 Container(
-                  width: 56,
-                  height: 56,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white24,
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Image.asset(
-                    'assets/images/app_icon.png',
-                    fit: BoxFit.cover,
+                  child: Icon(icon, color: AppTheme.primaryColor, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 16),
-                const Expanded(
-                  child: Text(
-                    '凡王之血，必以剑终！',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
+                const Icon(Icons.chevron_right, color: AppTheme.textHint),
               ],
             ),
           ),
-          const SizedBox(height: 8),
-          _buildSection('功能'),
-          _buildMenuItem(
-            icon: Icons.menu_book_outlined,
-            title: '我的书架',
-            subtitle: '管理已加入和本地导入的小说',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const BookshelfScreen()),
-              );
-            },
-          ),
-          _buildMenuItem(
-            icon: Icons.history,
-            title: '动漫播放历史',
-            subtitle: '本地保存最近一个月',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AnimeHistoryScreen()),
-              );
-            },
-          ),
-          _buildMenuItem(
-            icon: Icons.auto_stories_outlined,
-            title: '漫画阅读历史',
-            subtitle: '本地保存最近一个月',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const MangaHistoryScreen()),
-              );
-            },
-          ),
-          Consumer<TtsProvider>(
-            builder: (context, ttsProvider, _) => _buildMenuItem(
-              icon: Icons.record_voice_over_outlined,
-              title: '语音朗读',
-              subtitle: ttsProvider.settings.useIflytek
-                  ? '科大讯飞 · ${ttsProvider.settings.iflytekVoiceLabel}'
-                  : '系统 TTS',
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const TtsSettingsScreen()),
-                );
-              },
-            ),
-          ),
-          const Divider(indent: 16, endIndent: 16),
-          _buildSection('阅读设置'),
-          _buildMenuItem(
-            icon: Icons.text_fields,
-            title: '默认字体',
-            subtitle: '系统默认',
-            onTap: () {},
-          ),
-          Consumer<ReadingProvider>(
-            builder: (context, readingProvider, _) => _buildMenuItem(
-              icon: Icons.brightness_6,
-              title: '深色模式',
-              trailing: IgnorePointer(
-                child: Switch(
-                  value: readingProvider.settings.nightMode,
-                  onChanged: readingProvider.setNightMode,
-                  activeTrackColor: AppTheme.primaryColor.withValues(
-                    alpha: 0.5,
-                  ),
-                ),
-              ),
-              onTap: () => readingProvider.setNightMode(
-                !readingProvider.settings.nightMode,
-              ),
-            ),
-          ),
-          const Divider(indent: 16, endIndent: 16),
-          _buildSection('缓存与存储'),
-          _buildMenuItem(
-            icon: Icons.delete_outline,
-            title: '清除缓存',
-            subtitle: '清除已缓存章节内容',
-            onTap: () {
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('清除缓存'),
-                  content: const Text('将清除所有缓存的章节内容，阅读进度不受影响。'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('取消'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('确认清除'),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-          const Divider(indent: 16, endIndent: 16),
-          _buildSection('关于'),
-          _buildMenuItem(
-            icon: Icons.info_outline,
-            title: '关于应用',
-            subtitle: 'Sakura v$_appVersionName',
-            onTap: () {},
-          ),
-          _buildMenuItem(
-            icon: Icons.history_edu_outlined,
-            title: '更新日志',
-            subtitle: '查看每个版本更新内容',
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const UpdateLogScreen()),
-              );
-            },
-          ),
-          _buildMenuItem(
-            icon: Icons.system_update_alt_outlined,
-            title: _isDownloadingUpdate ? '正在下载更新' : '检查更新',
-            subtitle: _updateSubtitle,
-            trailing: _isCheckingUpdate || _isDownloadingUpdate
-                ? SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.2,
-                      value: _downloadProgress,
-                    ),
-                  )
-                : null,
-            onTap: _isCheckingUpdate || _isDownloadingUpdate
-                ? null
-                : _checkForUpdate,
-          ),
-          const SizedBox(height: 32),
-          Center(
-            child: Text(
-              'Sakura v$_appVersionName',
-              style: const TextStyle(fontSize: 12, color: AppTheme.textHint),
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
+        ),
       ),
     );
   }
@@ -257,6 +400,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
           color: AppTheme.textSecondary,
         ),
       ),
+    );
+  }
+
+  Widget _buildAccountCard() {
+    return Consumer<InteractionAuthProvider>(
+      builder: (context, auth, _) {
+        final user = auth.user;
+        final isLoggedIn = auth.isLoggedIn && user != null;
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.dividerColor),
+          ),
+          child: Row(
+            children: [
+              InteractionAvatar(
+                label: isLoggedIn ? user.nickname : '登录',
+                icon: isLoggedIn
+                    ? Icons.person_outline
+                    : Icons.person_add_alt_1_outlined,
+                size: 44,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isLoggedIn ? user.nickname : '登录 / 注册',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      isLoggedIn ? user.email : '登录后可发表评论、弹幕和进入聊天室',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.textHint,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (auth.isLoading)
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else if (isLoggedIn)
+                TextButton(onPressed: auth.logout, child: const Text('退出'))
+              else
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(78, 38),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const InteractionAuthScreen(),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.login, size: 18),
+                  label: const Text('登录'),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -417,6 +644,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _friendlyUpdateError(Object error) {
     final text = error.toString().replaceFirst('Exception: ', '');
     if (text.contains('checksum')) return '安装包校验失败';
+    if (text.contains('Update config is not JSON')) return '服务器版本文件不是 JSON';
     if (text.contains('Invalid update config')) return '服务器版本配置不正确';
     if (text.contains('Update check failed')) return '服务器版本文件无法访问';
     if (text.contains('APK download failed')) return '安装包下载失败';
@@ -438,6 +666,148 @@ class UpdateLogScreen extends StatelessWidget {
   const UpdateLogScreen({super.key});
 
   static const List<_UpdateLogEntry> _entries = [
+    _UpdateLogEntry(
+      versionName: '4.0.16',
+      versionCode: 31,
+      dateLabel: '2026-07-08',
+      notes: [
+        '主页小樱支持拖动摆放到任意位置，机器人皮肤对所有用户开放',
+        '聊天室机器人固定显示为小樱，不受个人页换肤影响',
+        '会员卡恢复紧凑尺寸，并优化平板显示',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.15',
+      versionCode: 30,
+      dateLabel: '2026-07-08',
+      notes: ['个人页机器人入口恢复为全身站立样式，并固定显示在页面右下角'],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.14',
+      versionCode: 29,
+      dateLabel: '2026-07-07',
+      notes: [
+        '启动 App 后自动检查服务器新版本，发现更新时提示是否立即更新',
+        '修复机器人助手历史上下文记忆，打开后自动加载最近对话',
+        '机器人助手顶部区域固定，聊天内容独立滚动，避免滑动时卡片伸缩',
+        '个人页机器人入口改为上半身探窗，并加入拉出和回收动画',
+        '优化聊天室进入后的最新消息定位、赛马小游戏全屏布局和平板适配',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.13',
+      versionCode: 28,
+      dateLabel: '2026-07-07',
+      notes: [
+        '修复进入聊天室后最后一条消息不是聊天室最新消息的问题',
+        '聊天室历史消息按消息 ID 稳定排序，避免同一秒多条消息顺序错乱',
+        '聊天室支持向上滚动分页加载更早记录，进房间默认只加载最近消息',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.11',
+      versionCode: 26,
+      dateLabel: '2026-07-07',
+      notes: [
+        '聊天室列表在线人数改为实时连接统计，新消息按用户未读读点统计',
+        '聊天室成员页显示在线/总人数，小樱 24h 在线，当前用户在线状态更准确',
+        '语音消息改为干净气泡样式，长按支持引用、转文字、听筒/扬声器切换',
+        '修复讯飞 RTASR 语音转文字配置和 Bad Request 提示，默认使用 APPID/APIKey 鉴权',
+        '我的页卡片改为无模糊高透明玻璃，边框和分割线更清晰，头像昵称排版重新对齐',
+        'LV7 进场特效移到聊天室顶部并队列播放，避免多人同时进入时叠加',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.10',
+      versionCode: 25,
+      dateLabel: '2026-07-07',
+      notes: [
+        '后台语音配置简化为 APPID/APIKey/SecretKey/APISecret',
+        '小樱机器人支持后台测试连接和统一皮肤配置',
+        '聊天室补齐 @ 补全、长按头像 @、管理员解散聊天室和成员查看',
+        '我的页新增小樱助手入口，支持从屏幕边缘探出和弹性面板',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.2',
+      versionCode: 17,
+      dateLabel: '2026-07-01',
+      notes: ['小说主页恢复 2.0.5 版本布局', '保留 4.0 已修复的弹幕输入、漫画进度、头像昵称、聊天室发言限制和评分刷新'],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.1',
+      versionCode: 16,
+      dateLabel: '2026-07-01',
+      notes: [
+        '小说首页恢复旧版轻量布局：搜索框、分类入口、横向推荐和强力推荐',
+        '小说首页继续使用接口返回的真实封面，不使用占位蓝卡',
+        '修复小说评分提交后详情页顶部评分不刷新的问题',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '4.0.0',
+      versionCode: 15,
+      dateLabel: '2026-07-01',
+      notes: [
+        '小说栏目恢复 3.0.0 风格主页，不再混入发现页重构布局',
+        '主导航恢复小说、漫画、动漫、我的四栏结构，废弃 3.0.5 五栏重构',
+        '动漫弹幕发送改为视频内紧凑输入条，支持关闭和全屏输入',
+        '修复漫画阅读历史百分比恢复偏移问题',
+        '聊天室输入框优化，并要求设置头像和昵称后才能发言',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '3.0.3',
+      versionCode: 12,
+      dateLabel: '2026-06-30',
+      notes: ['动漫播放器弹幕改为视频内展示', '新增弹幕快捷开关、发送入口和设置面板', '补充横屏播放时的弹幕控制'],
+    ),
+    _UpdateLogEntry(
+      versionName: '3.0.4',
+      versionCode: 13,
+      dateLabel: '2026-07-01',
+      notes: [
+        '小说栏目恢复 3.0.0 风格主页，不再混入发现页重构布局',
+        '动漫弹幕发送改为视频内紧凑输入条，支持关闭和全屏输入',
+        '修复漫画阅读历史百分比恢复偏移问题',
+        '聊天室接入成熟聊天 UI，并要求设置头像和昵称后才能发言',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '3.0.1',
+      versionCode: 10,
+      dateLabel: '2026-06-30',
+      notes: [
+        '小说、动漫、漫画详情页新增评论预览和评分摘要',
+        '评论区新增热门/最新切换、点赞、回复和举报',
+        '动漫播放页新增剧集、评论、弹幕三段式互动区',
+        '漫画阅读器新增当前章节评论入口',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '3.0.0',
+      versionCode: 9,
+      dateLabel: '2026-06-30',
+      notes: [
+        '切换到 3.0 独立更新通道，不再和 2.0 版本互相升级',
+        '我的页面新增邮箱登录和注册入口',
+        '注册支持图片验证码和邮箱验证码',
+        '发送邮箱验证码加入 60 秒防刷限制',
+        '新增小说点评、漫画讨论、动漫评论入口',
+        '动漫播放器新增弹幕面板，支持按播放进度查看和发送弹幕',
+        '设置页新增个人页面与全局聊天室入口',
+      ],
+    ),
+    _UpdateLogEntry(
+      versionName: '2.0.5',
+      versionCode: 7,
+      dateLabel: '2026-06-30',
+      notes: [
+        '修复动漫视频进度条小蓝点无法拖动的问题',
+        '漫画阅读页右下角新增当前章节阅读百分比',
+        '从小说目录进入章节时从章节开头开始显示 0%',
+      ],
+    ),
     _UpdateLogEntry(
       versionName: '2.0.4',
       versionCode: 6,
@@ -482,15 +852,20 @@ class UpdateLogScreen extends StatelessWidget {
     ),
   ];
 
+  static List<_UpdateLogEntry> get _visibleEntries => _entries
+      .where((entry) => entry.versionCode >= 15 || entry.versionCode <= 12)
+      .toList(growable: false);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('更新日志')),
       body: ListView.separated(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        itemCount: _entries.length,
+        itemCount: _visibleEntries.length,
         separatorBuilder: (_, _) => const Divider(height: 28),
-        itemBuilder: (context, index) => _UpdateLogItem(entry: _entries[index]),
+        itemBuilder: (context, index) =>
+            _UpdateLogItem(entry: _visibleEntries[index]),
       ),
     );
   }
@@ -1124,57 +1499,37 @@ class TtsSettingsScreen extends StatefulWidget {
 }
 
 class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
-  late TextEditingController _appIdController;
-  late TextEditingController _apiKeyController;
-  late TextEditingController _apiSecretController;
   late TtsSettings _draft;
+  bool _isLoading = true;
+  bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
     _draft = context.read<TtsProvider>().settings;
-    _appIdController = TextEditingController(text: _draft.iflytekAppId);
-    _apiKeyController = TextEditingController(text: _draft.iflytekApiKey);
-    _apiSecretController = TextEditingController(text: _draft.iflytekApiSecret);
+    unawaited(_loadSettings());
   }
 
-  @override
-  void dispose() {
-    _appIdController.dispose();
-    _apiKeyController.dispose();
-    _apiSecretController.dispose();
-    super.dispose();
+  Future<void> _loadSettings() async {
+    final provider = context.read<TtsProvider>();
+    await provider.settingsLoaded;
+    if (!mounted) return;
+    final settings = provider.settings;
+    setState(() {
+      _draft = settings;
+      _isLoading = false;
+    });
   }
 
   Future<void> _save() async {
-    final next = _draft.copyWith(
-      iflytekAppId: _appIdController.text.trim(),
-      iflytekApiKey: _apiKeyController.text.trim(),
-      iflytekApiSecret: _apiSecretController.text.trim(),
-    );
-    await context.read<TtsProvider>().updateSettings(next);
+    setState(() => _isSaving = true);
+    await context.read<TtsProvider>().updateSettings(_draft);
     if (!mounted) return;
+    setState(() => _isSaving = false);
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('语音朗读配置已保存')));
     Navigator.pop(context);
-  }
-
-  Widget _buildCredentialField({
-    required TextEditingController controller,
-    required String label,
-  }) {
-    return TextField(
-      controller: controller,
-      obscureText: true,
-      enableSuggestions: false,
-      autocorrect: false,
-      keyboardType: TextInputType.visiblePassword,
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-      ),
-    );
   }
 
   @override
@@ -1182,95 +1537,92 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('语音朗读'),
-        actions: [TextButton(onPressed: _save, child: const Text('保存'))],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text(
-            '朗读引擎',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 10),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(
-                value: TtsSettings.engineSystem,
-                label: Text('系统 TTS'),
-                icon: Icon(Icons.volume_up_outlined),
-              ),
-              ButtonSegment(
-                value: TtsSettings.engineIflytek,
-                label: Text('科大讯飞'),
-                icon: Icon(Icons.cloud_outlined),
-              ),
-            ],
-            selected: {_draft.engine},
-            onSelectionChanged: (value) {
-              setState(() => _draft = _draft.copyWith(engine: value.first));
-            },
-          ),
-          const SizedBox(height: 24),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('使用科大讯飞在线语音'),
-            subtitle: const Text('需要在讯飞开放平台开通在线语音合成并填写密钥'),
-            value: _draft.useIflytek,
-            onChanged: (value) {
-              setState(() {
-                _draft = _draft.copyWith(
-                  engine: value
-                      ? TtsSettings.engineIflytek
-                      : TtsSettings.engineSystem,
-                );
-              });
-            },
-          ),
-          const SizedBox(height: 12),
-          _buildCredentialField(controller: _appIdController, label: 'AppID'),
-          const SizedBox(height: 12),
-          _buildCredentialField(
-            controller: _apiKeyController,
-            label: 'API Key',
-          ),
-          const SizedBox(height: 12),
-          _buildCredentialField(
-            controller: _apiSecretController,
-            label: 'API Secret',
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            '发音人',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 10),
-          RadioGroup<String>(
-            groupValue: _draft.iflytekVoiceName,
-            onChanged: (value) {
-              if (value == null) return;
-              final selectedVoice = iflytekBasicVoices.firstWhere(
-                (voice) => voice.name == value,
-              );
-              setState(() {
-                _draft = _draft.copyWith(
-                  iflytekVoiceName: selectedVoice.name,
-                  iflytekVoiceLabel: selectedVoice.label,
-                );
-              });
-            },
-            child: Column(
-              children: iflytekBasicVoices.map((voice) {
-                return RadioListTile<String>(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(voice.label),
-                  subtitle: Text('${voice.language} · ${voice.name}'),
-                  value: voice.name,
-                );
-              }).toList(),
-            ),
+        actions: [
+          TextButton(
+            onPressed: _isLoading || _isSaving ? null : _save,
+            child: Text(_isSaving ? '保存中' : '保存'),
           ),
         ],
       ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text(
+                  '朗读引擎',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: TtsSettings.engineSystem,
+                      label: Text('系统 TTS'),
+                      icon: Icon(Icons.volume_up_outlined),
+                    ),
+                    ButtonSegment(
+                      value: TtsSettings.engineIflytek,
+                      label: Text('科大讯飞'),
+                      icon: Icon(Icons.cloud_outlined),
+                    ),
+                  ],
+                  selected: {_draft.engine},
+                  onSelectionChanged: (value) {
+                    setState(
+                      () => _draft = _draft.copyWith(engine: value.first),
+                    );
+                  },
+                ),
+                const SizedBox(height: 24),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('使用科大讯飞在线语音'),
+                  subtitle: const Text('App 已内置语音服务配置，无需填写密钥'),
+                  value: _draft.useIflytek,
+                  onChanged: (value) {
+                    setState(() {
+                      _draft = _draft.copyWith(
+                        engine: value
+                            ? TtsSettings.engineIflytek
+                            : TtsSettings.engineSystem,
+                      );
+                    });
+                  },
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  '发音人',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 10),
+                RadioGroup<String>(
+                  groupValue: _draft.iflytekVoiceName,
+                  onChanged: (value) {
+                    if (value == null) return;
+                    final selectedVoice = iflytekBasicVoices.firstWhere(
+                      (voice) => voice.name == value,
+                    );
+                    setState(() {
+                      _draft = _draft.copyWith(
+                        iflytekVoiceName: selectedVoice.name,
+                        iflytekVoiceLabel: selectedVoice.label,
+                      );
+                    });
+                  },
+                  child: Column(
+                    children: iflytekBasicVoices.map((voice) {
+                      return RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(voice.label),
+                        subtitle: Text('${voice.language} · ${voice.name}'),
+                        value: voice.name,
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }

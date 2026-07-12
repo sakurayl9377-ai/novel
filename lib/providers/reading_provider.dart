@@ -1,11 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import '../models/reading_settings.dart';
 import '../models/reading_progress.dart';
 import '../models/novel.dart';
 import '../models/chapter.dart';
 import '../services/storage_service.dart';
+import '../services/progress_sync_service.dart';
 
 class ReadingProvider extends ChangeNotifier {
+  ReadingProvider() {
+    ProgressSyncService.instance.revision.addListener(_handleRemoteRevision);
+  }
+
   final StorageService _storage = StorageService();
 
   ReadingSettings _settings = ReadingSettings();
@@ -92,8 +99,8 @@ class ReadingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<ReadingProgress?> loadProgress(String novelId) async {
-    final progressData = await _storage.getReadingProgress(novelId);
+  Future<ReadingProgress?> loadProgress(Novel novel) async {
+    final progressData = await _storage.getNovelReadingProgress(novel);
     if (progressData != null) {
       _currentProgress = ReadingProgress.fromJson(progressData);
       notifyListeners();
@@ -103,9 +110,9 @@ class ReadingProvider extends ChangeNotifier {
     return _currentProgress;
   }
 
-  Future<void> saveProgress(String novelId, ReadingProgress progress) async {
+  Future<void> saveProgress(Novel novel, ReadingProgress progress) async {
     _currentProgress = progress;
-    await _storage.saveReadingProgress(novelId, progress.toJson());
+    await _storage.saveNovelReadingProgress(novel, progress.toJson());
   }
 
   void setCurrentNovel(Novel novel) {
@@ -132,5 +139,25 @@ class ReadingProvider extends ChangeNotifier {
   void setLoadingContent(bool loading) {
     _isLoadingContent = loading;
     notifyListeners();
+  }
+
+  void _handleRemoteRevision() {
+    unawaited(_reloadCurrentProgress());
+  }
+
+  Future<void> _reloadCurrentProgress() async {
+    final novel = _currentNovel;
+    if (novel == null) return;
+    final progressData = await _storage.getNovelReadingProgress(novel);
+    _currentProgress = progressData == null
+        ? null
+        : ReadingProgress.fromJson(progressData);
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    ProgressSyncService.instance.revision.removeListener(_handleRemoteRevision);
+    super.dispose();
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -12,10 +13,32 @@ import '../models/chapter.dart';
 import '../models/novel.dart';
 import 'site_domain_service.dart';
 import 'storage_service.dart';
+import 'swr_cache.dart';
 
 class BookSourceService {
+  static final http.Client _sharedHttpClient = http.Client();
   static const String _homeCachePrefix = 'novel_home_cache_v2_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
+  static final SwrCache<String, NovelHomeData> _homeMemoryCache = SwrCache(
+    freshTtl: const Duration(minutes: 5),
+    staleTtl: const Duration(hours: 4),
+    maxEntries: 8,
+  );
+  static final SwrCache<String, List<Novel>> _categoryCache = SwrCache(
+    freshTtl: const Duration(minutes: 10),
+    staleTtl: const Duration(hours: 2),
+    maxEntries: 80,
+  );
+  static final SwrCache<String, _BqgBookApiMeta> _bookApiMetaCache = SwrCache(
+    freshTtl: const Duration(minutes: 30),
+    staleTtl: const Duration(hours: 12),
+    maxEntries: 120,
+  );
+  static final SwrCache<String, List<Chapter>> _chapterListCache = SwrCache(
+    freshTtl: const Duration(minutes: 15),
+    staleTtl: const Duration(hours: 12),
+    maxEntries: 48,
+  );
   static const String _bqgPrimaryOrigin = 'https://www.bqg475.cc';
   static const String _bqgApexOrigin = 'https://bqg475.cc';
   static const String _bqgBackupOrigin = 'https://www.bqg7777.xyz';
@@ -59,12 +82,15 @@ class BookSourceService {
   final StorageService _storage = StorageService();
   final SiteDomainService _domainService = SiteDomainService.instance;
 
+  static Map<String, int> get cacheTelemetryMetadata => {
+    ..._homeMemoryCache.stats.toTelemetryMetadata(prefix: 'novelHome'),
+    ..._categoryCache.stats.toTelemetryMetadata(prefix: 'novelCategory'),
+    ..._bookApiMetaCache.stats.toTelemetryMetadata(prefix: 'novelDetail'),
+    ..._chapterListCache.stats.toTelemetryMetadata(prefix: 'novelCatalog'),
+  };
+
   Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) {
-    final client = httpClient;
-    if (client != null) {
-      return client.get(uri, headers: headers);
-    }
-    return http.get(uri, headers: headers);
+    return (httpClient ?? _sharedHttpClient).get(uri, headers: headers);
   }
 
   bool isBqg995Source(BookSource source) {
@@ -99,22 +125,44 @@ class BookSourceService {
     final sources = await _searchableSources(await getEnabledSources());
 
     for (final source in sources) {
+      final cacheKey = _homeCacheKey(source);
       try {
-        if (!forceRefresh) {
-          final cached = await _readCachedHome(source, allowExpired: false);
-          if (cached != null && !cached.isEmpty) return cached;
+        if (!forceRefresh && _homeMemoryCache.containsUsable(cacheKey)) {
+          return _homeMemoryCache.get(
+            cacheKey,
+            loader: () => _fetchHomeFromSource(source),
+          );
         }
 
-        final data = _isBqgApiSource(source)
-            ? await _fetchBqgApiHome(source)
-            : await _fetchHtmlHome(source);
-        if (!data.isEmpty) {
-          await _writeCachedHome(source, data);
-          return data;
+        if (!forceRefresh) {
+          final cached = await _readCachedHome(source, allowExpired: false);
+          if (cached != null && !cached.isEmpty) {
+            _homeMemoryCache.put(cacheKey, cached);
+            unawaited(
+              _homeMemoryCache.refresh(
+                cacheKey,
+                loader: () => _fetchHomeFromSource(source),
+              ),
+            );
+            return cached;
+          }
         }
+
+        return forceRefresh
+            ? await _homeMemoryCache.refresh(
+                cacheKey,
+                loader: () => _fetchHomeFromSource(source),
+              )
+            : await _homeMemoryCache.get(
+                cacheKey,
+                loader: () => _fetchHomeFromSource(source),
+              );
       } catch (_) {
         final cached = await _readCachedHome(source, allowExpired: true);
-        if (cached != null && !cached.isEmpty) return cached;
+        if (cached != null && !cached.isEmpty) {
+          _homeMemoryCache.put(cacheKey, cached);
+          return cached;
+        }
         continue;
       }
     }
@@ -122,7 +170,26 @@ class BookSourceService {
     return const NovelHomeData.empty();
   }
 
+  Future<NovelHomeData> _fetchHomeFromSource(BookSource source) async {
+    final data = _isBqgApiSource(source)
+        ? await _fetchBqgApiHome(source)
+        : await _fetchHtmlHome(source);
+    if (data.isEmpty) throw StateError('novel home is empty');
+    await _writeCachedHome(source, data);
+    return data;
+  }
+
   Future<List<Novel>> fetchCategory(NovelCategory category) async {
+    final cacheKey = category.apiSort.isNotEmpty
+        ? 'api:${category.apiSort}'
+        : 'url:${category.url}';
+    return _categoryCache.get(
+      cacheKey,
+      loader: () => _fetchCategoryUncached(category),
+    );
+  }
+
+  Future<List<Novel>> _fetchCategoryUncached(NovelCategory category) async {
     if (category.apiSort.isNotEmpty) {
       return _fetchBqgApiCategory(category);
     }
@@ -146,6 +213,26 @@ class BookSourceService {
     final bookId = _extractBookId(novel.chapterUrl) ?? _extractBqgId(novel.id);
     if (bookId == null) return novel;
 
+    final meta = await _getBookApiMeta(novel, bookId);
+    return meta?.novel ?? novel;
+  }
+
+  Future<_BqgBookApiMeta?> _getBookApiMeta(Novel novel, String bookId) async {
+    try {
+      return await _bookApiMetaCache.get(
+        bookId,
+        loader: () async {
+          final meta = await _fetchBookApiMeta(novel, bookId);
+          if (meta == null) throw StateError('book detail not found');
+          return meta;
+        },
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<_BqgBookApiMeta?> _fetchBookApiMeta(Novel novel, String bookId) async {
     for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
       try {
         final response = await _get(
@@ -158,12 +245,18 @@ class BookSourceService {
 
         final data = jsonDecode(_decodeBody(response));
         if (data is! Map) continue;
-        return _mergeBqgBookDetail(novel, data, responseOrigin, bookId);
+        final dirId = (data['dirid'] ?? data['id'] ?? bookId).toString();
+        return _BqgBookApiMeta(
+          novel: _mergeBqgBookDetail(novel, data, responseOrigin, bookId),
+          bookId: bookId,
+          dirId: dirId,
+          baseUrl: responseOrigin,
+        );
       } catch (_) {
         continue;
       }
     }
-    return novel;
+    return null;
   }
 
   Future<NovelHomeData?> _readCachedHome(
@@ -1385,7 +1478,27 @@ class BookSourceService {
     return '';
   }
 
-  Future<List<Chapter>> getChapterList(Novel novel) async {
+  Future<List<Chapter>> getChapterList(
+    Novel novel, {
+    bool forceRefresh = false,
+  }) {
+    final cacheKey = novel.id;
+    return forceRefresh
+        ? _chapterListCache.refresh(
+            cacheKey,
+            loader: () => _getChapterListUncached(novel),
+          )
+        : _chapterListCache.get(
+            cacheKey,
+            loader: () => _getChapterListUncached(novel),
+          );
+  }
+
+  void invalidateChapterList(String novelId) {
+    _chapterListCache.invalidate(novelId);
+  }
+
+  Future<List<Chapter>> _getChapterListUncached(Novel novel) async {
     final apiChapters = await _getApiChapterList(novel);
     if (apiChapters.isNotEmpty) return apiChapters;
 
@@ -1419,38 +1532,48 @@ class BookSourceService {
     return chapters;
   }
 
+  List<Chapter> buildProvisionalChapterList(
+    Novel novel, {
+    int throughIndex = 0,
+  }) {
+    final bookId = _extractBookId(novel.chapterUrl) ?? _extractBqgId(novel.id);
+    if (bookId == null) return const [];
+    final origin = _originOf(novel.chapterUrl).isNotEmpty
+        ? _originOf(novel.chapterUrl)
+        : _bqgPrimaryOrigin;
+    final count = (throughIndex + 1).clamp(1, 20000).toInt();
+    return List<Chapter>.generate(
+      count,
+      (index) => Chapter(
+        id: '${novel.id}_ch$index',
+        novelId: novel.id,
+        title: '第${index + 1}章（目录加载中）',
+        index: index,
+        url: '$origin/#/book/$bookId/${index + 1}.html',
+      ),
+      growable: false,
+    );
+  }
+
   Future<List<Chapter>> _getApiChapterList(Novel novel) async {
-    final bookId = _extractBookId(novel.chapterUrl);
+    final bookId = _extractBookId(novel.chapterUrl) ?? _extractBqgId(novel.id);
     if (bookId == null) return const [];
 
-    for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
+    final meta = await _getBookApiMeta(novel, bookId);
+    if (meta == null) return const [];
+    final origins = <String>{
+      meta.baseUrl,
+      ...await _bqgOriginCandidates(novel.chapterUrl),
+    };
+    for (final baseUrl in origins) {
       try {
-        final bookResponse = await _get(
-          Uri.parse('$baseUrl/api/book?id=$bookId'),
-          headers: _headers(baseUrl),
-        ).timeout(const Duration(seconds: 10));
-        if (bookResponse.statusCode != 200) continue;
-        await _rememberBqgResponseOrigin(bookResponse);
-        final responseBaseUrl = _originOfResponse(
-          bookResponse,
-          fallback: baseUrl,
-        );
-
-        final bookData = jsonDecode(_decodeBody(bookResponse));
-        if (bookData is! Map) continue;
-        final dirId = (bookData['dirid'] ?? bookData['id'] ?? bookId)
-            .toString();
-
         final listResponse = await _get(
-          Uri.parse('$responseBaseUrl/api/booklist?id=$dirId'),
-          headers: _headers(responseBaseUrl),
+          Uri.parse('$baseUrl/api/booklist?id=${meta.dirId}'),
+          headers: _headers(baseUrl),
         ).timeout(const Duration(seconds: 10));
         if (listResponse.statusCode != 200) continue;
         await _rememberBqgResponseOrigin(listResponse);
-        final listBaseUrl = _originOfResponse(
-          listResponse,
-          fallback: responseBaseUrl,
-        );
+        final listBaseUrl = _originOfResponse(listResponse, fallback: baseUrl);
 
         final listData = jsonDecode(_decodeBody(listResponse));
         final rawList = listData is Map ? listData['list'] : null;
@@ -1741,6 +1864,20 @@ class BookSourceService {
           caseSensitive: false,
         ).hasMatch(normalized);
   }
+}
+
+class _BqgBookApiMeta {
+  _BqgBookApiMeta({
+    required this.novel,
+    required this.bookId,
+    required this.dirId,
+    required this.baseUrl,
+  });
+
+  final Novel novel;
+  final String bookId;
+  final String dirId;
+  final String baseUrl;
 }
 
 class NovelHomeData {
