@@ -208,7 +208,8 @@ PYTHONPYCACHEPREFIX="$python_cache" python3 "$staged_dir/scripts/test_mihomo_sub
   "$staged_dir/scripts/bootstrap-production-deploy.sh" \
   "$staged_dir/scripts/migrate-production-layout.sh" \
   "$staged_dir/scripts/audit-production.sh" \
-  "$staged_dir/scripts/inspect-mihomo.sh"
+  "$staged_dir/scripts/inspect-mihomo.sh" \
+  "$staged_dir/scripts/prune-apk-backups.sh"
 
 install -d -m 0755 -o root -g root "$release_root" "$shared_root"
 
