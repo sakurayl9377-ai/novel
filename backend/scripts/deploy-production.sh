@@ -111,7 +111,7 @@ restore_tools() {
   local restore_status=0
 
   if [[ "$tools_installed" != true ]]; then
-    return
+    return 0
   fi
   if [[ -f "$helper_backup" ]]; then
     install -o root -g root -m 0755 "$helper_backup" "$helper_restore" \
@@ -180,6 +180,9 @@ trap 'exit 143' TERM
 tar -xzf "$archive" -C "$work_dir" --no-same-owner
 staged_dir="$work_dir/backend"
 chown -R "$app_user:$app_user" "$staged_dir"
+# The application user owns the staged tree but must also be able to traverse
+# the root-owned temporary parent. Keep the parent non-listable and non-writable.
+chmod 0711 "$work_dir"
 
 runtime_path="$(dirname "$node_bin"):$(dirname "$npm_bin"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 runtime_env=(env "PATH=$runtime_path")
