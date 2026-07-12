@@ -1669,6 +1669,13 @@ textarea {
   margin-top: 14px;
 }
 
+.proxy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 0;
+}
+
 .muted-note {
   margin: 0;
   color: var(--muted);

@@ -37,6 +37,10 @@ const {
   encryptSettingSecret,
   isEncryptedSettingSecret,
 } = await import("./settings-secrets.js");
+const {
+  normalizeProxyGroupSelection,
+  normalizeProxySubscriptionUrl,
+} = await import("./proxy-control-service.js");
 
 try {
   config.rootDir = tempDir;
@@ -71,6 +75,27 @@ try {
   )?.value;
   assert.equal(isEncryptedSettingSecret(storedChatBotKey), true);
   assert.equal(chatBotSettings().apiKey, "nvapi-legacy-plaintext");
+
+  assert.equal(
+    normalizeProxySubscriptionUrl("https://subscription.example/path?token=test"),
+    "https://subscription.example/path?token=test",
+  );
+  assert.equal(
+    normalizeProxySubscriptionUrl("https://subscription.example/path with space"),
+    "https://subscription.example/path%20with%20space",
+  );
+  assert.throws(
+    () => normalizeProxySubscriptionUrl("http://subscription.example/path"),
+    /proxy_subscription_url_invalid/,
+  );
+  assert.throws(
+    () => normalizeProxySubscriptionUrl("https://user:pass@subscription.example/path"),
+    /proxy_subscription_url_invalid/,
+  );
+  assert.deepEqual(normalizeProxyGroupSelection("GLOBAL", "US-AUTO"), {
+    group: "GLOBAL",
+    choice: "US-AUTO",
+  });
 
   assert.equal(iflytekTtsConfigured(), false);
   for (const [key, value, isSecret] of [

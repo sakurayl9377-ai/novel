@@ -249,6 +249,7 @@ async function loadView() {
   toolbar.classList.toggle(
     "hidden",
     state.view === "dashboard" ||
+      state.view === "proxy" ||
       state.view === "settings" ||
       state.view === "releases" ||
       state.view === "analytics" ||
@@ -274,6 +275,7 @@ async function loadView() {
   if (state.view === "growth") await renderGrowth();
   if (state.view === "reports") await renderReports();
   if (state.view === "audit") await renderAudit();
+  if (state.view === "proxy") await renderProxy();
   if (state.view === "settings") await renderSettings();
   if (state.view === "aiNovels") await renderAiNovels();
 }

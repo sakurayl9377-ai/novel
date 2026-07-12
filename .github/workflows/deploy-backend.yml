@@ -1,0 +1,99 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Verify backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run security
+          bash -n scripts/*.sh
+          export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/novel-python-cache"
+          python3 -m py_compile scripts/*.py
+          python3 scripts/test_mihomo_subscription_update.py
+
+      - name: Build deployment archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r file; do
+            case "$file" in
+              */.env.example|.env.example) ;;
+              */.env|*/.env.*|*.pem|*.key|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
+                echo "Refusing to package sensitive path: $file" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git ls-files backend)
+          archive="novel-backend-${GITHUB_SHA}.tar.gz"
+          tar \
+            --exclude='backend/.env' \
+            --exclude='backend/data' \
+            --exclude='backend/node_modules' \
+            --exclude='*/__pycache__' \
+            --exclude='*/__pycache__/*' \
+            --exclude='*.pyc' \
+            --exclude='backend/*.log' \
+            -czf "$archive" backend
+          checksum="$(sha256sum "$archive" | awk '{print $1}')"
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload and deploy
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+          CHECKSUM: ${{ steps.archive.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          remote_archive="/tmp/${ARCHIVE}"
+          ssh_args=(-i ~/.ssh/deploy_key -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          scp -i ~/.ssh/deploy_key -P "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$ARCHIVE" "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_archive}"
+          ssh "${ssh_args[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "sudo -n /usr/local/sbin/novel-backend-deploy '${remote_archive}' '${GITHUB_SHA}' '${CHECKSUM}'"

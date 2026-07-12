@@ -177,3 +177,51 @@ build\release-archive\version-<version>+<code>.json
 ```
 
 替换前先备份服务器旧文件，不要删除旧归档包。
+
+## 后端自动部署
+
+仓库内置 `.github/workflows/deploy-backend.yml`。推送到 `main` 且
+`backend/**` 有变化时，工作流会先运行安全测试，再通过 SSH 部署后端。
+
+服务器首次接入时，以 root 身份运行：
+
+```bash
+cd /opt/novel-interaction-backend
+sudo bash ./scripts/bootstrap-production-deploy.sh "ssh-ed25519 <GitHub Actions 部署公钥>"
+```
+
+接入脚本会以运行服务的账号定位 Node.js/npm，要求 Node.js 24 或更高版本，
+并在 Ubuntu 上缺少 `sqlite3` 时自动安装。非标准 Node.js 安装路径可通过
+`NOVEL_NODE_BIN` 和 `NOVEL_NPM_BIN` 显式传入。
+脚本还会锁定 `novel-deploy` 的密码，并安装仅允许公钥认证的 SSH `Match`
+配置；安装前后都会验证 sshd 配置，失败时恢复原配置。
+
+GitHub `production` 环境需要配置以下 Secrets：
+
+```text
+DEPLOY_HOST       服务器地址
+DEPLOY_PORT       SSH 端口，通常为 22
+DEPLOY_USER       novel-deploy
+DEPLOY_SSH_KEY    对应的部署私钥
+DEPLOY_HOST_KEY   ssh-keyscan 返回的完整 known_hosts 行
+```
+
+首次部署会把服务器上的 `.env` 和 `data/` 移到
+`/opt/novel-interaction-shared`，后续使用 release 目录和原子符号链接切换，
+保留最近 6 个 release，并在健康检查失败时自动切回上一版本。
+部署前会通过 SQLite online backup 保留最近 10 份数据库备份。数据库迁移
+必须保持向后兼容，代码回滚不会反向修改数据库结构。
+
+服务器环境只读审计：
+
+```bash
+sudo bash ./scripts/audit-production.sh
+```
+
+## 代理后台
+
+管理后台的“代理管理”页面通过 root-owned helper 控制 Mihomo，不允许 Node.js
+直接修改系统配置或执行任意命令。订阅地址只接受 HTTPS，保存后不会回传到浏览器；
+定时更新会固定已验证的公网 IP，并对每次跳转重新校验，拒绝私网、回环、链路本地
+和 CGNAT 地址。服务器需要已有 `mihomo.service`、本地控制器以及
+`mihomo-subscription-update.service` / timer。

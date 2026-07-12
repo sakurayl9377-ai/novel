@@ -4,6 +4,11 @@ import os from "node:os";
 import { config } from "./config.js";
 import { all, db, one, run } from "./db.js";
 import {
+  normalizeProxyGroupSelection,
+  normalizeProxySubscriptionUrl,
+  runProxyControl,
+} from "./proxy-control-service.js";
+import {
   badRequest,
   optionalInt,
   optionalString,
@@ -77,6 +82,77 @@ export async function adminOperationsRoutes(app) {
     { preHandler: app.adminRequired },
     async () => releaseOverview(),
   );
+
+  app.get(
+    "/admin/proxy",
+    { preHandler: app.adminRequired },
+    async () => proxyControl({ action: "status" }),
+  );
+
+  app.post(
+    "/admin/proxy/test",
+    { preHandler: app.adminRequired },
+    async () => proxyControl({ action: "test" }),
+  );
+
+  app.post(
+    "/admin/proxy/update-subscription",
+    { preHandler: app.adminRequired },
+    async () => proxyControl({ action: "update-subscription" }),
+  );
+
+  app.patch(
+    "/admin/proxy/subscription",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const url = normalizeProxySubscriptionUrl(request.body?.url);
+      return proxyControl({ action: "set-subscription", url });
+    },
+  );
+
+  app.patch(
+    "/admin/proxy/service",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      if (typeof request.body?.enabled !== "boolean") {
+        throw badRequest("proxy_service_enabled_invalid");
+      }
+      return proxyControl({ action: "set-service", enabled: request.body.enabled });
+    },
+  );
+
+  app.patch(
+    "/admin/proxy/group",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const selection = normalizeProxyGroupSelection(
+        request.body?.group,
+        request.body?.choice,
+      );
+      return proxyControl({ action: "set-group", ...selection });
+    },
+  );
+}
+
+async function proxyControl(payload) {
+  try {
+    return await runProxyControl(payload);
+  } catch (error) {
+    const rawMessage = String(error?.message || "proxy_control_failed");
+    const message = /^(proxy_|mihomo_)[a-z0-9_]+$/i.test(rawMessage)
+      ? rawMessage
+      : "proxy_control_failed";
+    const wrapped = new Error(message);
+    wrapped.statusCode = [
+      "proxy_subscription_url_invalid",
+      "proxy_subscription_host_not_public",
+      "proxy_group_selection_invalid",
+      "proxy_service_enabled_invalid",
+    ].includes(wrapped.message)
+      ? 400
+      : 503;
+    throw wrapped;
+  }
 }
 
 function operationsOverview() {

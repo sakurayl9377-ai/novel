@@ -713,6 +713,78 @@ async function renderSettings() {
   syncChatBotProviderDefaults(chatBotProvider);
 }
 
+async function renderProxy() {
+  const data = await api("/admin/proxy");
+  const service = data.service || {};
+  const subscription = data.subscription || {};
+  const timer = subscription.timer || {};
+  const runtime = data.runtime || {};
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  viewRoot.innerHTML = `
+    <section class="metrics-grid">
+      ${textMetric("Mihomo 服务", service.active ? "运行中" : "已停止", service.enabled ? "已设为开机启动" : "未启用开机启动", service.active ? "" : "danger")}
+      ${textMetric("核心版本", data.version || "-", runtime.mode ? `模式 ${runtime.mode}` : "")}
+      ${textMetric("本地代理端口", runtime.mixedPort || "-", "仅监听服务器本机")}
+      ${textMetric("订阅定时器", timer.active ? "运行中" : "已停止", timer.nextRun || "-")}
+    </section>
+
+    <section class="settings-grid">
+      <article class="settings-card">
+        <div class="section-title">
+          <span>服务控制</span>
+          ${badge(service.active ? "运行中" : "已停止", service.active ? "active" : "ignored")}
+        </div>
+        <div class="settings-form">
+          <div class="settings-actions proxy-actions">
+            <button class="button ${service.active ? "danger" : "primary"}" data-action="proxy-toggle-service" data-enabled="${service.active ? "false" : "true"}">${service.active ? "停止代理" : "启动代理"}</button>
+            <button class="button" data-action="proxy-test" ${service.active ? "" : "disabled"}>检测出口</button>
+          </div>
+          <p class="muted-note">${service.active ? `日志级别 ${escapeHtml(runtime.logLevel || "-")} · IPv6 ${runtime.ipv6 ? "启用" : "关闭"}` : "代理服务当前未运行"}</p>
+        </div>
+      </article>
+
+      <article class="settings-card">
+        <div class="section-title">
+          <span>订阅更新</span>
+          ${badge(subscription.configured ? "已配置" : "未配置", subscription.configured ? "active" : "ignored")}
+        </div>
+        <div class="settings-form">
+          <label>
+            新订阅地址
+            <input id="proxySubscriptionUrl" type="password" autocomplete="off" placeholder="留空不会显示或修改现有地址" />
+          </label>
+          <div class="settings-actions proxy-actions">
+            <button class="button primary" data-action="proxy-save-subscription">保存并更新</button>
+            <button class="button" data-action="proxy-update-subscription" ${subscription.configured ? "" : "disabled"}>立即更新</button>
+          </div>
+        </div>
+      </article>
+
+      ${groups
+        .map(
+          (group, index) => `<article class="settings-card">
+            <div class="section-title">
+              <span>${escapeHtml(group.name || "策略组")}</span>
+              ${badge(group.current || "未选择", "active")}
+            </div>
+            <div class="settings-form">
+              <label>
+                当前策略
+                <select id="proxyGroupChoice-${index}">
+                  ${(group.options || [])
+                    .map((choice) => settingsOption(choice, choice, group.current))
+                    .join("")}
+                </select>
+              </label>
+              <button class="button primary" data-action="proxy-set-group" data-index="${index}" data-group="${escapeAttr(group.name || "")}">应用策略</button>
+            </div>
+          </article>`,
+        )
+        .join("")}
+    </section>
+  `;
+}
+
 
 async function handleOperationsAction(action, actionElement) {
   if (action === "apply-analytics-filter") {
@@ -763,5 +835,47 @@ async function handleOperationsAction(action, actionElement) {
       await renderSettings();
     } else if (action === "test-chat-bot") {
       await testChatBot();
+    } else if (action === "proxy-test") {
+      const result = await api("/admin/proxy/test", { method: "POST" });
+      const checks = Array.isArray(result.checks) ? result.checks : [];
+      const exitIp = checks.find((item) => item.name === "ip")?.value || "";
+      renderNotice(result.ok ? `代理出口正常${exitIp ? ` · ${exitIp}` : ""}` : "部分代理检测未通过", result.ok ? "" : "error");
+    } else if (action === "proxy-update-subscription") {
+      if (!confirm("确认立即拉取代理订阅并重载 Mihomo？")) return;
+      await api("/admin/proxy/update-subscription", { method: "POST" });
+      renderNotice("代理订阅已更新");
+      await renderProxy();
+    } else if (action === "proxy-save-subscription") {
+      const url = valueOf("#proxySubscriptionUrl");
+      if (!url) {
+        renderNotice("请填写新的 HTTPS 订阅地址", "error");
+        return;
+      }
+      if (!confirm("确认替换代理订阅并立即验证？原地址不会显示在后台。")) return;
+      await api("/admin/proxy/subscription", {
+        method: "PATCH",
+        body: { url },
+      });
+      renderNotice("代理订阅已保存并验证");
+      await renderProxy();
+    } else if (action === "proxy-toggle-service") {
+      const enabled = actionElement.dataset.enabled === "true";
+      if (!confirm(enabled ? "确认启动 Mihomo 代理服务？" : "确认停止 Mihomo？依赖代理的出站请求将不可用。")) return;
+      await api("/admin/proxy/service", {
+        method: "PATCH",
+        body: { enabled },
+      });
+      renderNotice(enabled ? "代理服务已启动" : "代理服务已停止");
+      await renderProxy();
+    } else if (action === "proxy-set-group") {
+      const index = Number(actionElement.dataset.index || 0);
+      const group = actionElement.dataset.group || "";
+      const choice = valueOf(`#proxyGroupChoice-${index}`);
+      await api("/admin/proxy/group", {
+        method: "PATCH",
+        body: { group, choice },
+      });
+      renderNotice("代理策略已切换");
+      await renderProxy();
     }
 }

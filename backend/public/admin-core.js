@@ -94,6 +94,7 @@ const viewMeta = {
   growth: ["成长体系", "管理等级周期、每日积分上限、权限与特效规则。"],
   reports: ["举报", "集中处理用户提交的内容和账号举报。"],
   audit: ["审计日志", "追踪管理员写操作、来源 IP、响应状态与请求编号。"],
+  proxy: ["代理管理", "管理 Mihomo 服务、订阅更新、出口检测和策略组。"],
   settings: ["配置", "管理语音转写、长文本合成等服务密钥。"],
   aiNovels: [
     "AI 小说创作",
@@ -1034,6 +1035,16 @@ function metric(label, value, hint = "", tone = "") {
     <div class="metric ${tone}">
       <span>${escapeHtml(label)}</span>
       <strong>${Number(value || 0)}</strong>
+      ${hint ? `<small>${escapeHtml(hint)}</small>` : ""}
+    </div>
+  `;
+}
+
+function textMetric(label, value, hint = "", tone = "") {
+  return `
+    <div class="metric ${escapeAttr(tone)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value || "-")}</strong>
       ${hint ? `<small>${escapeHtml(hint)}</small>` : ""}
     </div>
   `;
