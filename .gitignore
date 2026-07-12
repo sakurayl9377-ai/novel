@@ -37,6 +37,7 @@ migrate_working_dir/
 /deploy-*/
 /tmp/
 /novel-admin-update-*.zip
+/tool/bugreport-*.zip
 
 # Node/backend
 **/node_modules/
