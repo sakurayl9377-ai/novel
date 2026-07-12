@@ -535,6 +535,40 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_content_progress_updated
       ON user_content_progress(user_id, updated_at);
 
+    CREATE TABLE IF NOT EXISTS suibian_favorites (
+      user_id INTEGER NOT NULL,
+      drama_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, drama_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suibian_favorites_user
+      ON suibian_favorites(user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS suibian_watch_history (
+      user_id INTEGER NOT NULL,
+      drama_id TEXT NOT NULL,
+      episode_index INTEGER NOT NULL DEFAULT 0,
+      episode_title TEXT NOT NULL DEFAULT '',
+      position_ms INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, drama_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CHECK (episode_index >= 0),
+      CHECK (position_ms >= 0),
+      CHECK (duration_ms >= 0)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suibian_history_user
+      ON suibian_watch_history(user_id, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS app_telemetry_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,

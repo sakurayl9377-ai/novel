@@ -66,6 +66,9 @@ export const config = {
   corsOrigin: env('CORS_ORIGIN', '*'),
   trustedProxies: envList('TRUST_PROXY', '127.0.0.1,::1'),
   allowDevAuthCodes: envBool('ALLOW_DEV_AUTH_CODES', false),
+  // Kept server-side only. Mobile clients never receive this origin.
+  suibianSourceOrigin: env('SUIBIAN_SOURCE_ORIGIN', 'https://www.zsyjjkw.com'),
+  suibianSourceTimeoutMs: envNumber('SUIBIAN_SOURCE_TIMEOUT_MS', 12000),
   speechAllowRemoteAudio: envBool('SPEECH_ALLOW_REMOTE_AUDIO', false),
   speechAudioMaxBytes: envNumber('SPEECH_AUDIO_MAX_BYTES', 5 * 1024 * 1024),
   speechAudioTimeoutMs: envNumber('SPEECH_AUDIO_TIMEOUT_MS', 8000),

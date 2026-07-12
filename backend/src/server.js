@@ -19,6 +19,7 @@ import { contentRoutes } from './routes-content.js';
 import { gameRoutes } from './routes-game.js';
 import { growthRoutes } from './routes-growth.js';
 import { speechRoutes } from './routes-speech.js';
+import { suibianRoutes } from './routes-suibian.js';
 import { telemetryRoutes } from './routes-telemetry.js';
 import { userRoutes } from './routes-user.js';
 import { registerWebSockets } from './websocket.js';
@@ -64,6 +65,7 @@ export async function buildServer() {
       api.register(gameRoutes);
       api.register(growthRoutes);
       api.register(speechRoutes);
+      api.register(suibianRoutes);
       api.register(telemetryRoutes);
       api.register(aiNovelRoutes);
       api.register(adminRoutes);
