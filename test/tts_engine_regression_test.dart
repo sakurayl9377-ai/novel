@@ -4,11 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/tts_settings.dart';
 
 void main() {
-  test('iflytek selection never silently falls back to system TTS', () {
+  test('iflytek selection uses the authenticated backend path', () {
     final source = File('lib/services/tts_service.dart').readAsStringSync();
 
     expect(source, contains('if (settings.useIflytek)'));
-    expect(source, contains('if (!settings.hasIflytekCredentials)'));
+    expect(source, contains('if (authToken.trim().isEmpty)'));
     expect(source, contains('return _speakIflytekChunk(token);'));
     expect(
       source,
@@ -30,7 +30,7 @@ void main() {
     expect(source, contains('_isPaused = true;'));
   });
 
-  test('legacy cloud TTS settings migrate without client credentials', () {
+  test('cloud TTS settings retain engine and never persist credentials', () {
     final settings = TtsSettings.fromJson({
       'engine': TtsSettings.engineIflytek,
       'iflytekAppId': '',
@@ -38,11 +38,7 @@ void main() {
       'iflytekApiSecret': '',
     });
 
-    expect(settings.engine, TtsSettings.engineSystem);
-    expect(settings.hasIflytekCredentials, isFalse);
-    expect(settings.iflytekAppId, isEmpty);
-    expect(settings.iflytekApiKey, isEmpty);
-    expect(settings.iflytekApiSecret, isEmpty);
+    expect(settings.engine, TtsSettings.engineIflytek);
     expect(settings.toJson(), isNot(contains('iflytekAppId')));
     expect(settings.toJson(), isNot(contains('iflytekApiKey')));
     expect(settings.toJson(), isNot(contains('iflytekApiSecret')));
@@ -51,8 +47,8 @@ void main() {
   test('TTS settings screen does not expose credential inputs', () {
     final source = File('lib/screens/settings_screen.dart').readAsStringSync();
 
-    expect(source, contains('不在 App 内保存第三方密钥'));
-    expect(source, isNot(contains('App 已内置语音服务配置')));
+    expect(source, contains('需要登录；App 不保存科大讯飞密钥'));
+    expect(source, contains('value: TtsSettings.engineIflytek'));
     expect(source, isNot(contains('_buildCredentialField')));
     expect(source, isNot(contains("label: 'AppID'")));
     expect(source, isNot(contains("label: 'API Key'")));

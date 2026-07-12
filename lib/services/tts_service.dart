@@ -18,6 +18,7 @@ class TtsService {
   final AudioPlayer _audioPlayer = AudioPlayer();
   final IflytekTtsService _iflytekTts = IflytekTtsService();
   TtsSettings settings = const TtsSettings();
+  String authToken = '';
   VoidCallback? onStart;
   VoidCallback? onComplete;
   VoidCallback? onError;
@@ -178,8 +179,8 @@ class TtsService {
       _chunkIndex = 0;
       final token = _speakToken;
       if (settings.useIflytek) {
-        if (!settings.hasIflytekCredentials) {
-          _lastErrorMessage = '科大讯飞配置不完整，请填写 AppID、API Key 和 API Secret';
+        if (authToken.trim().isEmpty) {
+          _lastErrorMessage = '使用科大讯飞朗读需要先登录';
           onErrorMessage?.call(_lastErrorMessage);
           return false;
         }
@@ -481,6 +482,7 @@ class TtsService {
     return _iflytekTts.synthesize(
       text: chunk.text,
       settings: settings,
+      authToken: authToken,
       rate: _rate,
       volume: _volume,
       pitch: _pitch,

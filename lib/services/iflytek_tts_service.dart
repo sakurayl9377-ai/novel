@@ -1,136 +1,68 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:http/http.dart' as http;
 
 import '../models/tts_settings.dart';
+import 'interaction_auth_service.dart';
 
 class IflytekTtsService {
-  static final Uri _apiUri = Uri.parse('wss://tts-api.xfyun.cn/v2/tts');
+  IflytekTtsService({this.httpClient});
+
+  static final http.Client _sharedHttpClient = http.Client();
+  final http.Client? httpClient;
 
   Future<Uint8List> synthesize({
     required String text,
     required TtsSettings settings,
+    required String authToken,
     required double rate,
     required double volume,
     required double pitch,
   }) async {
-    if (!settings.hasIflytekCredentials) {
-      throw StateError('科大讯飞语音配置不完整');
+    if (authToken.trim().isEmpty) {
+      throw StateError('使用科大讯飞朗读需要先登录');
     }
-
-    final wsUrl = _signedUrl(settings);
-    final channel = WebSocketChannel.connect(wsUrl);
-    final audioChunks = <int>[];
-    final completer = Completer<Uint8List>();
-    late final StreamSubscription subscription;
-    Timer? timeout;
-
-    void finishWithError(Object error) {
-      if (!completer.isCompleted) completer.completeError(error);
-      timeout?.cancel();
-      unawaited(subscription.cancel());
-      unawaited(channel.sink.close());
+    final response = await (httpClient ?? _sharedHttpClient)
+        .post(
+          Uri.parse('${InteractionAuthService.baseUrl}/speech/tts'),
+          headers: {
+            'Accept': 'audio/mpeg',
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${authToken.trim()}',
+          },
+          body: jsonEncode({
+            'text': text,
+            'voice': settings.iflytekVoiceName,
+            'rate': rate,
+            'volume': volume,
+            'pitch': pitch,
+          }),
+        )
+        .timeout(const Duration(seconds: 35));
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      if (response.bodyBytes.isEmpty) throw StateError('讯飞语音合成结果为空');
+      return response.bodyBytes;
     }
-
-    subscription = channel.stream.listen(
-      (event) {
-        try {
-          final data = jsonDecode(event as String) as Map<String, dynamic>;
-          final code = data['code'] as int? ?? -1;
-          if (code != 0) {
-            finishWithError(
-              StateError(data['message']?.toString() ?? '讯飞合成失败'),
-            );
-            return;
-          }
-
-          final audio = data['data']?['audio'] as String?;
-          if (audio != null && audio.isNotEmpty) {
-            audioChunks.addAll(base64Decode(audio));
-          }
-
-          final status = data['data']?['status'] as int?;
-          if (status == 2 && !completer.isCompleted) {
-            completer.complete(Uint8List.fromList(audioChunks));
-            timeout?.cancel();
-            unawaited(subscription.cancel());
-            unawaited(channel.sink.close());
-          }
-        } catch (e) {
-          finishWithError(e);
-        }
-      },
-      onError: finishWithError,
-      onDone: () {
-        if (!completer.isCompleted && audioChunks.isNotEmpty) {
-          completer.complete(Uint8List.fromList(audioChunks));
-        } else if (!completer.isCompleted) {
-          completer.completeError(StateError('讯飞合成连接已关闭'));
-        }
-      },
-      cancelOnError: true,
-    );
-
-    timeout = Timer(const Duration(seconds: 30), () {
-      finishWithError(TimeoutException('讯飞合成超时'));
-    });
-
-    channel.sink.add(
-      jsonEncode({
-        'common': {'app_id': settings.iflytekAppId.trim()},
-        'business': {
-          'aue': 'lame',
-          'sfl': 1,
-          'tte': 'UTF8',
-          'vcn': settings.iflytekVoiceName,
-          'speed': _toIflytekValue(rate),
-          'volume': _toIflytekValue(volume),
-          'pitch': _toIflytekPitchValue(pitch),
-        },
-        'data': {'status': 2, 'text': base64Encode(utf8.encode(text))},
-      }),
-    );
-
-    return completer.future;
+    var error = '';
+    try {
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      if (decoded is Map) error = decoded['error']?.toString() ?? '';
+    } catch (_) {}
+    throw StateError(_friendlyError(error, response.statusCode));
   }
 
-  Uri _signedUrl(TtsSettings settings) {
-    final host = _apiUri.host;
-    final path = _apiUri.path;
-    final date = HttpDate.format(DateTime.now().toUtc());
-    final signatureOrigin = 'host: $host\ndate: $date\nGET $path HTTP/1.1';
-    final hmacSha256 = Hmac(
-      sha256,
-      utf8.encode(settings.iflytekApiSecret.trim()),
-    );
-    final signature = base64Encode(
-      hmacSha256.convert(utf8.encode(signatureOrigin)).bytes,
-    );
-    final authorizationOrigin =
-        'api_key="${settings.iflytekApiKey.trim()}", algorithm="hmac-sha256", headers="host date request-line", signature="$signature"';
-    final authorization = base64Encode(utf8.encode(authorizationOrigin));
-
-    return _apiUri.replace(
-      queryParameters: {
-        'authorization': authorization,
-        'date': date,
-        'host': host,
-      },
-    );
-  }
-
-  int _toIflytekValue(double value) =>
-      (value.clamp(0.0, 1.0) * 100).round().clamp(0, 100);
-
-  int _toIflytekPitchValue(double pitch) {
-    final safePitch = pitch.clamp(0.5, 2.0);
-    final value = safePitch <= 1.0
-        ? (safePitch - 0.5) * 100
-        : 50 + (safePitch - 1.0) * 50;
-    return value.round().clamp(0, 100);
+  String _friendlyError(String error, int statusCode) {
+    return switch (error) {
+      'speech_tts_config_missing' => '科大讯飞朗读暂未启用，请联系管理员配置',
+      'speech_tts_text_invalid' => '朗读文本不符合要求',
+      'speech_tts_voice_invalid' => '所选讯飞发音人不可用',
+      'speech_tts_timeout' => '科大讯飞语音合成超时，请稍后重试',
+      'speech_tts_rate_limited' => '朗读请求过于频繁，请稍后重试',
+      'unauthorized' || 'account_banned' => '登录状态不可用，请重新登录',
+      _ when statusCode == 401 || statusCode == 403 => '登录状态不可用，请重新登录',
+      _ => '科大讯飞语音合成失败，请稍后重试',
+    };
   }
 }

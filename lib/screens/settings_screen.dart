@@ -1554,43 +1554,66 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 10),
-                const ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.volume_up_outlined),
-                  title: Text('系统 TTS'),
-                  subtitle: Text('使用设备提供的语音服务，不在 App 内保存第三方密钥'),
-                ),
-                const SizedBox(height: 24),
-                const Text(
-                  '发音人',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 10),
-                RadioGroup<String>(
-                  groupValue: _draft.iflytekVoiceName,
-                  onChanged: (value) {
-                    if (value == null) return;
-                    final selectedVoice = iflytekBasicVoices.firstWhere(
-                      (voice) => voice.name == value,
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: TtsSettings.engineSystem,
+                      label: Text('系统 TTS'),
+                      icon: Icon(Icons.volume_up_outlined),
+                    ),
+                    ButtonSegment(
+                      value: TtsSettings.engineIflytek,
+                      label: Text('科大讯飞'),
+                      icon: Icon(Icons.cloud_outlined),
+                    ),
+                  ],
+                  selected: {_draft.engine},
+                  onSelectionChanged: (value) {
+                    setState(
+                      () => _draft = _draft.copyWith(engine: value.first),
                     );
-                    setState(() {
-                      _draft = _draft.copyWith(
-                        iflytekVoiceName: selectedVoice.name,
-                        iflytekVoiceLabel: selectedVoice.label,
-                      );
-                    });
                   },
-                  child: Column(
-                    children: iflytekBasicVoices.map((voice) {
-                      return RadioListTile<String>(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(voice.label),
-                        subtitle: Text('${voice.language} · ${voice.name}'),
-                        value: voice.name,
-                      );
-                    }).toList(),
-                  ),
                 ),
+                if (_draft.useIflytek) ...[
+                  const SizedBox(height: 12),
+                  const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.lock_outline),
+                    title: Text('由服务器安全提供语音服务'),
+                    subtitle: Text('需要登录；App 不保存科大讯飞密钥'),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '发音人',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 10),
+                  RadioGroup<String>(
+                    groupValue: _draft.iflytekVoiceName,
+                    onChanged: (value) {
+                      if (value == null) return;
+                      final selectedVoice = iflytekBasicVoices.firstWhere(
+                        (voice) => voice.name == value,
+                      );
+                      setState(() {
+                        _draft = _draft.copyWith(
+                          iflytekVoiceName: selectedVoice.name,
+                          iflytekVoiceLabel: selectedVoice.label,
+                        );
+                      });
+                    },
+                    child: Column(
+                      children: iflytekBasicVoices.map((voice) {
+                        return RadioListTile<String>(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(voice.label),
+                          subtitle: Text('${voice.language} · ${voice.name}'),
+                          value: voice.name,
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ],
               ],
             ),
     );

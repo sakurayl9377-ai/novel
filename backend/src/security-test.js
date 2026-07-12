@@ -14,7 +14,11 @@ process.env.SPEECH_ALLOW_REMOTE_AUDIO = "false";
 const { closeDb, migrate, one, run, seedAdmin } = await import("./db.js");
 const { config } = await import("./config.js");
 const { hashPassword } = await import("./security.js");
-const { loadAudioBytes } = await import("./speech-service.js");
+const {
+  iflytekTtsConfigured,
+  loadAudioBytes,
+  synthesizeIflytek,
+} = await import("./speech-service.js");
 const {
   clearRateLimitsForTests,
   consumeRateLimit,
@@ -67,6 +71,29 @@ try {
   )?.value;
   assert.equal(isEncryptedSettingSecret(storedChatBotKey), true);
   assert.equal(chatBotSettings().apiKey, "nvapi-legacy-plaintext");
+
+  assert.equal(iflytekTtsConfigured(), false);
+  for (const [key, value, isSecret] of [
+    ["iflytek_tts.appId", "test-app-id", 0],
+    ["iflytek_tts.apiKey", encryptSettingSecret("test-api-key"), 1],
+    ["iflytek_tts.apiSecret", encryptSettingSecret("test-api-secret"), 1],
+    ["iflytek_tts.enabled", "true", 0],
+  ]) {
+    run(
+      `INSERT INTO app_settings (key, value, is_secret)
+       VALUES (?, ?, ?)`,
+      [key, value, isSecret],
+    );
+  }
+  assert.equal(iflytekTtsConfigured(), true);
+  assert.throws(
+    () => synthesizeIflytek("test", { voice: "premium-voice" }),
+    /speech_tts_voice_invalid/,
+  );
+  assert.throws(
+    () => synthesizeIflytek("x".repeat(181)),
+    /speech_tts_text_invalid/,
+  );
 
   const nvidiaSettings = resolveChatBotProviderSettings({
     provider: "nvidia",

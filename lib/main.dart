@@ -181,9 +181,16 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
         ChangeNotifierProvider(
           create: (_) => ReadingProvider()..loadSettings(),
         ),
-        ChangeNotifierProvider(
+        ChangeNotifierProxyProvider<InteractionAuthProvider, TtsProvider>(
           create: (_) =>
               TtsProvider(mediaControlService: widget.ttsMediaControlService),
+          update: (_, auth, tts) {
+            final provider =
+                tts ??
+                TtsProvider(mediaControlService: widget.ttsMediaControlService);
+            provider.updateAuthToken(auth.token);
+            return provider;
+          },
         ),
       ],
       child: Consumer<ReadingProvider>(

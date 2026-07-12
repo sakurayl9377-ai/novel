@@ -83,6 +83,10 @@ class TtsProvider extends ChangeNotifier {
     return remaining.isNegative ? Duration.zero : remaining;
   }
 
+  void updateAuthToken(String token) {
+    _ttsService.authToken = token;
+  }
+
   void bindSleepTimer({
     required Object owner,
     required Future<void> Function() onElapsed,

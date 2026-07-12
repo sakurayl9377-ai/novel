@@ -23,6 +23,30 @@ export async function transcribeChatAudio(mediaUrl, { userId = 0 } = {}) {
   return transcribeWithIat({ settings, pcm });
 }
 
+export function iflytekTtsConfigured() {
+  const settings = readTtsSettings();
+  return settings.enabled && Boolean(settings.appId && settings.apiKey && settings.apiSecret);
+}
+
+export function synthesizeIflytek(text, { voice = "x4_xiaoyan", rate = 0.5, volume = 0.85, pitch = 1 } = {}) {
+  const settings = readTtsSettings();
+  if (!settings.enabled || !settings.appId || !settings.apiKey || !settings.apiSecret) {
+    throw new Error("speech_tts_config_missing");
+  }
+  const safeText = String(text || "").trim();
+  if (!safeText || safeText.length > 180) throw new Error("speech_tts_text_invalid");
+  const allowedVoices = new Set(["x4_xiaoyan", "x4_yezi", "aisjiuxu", "aisjinger", "aisbabyxu"]);
+  if (!allowedVoices.has(voice)) throw new Error("speech_tts_voice_invalid");
+  return synthesizeWithIflytek({
+    settings,
+    text: safeText,
+    voice,
+    rate: clampNumber(rate, 0, 1, 0.5),
+    volume: clampNumber(volume, 0, 1, 0.85),
+    pitch: clampNumber(pitch, 0.5, 2, 1),
+  });
+}
+
 function readAsrSettings() {
   const productType =
     setting("iflytek_asr.productType") || iflytekSpeechDefaults.asrProductType;
@@ -40,6 +64,91 @@ function readAsrSettings() {
     hostUrl,
     enabled: setting("iflytek_asr.enabled") === "true",
   };
+}
+
+function readTtsSettings() {
+  return {
+    appId: setting("iflytek_tts.appId"),
+    apiKey: secretSetting("iflytek_tts.apiKey"),
+    apiSecret: secretSetting("iflytek_tts.apiSecret"),
+    hostUrl: setting("iflytek_tts.hostUrl") || iflytekSpeechDefaults.ttsHostUrl,
+    enabled: setting("iflytek_tts.enabled") === "true",
+  };
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
+
+function synthesizeWithIflytek({ settings, text, voice, rate, volume, pitch }) {
+  const url = signedTtsUrl(settings);
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, { perMessageDeflate: false });
+    const chunks = [];
+    let settled = false;
+    const finish = (error, bytes) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(Buffer.concat(chunks, bytes));
+    };
+    const timer = setTimeout(() => {
+      finish(new Error("speech_tts_timeout"));
+      ws.close();
+    }, 30000);
+    ws.on("open", () => {
+      ws.send(JSON.stringify({
+        common: { app_id: settings.appId },
+        business: {
+          aue: "lame",
+          sfl: 1,
+          tte: "UTF8",
+          vcn: voice,
+          speed: Math.round(rate * 100),
+          volume: Math.round(volume * 100),
+          pitch: Math.round(pitch <= 1 ? (pitch - 0.5) * 100 : 50 + (pitch - 1) * 50),
+        },
+        data: { status: 2, text: Buffer.from(text, "utf8").toString("base64") },
+      }));
+    });
+    ws.on("message", (raw) => {
+      try {
+        const payload = JSON.parse(raw.toString());
+        if (Number(payload.code ?? 0) !== 0) throw new Error(payload.message || "speech_tts_failed");
+        const audio = payload.data?.audio;
+        if (audio) chunks.push(Buffer.from(audio, "base64"));
+        if (Number(payload.data?.status) === 2) {
+          ws.close();
+          finish(null, chunks.reduce((total, chunk) => total + chunk.length, 0));
+        }
+      } catch (error) {
+        ws.close();
+        finish(error);
+      }
+    });
+    ws.on("error", (error) => finish(error));
+    ws.on("close", () => {
+      if (settled) return;
+      if (chunks.length) finish(null, chunks.reduce((total, chunk) => total + chunk.length, 0));
+      else finish(new Error("speech_tts_connection_closed"));
+    });
+  });
+}
+
+function signedTtsUrl(settings) {
+  const url = new URL(settings.hostUrl);
+  const date = new Date().toUTCString();
+  const signatureOrigin = `host: ${url.host}\ndate: ${date}\nGET ${url.pathname} HTTP/1.1`;
+  const signature = crypto.createHmac("sha256", settings.apiSecret).update(signatureOrigin).digest("base64");
+  const authorization = Buffer.from(
+    `api_key="${settings.apiKey}", algorithm="hmac-sha256", headers="host date request-line", signature="${signature}"`,
+  ).toString("base64");
+  url.searchParams.set("authorization", authorization);
+  url.searchParams.set("date", date);
+  url.searchParams.set("host", url.host);
+  return url.toString();
 }
 
 function setting(key) {
