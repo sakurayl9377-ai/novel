@@ -1554,41 +1554,11 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 10),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                      value: TtsSettings.engineSystem,
-                      label: Text('系统 TTS'),
-                      icon: Icon(Icons.volume_up_outlined),
-                    ),
-                    ButtonSegment(
-                      value: TtsSettings.engineIflytek,
-                      label: Text('科大讯飞'),
-                      icon: Icon(Icons.cloud_outlined),
-                    ),
-                  ],
-                  selected: {_draft.engine},
-                  onSelectionChanged: (value) {
-                    setState(
-                      () => _draft = _draft.copyWith(engine: value.first),
-                    );
-                  },
-                ),
-                const SizedBox(height: 24),
-                SwitchListTile(
+                const ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('使用科大讯飞在线语音'),
-                  subtitle: const Text('App 已内置语音服务配置，无需填写密钥'),
-                  value: _draft.useIflytek,
-                  onChanged: (value) {
-                    setState(() {
-                      _draft = _draft.copyWith(
-                        engine: value
-                            ? TtsSettings.engineIflytek
-                            : TtsSettings.engineSystem,
-                      );
-                    });
-                  },
+                  leading: Icon(Icons.volume_up_outlined),
+                  title: Text('系统 TTS'),
+                  subtitle: Text('使用设备提供的语音服务，不在 App 内保存第三方密钥'),
                 ),
                 const SizedBox(height: 24),
                 const Text(

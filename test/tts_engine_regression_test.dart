@@ -30,7 +30,7 @@ void main() {
     expect(source, contains('_isPaused = true;'));
   });
 
-  test('iflytek credentials are built in and never persisted locally', () {
+  test('legacy cloud TTS settings migrate without client credentials', () {
     final settings = TtsSettings.fromJson({
       'engine': TtsSettings.engineIflytek,
       'iflytekAppId': '',
@@ -38,10 +38,11 @@ void main() {
       'iflytekApiSecret': '',
     });
 
-    expect(settings.hasIflytekCredentials, isTrue);
-    expect(settings.iflytekAppId, TtsSettings.defaultIflytekAppId);
-    expect(settings.iflytekApiKey, TtsSettings.defaultIflytekApiKey);
-    expect(settings.iflytekApiSecret, TtsSettings.defaultIflytekApiSecret);
+    expect(settings.engine, TtsSettings.engineSystem);
+    expect(settings.hasIflytekCredentials, isFalse);
+    expect(settings.iflytekAppId, isEmpty);
+    expect(settings.iflytekApiKey, isEmpty);
+    expect(settings.iflytekApiSecret, isEmpty);
     expect(settings.toJson(), isNot(contains('iflytekAppId')));
     expect(settings.toJson(), isNot(contains('iflytekApiKey')));
     expect(settings.toJson(), isNot(contains('iflytekApiSecret')));
@@ -50,7 +51,8 @@ void main() {
   test('TTS settings screen does not expose credential inputs', () {
     final source = File('lib/screens/settings_screen.dart').readAsStringSync();
 
-    expect(source, contains('App 已内置语音服务配置，无需填写密钥'));
+    expect(source, contains('不在 App 内保存第三方密钥'));
+    expect(source, isNot(contains('App 已内置语音服务配置')));
     expect(source, isNot(contains('_buildCredentialField')));
     expect(source, isNot(contains("label: 'AppID'")));
     expect(source, isNot(contains("label: 'API Key'")));

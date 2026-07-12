@@ -1,10 +1,11 @@
 class TtsSettings {
   static const String engineSystem = 'system';
   static const String engineIflytek = 'iflytek';
+  // Client apps must never contain third-party service credentials.
+  // Keep these fields only to migrate older local settings safely.
   static const String defaultIflytekAppId = '';
   static const String defaultIflytekApiKey = '';
-  static const String defaultIflytekApiSecret =
-      '';
+  static const String defaultIflytekApiSecret = '';
 
   final String engine;
   final String iflytekAppId;
@@ -45,11 +46,16 @@ class TtsSettings {
     'iflytekVoiceLabel': iflytekVoiceLabel,
   };
 
-  factory TtsSettings.fromJson(Map<String, dynamic> json) => TtsSettings(
-    engine: json['engine'] as String? ?? engineSystem,
-    iflytekVoiceName: json['iflytekVoiceName'] as String? ?? 'x4_xiaoyan',
-    iflytekVoiceLabel: json['iflytekVoiceLabel'] as String? ?? '讯飞小燕',
-  );
+  factory TtsSettings.fromJson(Map<String, dynamic> json) {
+    final savedEngine = json['engine'] as String? ?? engineSystem;
+    return TtsSettings(
+      // Old direct-cloud TTS choices relied on credentials embedded in the app.
+      // Migrate them to the safe, device-provided system engine.
+      engine: savedEngine == engineIflytek ? engineSystem : savedEngine,
+      iflytekVoiceName: json['iflytekVoiceName'] as String? ?? 'x4_xiaoyan',
+      iflytekVoiceLabel: json['iflytekVoiceLabel'] as String? ?? '讯飞小燕',
+    );
+  }
 }
 
 class IflytekVoice {
