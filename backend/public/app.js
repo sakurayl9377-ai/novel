@@ -35,6 +35,10 @@ logoutButton.addEventListener("click", () => {
 
 document.querySelectorAll(".nav button").forEach((button) => {
   button.addEventListener("click", async () => {
+    // Some operational views are much shorter than the content-heavy pages.
+    // Reset the document scroll before rendering so a switch from a long page
+    // cannot leave the new view apparently blank below the previous scroll offset.
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     state.view = button.dataset.view;
     state.q = "";
     state.status = "";
