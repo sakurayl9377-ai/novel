@@ -19,6 +19,7 @@ CONFIG_PATH = Path("/etc/mihomo/config.yaml")
 SECRET_PATH = Path("/etc/mihomo/controller.secret")
 LEGACY_SUBSCRIPTION_PATH = Path("/etc/mihomo/subscription.env")
 SUBSCRIPTIONS_PATH = Path("/etc/mihomo/subscriptions.json")
+PROVIDER_PATH = Path("/var/lib/mihomo/providers/dylian.json")
 CONTROLLER_URL = "http://127.0.0.1:9090"
 PROXY_URL = "http://127.0.0.1:20808"
 UPDATER_PATH = "/usr/local/libexec/mihomo-update-subscription"
@@ -107,19 +108,29 @@ def timer_status():
 
 
 def proxy_nodes(proxies):
-    group_types = {"Selector", "URLTest", "Fallback", "LoadBalance", "Direct", "Reject", "Compatible"}
+    try:
+        provider = json.loads(PROVIDER_PATH.read_text(encoding="utf-8"))
+        entries = provider.get("proxies") if isinstance(provider, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        entries = []
+    if not isinstance(entries, list):
+        entries = []
     nodes = []
-    for name, item in proxies.items():
-        if not isinstance(item, dict) or item.get("type") in group_types:
+    for entry in entries:
+        if not isinstance(entry, dict):
             continue
-        history = item.get("history") or []
+        name = str(entry.get("name") or "").strip()
+        if not name or len(name) > 300:
+            continue
+        runtime = proxies.get(name) if isinstance(proxies, dict) else {}
+        history = runtime.get("history") or [] if isinstance(runtime, dict) else []
         latest = history[-1] if isinstance(history, list) and history else {}
         delay = latest.get("delay") if isinstance(latest, dict) else 0
         nodes.append(
             {
-                "name": str(name)[:300],
-                "type": str(item.get("type") or "")[:80],
-                "alive": bool(item.get("alive")),
+                "name": name,
+                "type": str(entry.get("type") or "代理")[:80],
+                "alive": bool(runtime.get("alive")) if isinstance(runtime, dict) else False,
                 "delay": int(delay) if isinstance(delay, int) and delay >= 0 else 0,
             }
         )
