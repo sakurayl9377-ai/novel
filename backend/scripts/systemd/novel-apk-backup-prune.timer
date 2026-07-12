@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Novel APK backup retention
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
+

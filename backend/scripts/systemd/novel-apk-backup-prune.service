@@ -1,0 +1,17 @@
+[Unit]
+Description=Prune old Novel APK release backups
+ConditionPathIsDirectory=/var/www/yunpan/app
+ConditionPathIsDirectory=/var/www/yunpan/app3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/novel-apk-backup-prune
+Environment=NOVEL_APK_BACKUP_KEEP=5
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/yunpan/app /var/www/yunpan/app3
+
