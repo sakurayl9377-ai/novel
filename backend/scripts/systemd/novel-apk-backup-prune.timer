@@ -8,4 +8,3 @@ RandomizedDelaySec=30m
 
 [Install]
 WantedBy=timers.target
-
