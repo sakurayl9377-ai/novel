@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import socket
+import tempfile
 import unittest
 from unittest import mock
 
@@ -193,20 +194,41 @@ class SubscriptionUpdateTests(unittest.TestCase):
             '\ufeff {"proxies":[{"name":"美国-A","server":"example.com"}],'
             '"secret":"drop-me"} trailing'
         ).encode("utf-8")
-        payload = MODULE.normalize_provider_payload(raw)
+        payload = MODULE.build_provider_payload(
+            [({"id": "one", "name": "主订阅", "url": "https://subscription.example/list"}, raw)]
+        )
         self.assertEqual(
             json.loads(payload),
-            {"proxies": [{"name": "美国-A", "server": "example.com"}]},
+            {"proxies": [{"name": "[主订阅] 美国-A", "server": "example.com"}]},
         )
         self.assertNotIn(b"drop-me", payload)
 
-    def test_requires_us_proxy_marker(self):
-        with self.assertRaisesRegex(
-            MODULE.SubscriptionUpdateError,
-            "proxy_subscription_us_proxy_missing",
-        ):
-            MODULE.normalize_provider_payload(
-                b'{"proxies":[{"name":"Japan-A"}]}'
+    def test_supports_all_node_regions_and_deduplicates_names(self):
+        payload = MODULE.build_provider_payload(
+            [
+                (
+                    {"id": "one", "name": "订阅 A", "url": "https://one.example/list"},
+                    b'{"proxies":[{"name":"Japan-A"}]}',
+                ),
+                (
+                    {"id": "two", "name": "订阅 A", "url": "https://two.example/list"},
+                    b'{"proxies":[{"name":"Japan-A"}]}',
+                ),
+            ]
+        )
+        self.assertEqual(
+            [item["name"] for item in json.loads(payload)["proxies"]],
+            ["[订阅 A] Japan-A", "[订阅 A] Japan-A #2"],
+        )
+
+    def test_reads_legacy_subscription_when_json_store_is_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "subscription.env"
+            legacy.write_text("SUBSCRIPTION_URL=https://subscription.example/list\n", encoding="utf-8")
+            self.assertEqual(
+                MODULE.read_subscriptions(root / "missing.json", legacy),
+                [{"id": "legacy", "name": "默认订阅", "url": "https://subscription.example/list"}],
             )
 
 

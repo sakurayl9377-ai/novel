@@ -5,6 +5,8 @@ import { config } from "./config.js";
 import { all, db, one, run } from "./db.js";
 import {
   normalizeProxyGroupSelection,
+  normalizeProxySubscriptionId,
+  normalizeProxySubscriptionName,
   normalizeProxySubscriptionUrl,
   runProxyControl,
 } from "./proxy-control-service.js";
@@ -96,18 +98,44 @@ export async function adminOperationsRoutes(app) {
   );
 
   app.post(
-    "/admin/proxy/update-subscription",
+    "/admin/proxy/subscriptions",
+    { preHandler: app.adminRequired },
+    async (request) =>
+      proxyControl({
+        action: "add-subscription",
+        name: normalizeProxySubscriptionName(request.body?.name),
+        url: normalizeProxySubscriptionUrl(request.body?.url),
+      }),
+  );
+
+  app.delete(
+    "/admin/proxy/subscriptions/:id",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = normalizeProxySubscriptionId(request.params?.id);
+      return proxyControl({ action: "delete-subscription", id });
+    },
+  );
+
+  app.post(
+    "/admin/proxy/subscriptions/:id/update",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = normalizeProxySubscriptionId(request.params?.id);
+      return proxyControl({ action: "update-subscription", id });
+    },
+  );
+
+  app.post(
+    "/admin/proxy/subscriptions/update-all",
     { preHandler: app.adminRequired },
     async () => proxyControl({ action: "update-subscription" }),
   );
 
-  app.patch(
-    "/admin/proxy/subscription",
+  app.post(
+    "/admin/proxy/enable-manual-mode",
     { preHandler: app.adminRequired },
-    async (request) => {
-      const url = normalizeProxySubscriptionUrl(request.body?.url);
-      return proxyControl({ action: "set-subscription", url });
-    },
+    async () => proxyControl({ action: "enable-manual-mode" }),
   );
 
   app.patch(
@@ -145,7 +173,11 @@ async function proxyControl(payload) {
     const wrapped = new Error(message);
     wrapped.statusCode = [
       "proxy_subscription_url_invalid",
+      "proxy_subscription_name_invalid",
+      "proxy_subscription_id_invalid",
       "proxy_subscription_host_not_public",
+      "proxy_subscription_limit_reached",
+      "proxy_subscription_not_found",
       "proxy_group_selection_invalid",
       "proxy_service_enabled_invalid",
     ].includes(wrapped.message)

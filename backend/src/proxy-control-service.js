@@ -20,6 +20,22 @@ export function normalizeProxySubscriptionUrl(value) {
   return parsed.href;
 }
 
+export function normalizeProxySubscriptionName(value) {
+  const text = String(value || "").trim();
+  if (!text || text.length > 80 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new Error("proxy_subscription_name_invalid");
+  }
+  return text;
+}
+
+export function normalizeProxySubscriptionId(value) {
+  const text = String(value || "").trim();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(text)) {
+    throw new Error("proxy_subscription_id_invalid");
+  }
+  return text;
+}
+
 export function normalizeProxyGroupSelection(group, choice) {
   const safeGroup = String(group || "").trim();
   const safeChoice = String(choice || "").trim();

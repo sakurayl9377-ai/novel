@@ -720,12 +720,15 @@ async function renderProxy() {
   const timer = subscription.timer || {};
   const runtime = data.runtime || {};
   const groups = Array.isArray(data.groups) ? data.groups : [];
+  const subscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  const manualModeEnabled = Boolean(data.manualModeEnabled);
   viewRoot.innerHTML = `
     <section class="metrics-grid">
       ${textMetric("Mihomo 服务", service.active ? "运行中" : "已停止", service.enabled ? "已设为开机启动" : "未启用开机启动", service.active ? "" : "danger")}
       ${textMetric("核心版本", data.version || "-", runtime.mode ? `模式 ${runtime.mode}` : "")}
       ${textMetric("本地代理端口", runtime.mixedPort || "-", "仅监听服务器本机")}
-      ${textMetric("订阅定时器", timer.active ? "运行中" : "已停止", timer.nextRun || "-")}
+      ${textMetric("订阅与节点", `${subscriptions.length} 个订阅 · ${data.nodeTotal || nodes.length} 个节点`, timer.active ? "每小时自动更新" : "自动更新已停止")}
     </section>
 
     <section class="settings-grid">
@@ -745,18 +748,52 @@ async function renderProxy() {
 
       <article class="settings-card">
         <div class="section-title">
-          <span>订阅更新</span>
-          ${badge(subscription.configured ? "已配置" : "未配置", subscription.configured ? "active" : "ignored")}
+          <span>添加订阅</span>
+          ${badge(subscription.configured ? `${subscriptions.length} 个已配置` : "未配置", subscription.configured ? "active" : "ignored")}
         </div>
         <div class="settings-form">
           <label>
-            新订阅地址
-            <input id="proxySubscriptionUrl" type="password" autocomplete="off" placeholder="留空不会显示或修改现有地址" />
+            订阅名称
+            <input id="proxySubscriptionName" maxlength="80" placeholder="例如：机场 A" />
+          </label>
+          <label>
+            HTTPS 订阅地址
+            <input id="proxySubscriptionUrl" type="password" autocomplete="off" placeholder="保存后不会在后台显示" />
           </label>
           <div class="settings-actions proxy-actions">
-            <button class="button primary" data-action="proxy-save-subscription">保存并更新</button>
-            <button class="button" data-action="proxy-update-subscription" ${subscription.configured ? "" : "disabled"}>立即更新</button>
+            <button class="button primary" data-action="proxy-add-subscription">添加并更新</button>
+            <button class="button" data-action="proxy-update-all-subscriptions" ${subscription.configured ? "" : "disabled"}>更新全部</button>
           </div>
+          <p class="muted-note">仅接受 HTTPS 公网订阅。新增、删除或更新时会重新生成统一节点池，原始订阅地址不会回传到浏览器。</p>
+        </div>
+      </article>
+
+      <article class="settings-card">
+        <div class="section-title"><span>订阅列表</span>${badge(`${subscriptions.length} 个`, "active")}</div>
+        <div class="proxy-subscription-list">
+          ${
+            subscriptions.length
+              ? subscriptions
+                  .map(
+                    (item) => `<div class="proxy-subscription-item">
+                      <div><strong>${escapeHtml(item.name || "未命名订阅")}</strong><small>${Number(item.nodeCount || 0)} 个节点</small></div>
+                      <div class="proxy-actions">
+                        <button class="button small" data-action="proxy-update-subscription" data-id="${escapeAttr(item.id || "")}">更新</button>
+                        <button class="button small danger" data-action="proxy-delete-subscription" data-id="${escapeAttr(item.id || "")}" data-name="${escapeAttr(item.name || "订阅")}">删除</button>
+                      </div>
+                    </div>`,
+                  )
+                  .join("")
+              : empty("尚未添加订阅")
+          }
+        </div>
+      </article>
+
+      <article class="settings-card">
+        <div class="section-title"><span>手动节点切换</span>${badge(manualModeEnabled ? "已启用" : "未启用", manualModeEnabled ? "active" : "ignored")}</div>
+        <div class="settings-form">
+          <p class="muted-note">启用后可在下方查看所有节点，并把流量切换到任意节点；未手动选择时仍可保持自动优选。</p>
+          <button class="button ${manualModeEnabled ? "muted" : "primary"}" data-action="proxy-enable-manual-mode" ${manualModeEnabled ? "disabled" : ""}>启用手动节点切换</button>
         </div>
       </article>
 
@@ -781,6 +818,25 @@ async function renderProxy() {
           </article>`,
         )
         .join("")}
+    </section>
+
+    <section class="admin-panel proxy-nodes-panel">
+      <div class="section-title"><span>全部节点</span>${badge(`${data.nodeTotal || nodes.length} 个`, "active")}</div>
+      <p class="muted-note">节点名称带有订阅名称前缀；延迟为 Mihomo 最近一次健康检查结果，0 表示暂未测得。</p>
+      <div class="proxy-node-list">
+        ${
+          nodes.length
+            ? nodes
+                .map(
+                  (node) => `<article class="proxy-node-item">
+                    <div><strong>${escapeHtml(node.name || "未命名节点")}</strong><small>${escapeHtml(node.type || "代理")} · ${node.delay ? `${node.delay} ms` : "待测速"} · ${node.alive ? "可用" : "状态未知"}</small></div>
+                    <button class="button small primary" data-action="proxy-set-node" data-node="${escapeAttr(node.name || "")}" ${manualModeEnabled ? "" : "disabled"}>切换到此节点</button>
+                  </article>`,
+                )
+                .join("")
+            : empty("更新订阅后会显示节点列表")
+        }
+      </div>
     </section>
   `;
 }
@@ -840,23 +896,53 @@ async function handleOperationsAction(action, actionElement) {
       const checks = Array.isArray(result.checks) ? result.checks : [];
       const exitIp = checks.find((item) => item.name === "ip")?.value || "";
       renderNotice(result.ok ? `代理出口正常${exitIp ? ` · ${exitIp}` : ""}` : "部分代理检测未通过", result.ok ? "" : "error");
+    } else if (action === "proxy-update-all-subscriptions") {
+      if (!confirm("确认立即更新全部代理订阅并重载 Mihomo？")) return;
+      await api("/admin/proxy/subscriptions/update-all", { method: "POST" });
+      renderNotice("全部代理订阅已更新");
+      await renderProxy();
     } else if (action === "proxy-update-subscription") {
-      if (!confirm("确认立即拉取代理订阅并重载 Mihomo？")) return;
-      await api("/admin/proxy/update-subscription", { method: "POST" });
+      const id = actionElement.dataset.id || "";
+      await api(`/admin/proxy/subscriptions/${encodeURIComponent(id)}/update`, { method: "POST" });
       renderNotice("代理订阅已更新");
       await renderProxy();
-    } else if (action === "proxy-save-subscription") {
+    } else if (action === "proxy-add-subscription") {
+      const name = valueOf("#proxySubscriptionName");
       const url = valueOf("#proxySubscriptionUrl");
-      if (!url) {
-        renderNotice("请填写新的 HTTPS 订阅地址", "error");
+      if (!name || !url) {
+        renderNotice("请填写订阅名称和 HTTPS 订阅地址", "error");
         return;
       }
-      if (!confirm("确认替换代理订阅并立即验证？原地址不会显示在后台。")) return;
-      await api("/admin/proxy/subscription", {
-        method: "PATCH",
-        body: { url },
+      if (!confirm("确认添加订阅并立即下载节点？订阅地址不会显示在后台。")) return;
+      await api("/admin/proxy/subscriptions", {
+        method: "POST",
+        body: { name, url },
       });
-      renderNotice("代理订阅已保存并验证");
+      renderNotice("代理订阅已添加并更新");
+      await renderProxy();
+    } else if (action === "proxy-delete-subscription") {
+      const id = actionElement.dataset.id || "";
+      const name = actionElement.dataset.name || "订阅";
+      if (!confirm(`确认删除“${name}”？对应节点会从代理池移除。`)) return;
+      await api(`/admin/proxy/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      renderNotice("代理订阅已删除");
+      await renderProxy();
+    } else if (action === "proxy-enable-manual-mode") {
+      if (!confirm("确认启用手动节点切换？默认仍保持自动优选，不会立即中断现有代理。")) return;
+      await api("/admin/proxy/enable-manual-mode", { method: "POST" });
+      renderNotice("手动节点切换已启用");
+      await renderProxy();
+    } else if (action === "proxy-set-node") {
+      const choice = actionElement.dataset.node || "";
+      await api("/admin/proxy/group", {
+        method: "PATCH",
+        body: { group: "NODE-MANUAL", choice },
+      });
+      await api("/admin/proxy/group", {
+        method: "PATCH",
+        body: { group: "PROXY-MODE", choice: "NODE-MANUAL" },
+      });
+      renderNotice(`已切换到节点：${choice}`);
       await renderProxy();
     } else if (action === "proxy-toggle-service") {
       const enabled = actionElement.dataset.enabled === "true";
