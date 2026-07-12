@@ -1,8 +1,10 @@
 import { all, one, run } from './db.js';
 import { badRequest, optionalInt, optionalString, pageParams, requiredString } from './validators.js';
-import { getSuibianDrama, listSuibianContent, resolveSuibianPlayback, searchSuibianContent } from './suibian-source.js';
+import { getSuibianDrama, getSuibianStatus, listSuibianContent, resolveSuibianPlayback, searchSuibianContent } from './suibian-source.js';
 
 export async function suibianRoutes(app) {
+  app.get('/suibian/status', async () => getSuibianStatus());
+
   app.get('/suibian/home', async (request) => {
     const { page, pageSize } = pageParams(request.query || {});
     const category = optionalString(request.query?.category, 16) || 'all';
@@ -24,7 +26,7 @@ export async function suibianRoutes(app) {
     const episodeIndex = optionalInt(request.params?.episodeIndex, -1);
     if (episodeIndex < 0 || episodeIndex > 10000) throw badRequest('episodeIndex is invalid');
     const playback = await resolveSuibianPlayback(requiredString(request.params?.id, 'id', 100), episodeIndex);
-    return playback || reply.code(404).send({ error: 'blue_ray_2_unavailable' });
+    return playback || reply.code(404).send({ error: 'episode_unavailable' });
   });
 
   app.get('/suibian/me/favorites', { preHandler: app.authRequired }, async (request) => ({

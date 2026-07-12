@@ -104,7 +104,7 @@ export async function buildServer() {
     const status = error.statusCode || 500;
     if (status >= 500) app.log.error(error);
     reply.code(status).send({
-      error: status >= 500 ? 'internal_error' : error.message,
+      error: error.publicCode || (status >= 500 ? 'internal_error' : error.message),
     });
   });
 

@@ -1,154 +1,344 @@
+import { access, readFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { config } from './config.js';
 
-const cache = new Map();
-const cacheTtlMs = 5 * 60 * 1000;
 const allowedCategories = new Set(['comic', 'short']);
+
+let catalogCache = null;
+let catalogLoadPromise = null;
+const runtimeStatus = {
+  lastSuccessAt: null,
+  lastError: null,
+};
 
 export async function listSuibianContent({ category = 'all', page = 1, pageSize = 18 } = {}) {
   const normalizedCategory = normalizeCategory(category);
-  const cacheKey = `list:${normalizedCategory}:${page}:${pageSize}`;
-  return cached(cacheKey, async () => {
-    const response = await sourceApi({ ac: 'detail', pg: page });
-    const sourceItems = Array.isArray(response?.list) ? response.list : [];
-    const items = sourceItems
-      .map(normalizeDrama)
-      .filter(Boolean)
-      .filter((item) => normalizedCategory === 'all' || item.category === normalizedCategory)
-      .slice(0, pageSize);
-    return {
-      items,
-      page: number(response?.page, page),
-      pageSize,
-      hasMore: number(response?.pagecount, page) > page,
-    };
-  });
+  const catalog = await loadCatalog();
+  const matching = normalizedCategory === 'all'
+    ? catalog.items
+    : catalog.items.filter((item) => item.category === normalizedCategory);
+  return paginate(matching.map(withoutEpisodes), page, pageSize);
 }
 
 export async function searchSuibianContent(query, { page = 1, pageSize = 18 } = {}) {
-  const q = String(query || '').trim();
+  const q = cleanText(query).toLocaleLowerCase();
   if (!q) return { items: [], page, pageSize, hasMore: false };
-  const response = await sourceApi({ ac: 'detail', wd: q, pg: page });
-  const sourceItems = Array.isArray(response?.list) ? response.list : [];
-  return {
-    items: sourceItems.map(normalizeDrama).filter(Boolean).slice(0, pageSize),
-    page: number(response?.page, page),
-    pageSize,
-    hasMore: number(response?.pagecount, page) > page,
-  };
+  const catalog = await loadCatalog();
+  const matching = catalog.items.filter((item) => [
+    item.title,
+    item.summary,
+    item.status,
+    ...item.tags,
+  ].some((value) => value.toLocaleLowerCase().includes(q)));
+  return paginate(matching.map(withoutEpisodes), page, pageSize);
 }
 
 export async function getSuibianDrama(id) {
-  const dramaId = String(id || '').trim();
+  const dramaId = cleanText(id);
   if (!dramaId) return null;
-  return cached(`detail:${dramaId}`, async () => {
-    const response = await sourceApi({ ac: 'detail', ids: dramaId });
-    const raw = Array.isArray(response?.list) ? response.list[0] : null;
-    const drama = normalizeDrama(raw);
-    if (!drama) return null;
-    return { ...drama, episodes: blueRay2Episodes(raw) };
-  });
+  const catalog = await loadCatalog();
+  return catalog.items.find((item) => item.id === dramaId) || null;
 }
 
 export async function resolveSuibianPlayback(id, episodeIndex) {
   const drama = await getSuibianDrama(id);
   const episode = drama?.episodes?.[episodeIndex];
-  if (!episode) return null;
-  const direct = hlsFromUrl(episode.sourceUrl);
-  if (direct) return { ...episode, hlsUrl: direct };
+  return episode ? {
+    index: episode.index,
+    title: episode.title,
+    candidates: episode.sources.map((source) => ({ ...source })),
+  } : null;
+}
 
-  const pageUrl = safeSameOriginUrl(episode.sourceUrl);
-  if (!pageUrl) return null;
-  const html = await fetchText(pageUrl);
-  const iframe = /<iframe[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] || '';
-  const hlsUrl = hlsFromUrl(new URL(iframe, pageUrl).toString());
-  return hlsUrl ? { ...episode, hlsUrl } : null;
+export async function getSuibianStatus() {
+  const source = await selectCatalogSource();
+  return {
+    configured: source.mode !== 'unconfigured',
+    mode: source.mode,
+    cache: {
+      loaded: Boolean(catalogCache),
+      itemCount: catalogCache?.value?.items?.length || 0,
+      expiresAt: catalogCache ? new Date(catalogCache.expiresAt).toISOString() : null,
+    },
+    lastSuccessAt: runtimeStatus.lastSuccessAt,
+    lastError: runtimeStatus.lastError ? { ...runtimeStatus.lastError } : null,
+  };
+}
+
+async function loadCatalog() {
+  const now = Date.now();
+  if (catalogCache && catalogCache.expiresAt > now) return catalogCache.value;
+  if (catalogLoadPromise) return catalogLoadPromise;
+
+  catalogLoadPromise = loadFreshCatalog()
+    .finally(() => {
+      catalogLoadPromise = null;
+    });
+  return catalogLoadPromise;
+}
+
+async function loadFreshCatalog() {
+  const source = await selectCatalogSource();
+  if (source.mode === 'unconfigured') {
+    throw rememberError(catalogError('suibian_catalog_not_configured', 503), source.mode);
+  }
+
+  try {
+    const raw = source.mode === 'file'
+      ? await loadFileCatalog(source.file)
+      : await loadRemoteCatalog(source.url);
+    const value = normalizeCatalog(raw);
+    const now = Date.now();
+    catalogCache = {
+      value,
+      expiresAt: now + positiveNumber(config.suibianCatalogCacheTtlMs, 300000),
+    };
+    runtimeStatus.lastSuccessAt = new Date(now).toISOString();
+    return value;
+  } catch (error) {
+    throw rememberError(normalizeCatalogLoadError(error, source.mode), source.mode);
+  }
+}
+
+async function selectCatalogSource() {
+  if (config.suibianCatalogFile && await readable(config.suibianCatalogFile)) {
+    return { mode: 'file', file: config.suibianCatalogFile };
+  }
+  if (isHttpsUrl(config.suibianCatalogUrl)) {
+    return { mode: 'remote', url: config.suibianCatalogUrl };
+  }
+  return { mode: 'unconfigured' };
+}
+
+async function loadFileCatalog(file) {
+  const maxBytes = positiveNumber(config.suibianCatalogMaxBytes, 5 * 1024 * 1024);
+  const body = await readFile(file);
+  if (body.byteLength > maxBytes) throw catalogError('suibian_catalog_too_large', 503);
+  return parseJson(body.toString('utf8'), 503);
+}
+
+async function loadRemoteCatalog(url) {
+  let response;
+  try {
+    const headers = { Accept: 'application/json', 'User-Agent': 'SuibianKanBackend/1.0' };
+    if (config.suibianCatalogToken) {
+      headers.Authorization = `Bearer ${config.suibianCatalogToken}`;
+    }
+    response = await fetch(url, {
+      headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(positiveNumber(config.suibianCatalogTimeoutMs, 8000)),
+    });
+  } catch (error) {
+    const code = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      ? 'suibian_catalog_timeout'
+      : 'suibian_catalog_network_error';
+    throw catalogError(code, 502);
+  }
+
+  if (!response.ok) {
+    throw catalogError('suibian_catalog_upstream_error', 502, response.status);
+  }
+
+  const maxBytes = positiveNumber(config.suibianCatalogMaxBytes, 5 * 1024 * 1024);
+  const declaredBytes = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+    throw catalogError('suibian_catalog_too_large', 502);
+  }
+  const body = await readLimitedResponse(response, maxBytes);
+  return parseJson(body.toString('utf8'), 502);
+}
+
+async function readLimitedResponse(response, maxBytes) {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw catalogError('suibian_catalog_too_large', 502);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+function normalizeCatalog(raw) {
+  const sourceItems = Array.isArray(raw) ? raw : raw?.items;
+  if (!Array.isArray(sourceItems)) throw catalogError('suibian_catalog_invalid_shape', 503);
+
+  const seen = new Set();
+  const items = sourceItems.map(normalizeDrama).filter((item) => {
+    if (!item || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+  return {
+    version: cleanText(raw?.version),
+    updatedAt: cleanText(raw?.updatedAt),
+    items,
+  };
 }
 
 function normalizeDrama(raw) {
-  const id = text(raw?.vod_id);
-  const title = cleanText(raw?.vod_name);
-  const category = categoryFrom(raw);
-  if (!id || !title || !category) return null;
+  const id = cleanText(raw?.id).slice(0, 100);
+  const title = cleanText(raw?.title).slice(0, 200);
+  const category = cleanText(raw?.category).toLowerCase();
+  if (!id || !title || !allowedCategories.has(category)) return null;
+
+  const episodes = (Array.isArray(raw?.episodes) ? raw.episodes : [])
+    .map(normalizeEpisode)
+    .filter(Boolean)
+    .map((episode, index) => ({ ...episode, index }));
+  if (episodes.length === 0) return null;
+
   return {
     id,
     title,
     category,
-    summary: cleanText(raw?.vod_blurb || raw?.vod_content),
-    status: cleanText(raw?.vod_remarks),
-    tags: cleanText(raw?.vod_class).split(/[\s,，/]+/).filter(Boolean).slice(0, 3),
-    // The visual cover belongs to the product and is generated from title in the app.
+    summary: cleanText(raw?.summary).slice(0, 2000),
+    status: cleanText(raw?.status).slice(0, 100),
+    tags: (Array.isArray(raw?.tags) ? raw.tags : [])
+      .map((tag) => cleanText(tag).slice(0, 30))
+      .filter(Boolean)
+      .slice(0, 8),
+    // The app generates its own title-based visual cover.
     coverUrl: '',
+    episodes,
   };
 }
 
-function blueRay2Episodes(raw) {
-  const names = text(raw?.vod_play_from).split('$$$');
-  const blocks = text(raw?.vod_play_url).split('$$$');
-  const sourceIndex = names.findIndex((name) => name.trim() === '蓝光-2');
-  if (sourceIndex < 0) return [];
-  return text(blocks[sourceIndex]).split('#').map((part, index) => {
-    const separator = part.indexOf('$');
-    if (separator <= 0 || separator === part.length - 1) return null;
-    return { index, title: part.slice(0, separator).trim() || `第 ${index + 1} 集`, sourceUrl: part.slice(separator + 1).trim() };
-  }).filter(Boolean);
+function normalizeEpisode(raw, sourceIndex) {
+  const rawSources = Array.isArray(raw?.sources) ? [...raw.sources] : [];
+  if (raw?.hlsUrl) {
+    rawSources.push({ name: raw?.sourceName || '默认线路', hlsUrl: raw.hlsUrl });
+  }
+  const seen = new Set();
+  const sources = rawSources
+    .map(normalizeSource)
+    .filter((source) => {
+      if (!source || seen.has(source.hlsUrl)) return false;
+      seen.add(source.hlsUrl);
+      return true;
+    });
+  if (sources.length === 0) return null;
+  return {
+    title: cleanText(raw?.title).slice(0, 100) || `第 ${sourceIndex + 1} 集`,
+    sources,
+  };
 }
 
-function categoryFrom(raw) {
-  const value = `${text(raw?.vod_class)} ${text(raw?.type_name)} ${text(raw?.vod_type_id_name)}`;
-  if (value.includes('漫剧')) return 'comic';
-  if (value.includes('短剧')) return 'short';
-  return '';
+function normalizeSource(raw, sourceIndex) {
+  const hlsUrl = normalizeHlsUrl(raw?.hlsUrl);
+  if (!hlsUrl) return null;
+  return {
+    name: cleanText(raw?.name).slice(0, 50) || `线路 ${sourceIndex + 1}`,
+    hlsUrl,
+  };
+}
+
+function normalizeHlsUrl(value) {
+  try {
+    const url = new URL(cleanText(value));
+    return url.protocol === 'https:' && url.pathname.toLowerCase().endsWith('.m3u8')
+      ? url.toString()
+      : '';
+  } catch {
+    return '';
+  }
+}
+
+function paginate(items, page, pageSize) {
+  const safePage = positiveNumber(page, 1);
+  const safePageSize = positiveNumber(pageSize, 18);
+  const start = (safePage - 1) * safePageSize;
+  return {
+    items: items.slice(start, start + safePageSize),
+    page: safePage,
+    pageSize: safePageSize,
+    hasMore: start + safePageSize < items.length,
+  };
+}
+
+function withoutEpisodes(item) {
+  const { episodes, ...summary } = item;
+  return { ...summary, episodeCount: episodes.length };
+}
+
+function parseJson(value, statusCode) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw catalogError('suibian_catalog_invalid_json', statusCode);
+  }
+}
+
+function normalizeCatalogLoadError(error, mode) {
+  if (error?.statusCode) {
+    if (mode === 'remote' && error.statusCode !== 502) error.statusCode = 502;
+    return error;
+  }
+  return catalogError(
+    mode === 'remote' ? 'suibian_catalog_upstream_error' : 'suibian_catalog_file_error',
+    mode === 'remote' ? 502 : 503,
+  );
+}
+
+function rememberError(error, mode) {
+  runtimeStatus.lastError = {
+    mode,
+    code: error.publicCode || 'suibian_catalog_error',
+    upstreamStatus: Number.isInteger(error.upstreamStatus) ? error.upstreamStatus : null,
+    at: new Date().toISOString(),
+  };
+  return error;
+}
+
+function catalogError(code, statusCode, upstreamStatus = null) {
+  const error = new Error(code);
+  error.statusCode = statusCode;
+  error.publicCode = code;
+  error.upstreamStatus = upstreamStatus;
+  return error;
+}
+
+async function readable(file) {
+  try {
+    await access(file, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsUrl(value) {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function normalizeCategory(value) {
-  const category = String(value || 'all').trim().toLowerCase();
+  const category = cleanText(value || 'all').toLowerCase();
   if (category === 'all') return category;
-  if (!allowedCategories.has(category)) throw new Error('suibian_category_invalid');
+  if (!allowedCategories.has(category)) throw catalogError('suibian_category_invalid', 400);
   return category;
 }
 
-async function sourceApi(params) {
-  const url = new URL('/api.php/provide/vod/', config.suibianSourceOrigin);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'SuibianKan/1.0' }, signal: AbortSignal.timeout(config.suibianSourceTimeoutMs) });
-  if (!response.ok) throw new Error(`suibian_source_failed:${response.status}`);
-  return response.json();
+function cleanText(value) {
+  return String(value ?? '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
-async function fetchText(url) {
-  const response = await fetch(url, { headers: { Accept: 'text/html', 'User-Agent': 'SuibianKan/1.0' }, signal: AbortSignal.timeout(config.suibianSourceTimeoutMs) });
-  if (!response.ok) throw new Error(`suibian_player_page_failed:${response.status}`);
-  return response.text();
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
-
-function hlsFromUrl(value) {
-  try {
-    const url = new URL(value);
-    const nested = url.searchParams.get('url');
-    const candidate = nested ? decodeURIComponent(nested) : url.toString();
-    const parsed = new URL(candidate);
-    return parsed.protocol === 'https:' && parsed.pathname.toLowerCase().endsWith('.m3u8') ? parsed.toString() : '';
-  } catch { return ''; }
-}
-
-function safeSameOriginUrl(value) {
-  try {
-    const url = new URL(value, config.suibianSourceOrigin);
-    const source = new URL(config.suibianSourceOrigin);
-    return url.origin === source.origin && url.protocol === 'https:' ? url.toString() : '';
-  } catch { return ''; }
-}
-
-function cached(key, loader) {
-  const current = cache.get(key);
-  const now = Date.now();
-  if (current && current.expiresAt > now) return current.value;
-  const value = Promise.resolve(loader());
-  cache.set(key, { value, expiresAt: now + cacheTtlMs });
-  value.catch(() => cache.delete(key));
-  return value;
-}
-
-function text(value) { return String(value ?? '').trim(); }
-function cleanText(value) { return text(value).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(); }
-function number(value, fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback; }

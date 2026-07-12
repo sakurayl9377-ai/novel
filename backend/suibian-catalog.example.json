@@ -1,0 +1,29 @@
+{
+  "version": "example-v1",
+  "updatedAt": "2026-07-13T00:00:00Z",
+  "items": [
+    {
+      "id": "replace-with-your-content-id",
+      "title": "示例内容（部署前请替换）",
+      "category": "comic",
+      "summary": "目录只负责提供我们自己的元数据和每集 HLS 线路。",
+      "status": "更新中",
+      "tags": ["示例"],
+      "episodes": [
+        {
+          "title": "第 1 集",
+          "sources": [
+            {
+              "name": "主线路",
+              "hlsUrl": "https://media.example.invalid/content/episode-1/index.m3u8"
+            },
+            {
+              "name": "备用线路",
+              "hlsUrl": "https://backup.example.invalid/content/episode-1/index.m3u8"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
