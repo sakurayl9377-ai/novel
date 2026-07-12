@@ -33,12 +33,34 @@ logoutButton.addEventListener("click", () => {
   renderShell();
 });
 
+const sidebarToggle = document.querySelector("#sidebarToggle");
+const sidebarCollapsedKey = "novelAdminSidebarCollapsed";
+
+function setSidebarCollapsed(collapsed) {
+  document.querySelector(".shell")?.classList.toggle("sidebar-collapsed", collapsed);
+  if (!sidebarToggle) return;
+  sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+  sidebarToggle.setAttribute("aria-label", collapsed ? "展开导航" : "收起导航");
+  sidebarToggle.title = collapsed ? "展开导航" : "收起导航";
+}
+
+if (sidebarToggle) {
+  setSidebarCollapsed(localStorage.getItem(sidebarCollapsedKey) === "true");
+  sidebarToggle.addEventListener("click", () => {
+    const collapsed = !document.querySelector(".shell")?.classList.contains("sidebar-collapsed");
+    setSidebarCollapsed(collapsed);
+    localStorage.setItem(sidebarCollapsedKey, String(collapsed));
+  });
+}
+
 document.querySelectorAll(".nav button").forEach((button) => {
   button.addEventListener("click", async () => {
-    // Some operational views are much shorter than the content-heavy pages.
-    // Reset the document scroll before rendering so a switch from a long page
-    // cannot leave the new view apparently blank below the previous scroll offset.
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    // The desktop shell has independent navigation and content scrolling.
+    // Reset only the content pane so a short view cannot render below the
+    // previous view's scroll position.
+    document
+      .querySelector(".workspace")
+      ?.scrollTo({ top: 0, left: 0, behavior: "auto" });
     state.view = button.dataset.view;
     state.q = "";
     state.status = "";
