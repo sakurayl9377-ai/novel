@@ -1,8 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from './config.js';
+import { all, one } from './db.js';
+import { categoryAvailability, categoryPolicy } from './video-category-policy.js';
 
-const HIDDEN_CATEGORY_IDS = new Set([34, 35, 36]);
+const HIDDEN_CATEGORY_IDS = new Set();
 const SHORT_CATEGORY_IDS = new Set([37, 43, 44, 45, 46, 47, 48, 49]);
 const HOME_CATEGORY_IDS = [1, 2, 4, 3];
 const state = {
@@ -26,11 +28,12 @@ export async function getDbzyCategories() {
     ingestPayload(payload);
     await persistCache();
   }
-  const visible = state.categories.filter((item) => !HIDDEN_CATEGORY_IDS.has(item.id));
+  const visible = state.categories.filter((item) => categoryIsAvailable(item.id));
   return {
     items: visible.filter((item) => item.parentId === 0).map((root) => ({
       ...root,
-      children: visible.filter((item) => item.parentId === root.id),
+      availability: categoryAvailability('dbzy', root.id),
+      children: visible.filter((item) => item.parentId === root.id).map(withCategoryAvailability),
     })),
     hiddenCategoryIds: [...HIDDEN_CATEGORY_IDS],
   };
@@ -41,6 +44,7 @@ export async function getDbzyMovieHome({ sectionSize = 12 } = {}) {
   const categories = await getDbzyCategories();
   const sections = [];
   for (const categoryId of HOME_CATEGORY_IDS) {
+    if (!categoryIsAvailable(categoryId)) continue;
     const category = findCategory(categoryId);
     if (!category) continue;
     const result = await listDbzyMovies({ categoryId, page: 1, pageSize: sectionSize });
@@ -52,12 +56,14 @@ export async function getDbzyMovieHome({ sectionSize = 12 } = {}) {
 export async function listDbzyMovies({ categoryId, page = 1, pageSize = 20 } = {}) {
   await ensureCache();
   const id = safeCategoryId(categoryId);
-  if (HIDDEN_CATEGORY_IDS.has(id) || SHORT_CATEGORY_IDS.has(id)) return paginate([], page, pageSize);
+  const availability = categoryAvailability('dbzy', id);
+  if (!availability.available || SHORT_CATEGORY_IDS.has(id)) return { ...paginate([], page, pageSize), availability };
   await fetchCategoryPage(id, page);
-  return paginate(itemsForCategory(id), page, pageSize);
+  const context = publicFilterContext();
+  return { ...paginate(itemsForCategory(id).filter((item) => itemIsPublic(item, context)), page, pageSize), availability };
 }
 
-export async function getDbzyItem(id) {
+export async function getDbzyItem(id, { includeHidden = false } = {}) {
   await ensureCache();
   const numericId = parseDbzyId(id);
   if (!numericId) return null;
@@ -68,13 +74,14 @@ export async function getDbzyItem(id) {
     await persistCache();
     item = state.items.get(numericId);
   }
-  return item && !HIDDEN_CATEGORY_IDS.has(item.categoryId) ? clone(item) : null;
+  return item && !HIDDEN_CATEGORY_IDS.has(item.categoryId) && (includeHidden || itemIsPublic(item)) ? clone(item) : null;
 }
 
 export function withoutDbzyPlayback(item) {
   if (!item) return null;
   return {
     ...clone(item),
+    availability: categoryAvailability('dbzy', item.categoryId),
     episodes: item.episodes.map((episode) => ({
       index: episode.index,
       title: episode.title,
@@ -87,7 +94,8 @@ export async function searchDbzyCache(query, { page = 1, pageSize = 20 } = {}) {
   await ensureFresh();
   const q = cleanText(query).toLocaleLowerCase();
   if (!q) return paginate([], page, pageSize);
-  const matches = [...state.items.values()].filter((item) => !HIDDEN_CATEGORY_IDS.has(item.categoryId) && [
+  const context = publicFilterContext();
+  const matches = [...state.items.values()].filter((item) => itemIsPublic(item, context) && [
     item.title, item.summary, item.actor, item.director, item.categoryName, ...item.tags,
   ].some((value) => cleanText(value).toLocaleLowerCase().includes(q)));
   return paginate(matches.map(withoutPlayback), page, pageSize);
@@ -97,9 +105,12 @@ export async function getDbzyShortFeed({ categoryId = 37, pageSize = 12 } = {}) 
   await ensureCache();
   const id = safeCategoryId(categoryId);
   if (!SHORT_CATEGORY_IDS.has(id)) throw sourceError('dbzy_short_category_invalid', 400);
+  const availability = categoryAvailability('dbzy', id);
+  if (!availability.available) return { items: [], hasMore: false, availability };
   await fetchCategoryPage(id, randomPageForCategory(id));
-  const pool = itemsForCategory(id).filter((item) => item.episodes.length);
-  return { items: shuffle(pool).slice(0, clamp(pageSize, 1, 30)).map(withoutPlayback), hasMore: true };
+  const context = publicFilterContext();
+  const pool = itemsForCategory(id).filter((item) => item.episodes.length && itemIsPublic(item, context));
+  return { items: shuffle(pool).slice(0, clamp(pageSize, 1, 30)).map(withoutPlayback), hasMore: true, availability };
 }
 
 export async function resolveDbzyPlayback(id, episodeIndex) {
@@ -120,6 +131,80 @@ export async function getDbzyStatus() {
   };
 }
 
+export async function getDbzyAdminOverview({ query = '', categoryId = 0, kind = '', visibility = '', page = 1, pageSize = 30 } = {}) {
+  await ensureCache();
+  const overrides = overrideMap();
+  const keyword = cleanText(query).toLocaleLowerCase();
+  let items = [...state.items.values()].filter((item) => !HIDDEN_CATEGORY_IDS.has(item.categoryId));
+  if (categoryId) {
+    const categoryIds = new Set([Number(categoryId), ...state.categories.filter((item) => item.parentId === Number(categoryId)).map((item) => item.id)]);
+    items = items.filter((item) => categoryIds.has(item.categoryId));
+  }
+  if (kind === 'movie' || kind === 'short') items = items.filter((item) => item.category === kind);
+  if (visibility === 'hidden') items = items.filter((item) => overrides.get(String(item.id))?.visibility === 'hidden');
+  if (visibility === 'active') items = items.filter((item) => overrides.get(String(item.id))?.visibility !== 'hidden');
+  if (keyword) items = items.filter((item) => [item.id, item.title, item.categoryName, item.actor, item.director, ...item.tags]
+    .some((value) => cleanText(value).toLocaleLowerCase().includes(keyword)));
+  items.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const result = paginate(items.map((item) => adminSummary(item, overrides.get(String(item.id)))), page, pageSize);
+  return { ...result, total: items.length };
+}
+
+export async function getDbzyAdminCategories() {
+  await ensureCache();
+  return state.categories.filter((item) => !HIDDEN_CATEGORY_IDS.has(item.id)).map((item) => ({
+    ...item,
+    policy: categoryPolicy('dbzy', item.id),
+    availability: categoryAvailability('dbzy', item.id),
+    itemCount: [...state.items.values()].filter((content) => content.categoryId === item.id).length,
+  }));
+}
+
+export async function getDbzyAdminItem(id) {
+  const item = await getDbzyItem(id, { includeHidden: true });
+  if (!item) return null;
+  const override = one(
+    `SELECT visibility, note, updated_at AS updatedAt
+     FROM video_content_overrides WHERE source_key = 'dbzy' AND source_item_id = ?`,
+    [String(item.id)],
+  );
+  return {
+    ...adminSummary(item, override),
+    summary: item.summary,
+    actor: item.actor,
+    director: item.director,
+    screenshots: item.screenshots,
+    episodes: item.episodes.map((episode) => ({
+      index: episode.index,
+      title: episode.title,
+      candidates: episode.candidates.map(redactPlaybackCandidate),
+    })),
+  };
+}
+
+export async function refreshDbzyNow() {
+  await ensureCache();
+  await refreshIncremental();
+  const status = await getDbzyStatus();
+  if (status.lastError) throw sourceError(status.lastError.code || 'dbzy_upstream_error', 502);
+  return status;
+}
+
+export function redactPlaybackCandidate(candidate) {
+  try {
+    const url = new URL(candidate?.hlsUrl || '');
+    return {
+      name: cleanText(candidate?.name).slice(0, 50) || '线路',
+      host: url.hostname,
+      protocol: url.protocol.replace(':', ''),
+      format: url.pathname.toLowerCase().endsWith('.m3u8') ? 'HLS' : 'unknown',
+      health: url.protocol === 'https:' && url.pathname.toLowerCase().endsWith('.m3u8') ? 'ready' : 'invalid',
+    };
+  } catch {
+    return { name: cleanText(candidate?.name).slice(0, 50) || '线路', host: '', protocol: '', format: 'unknown', health: 'invalid' };
+  }
+}
+
 async function ensureFresh() {
   await ensureCache();
   if (Date.now() >= state.expiresAt) await refreshIncremental();
@@ -137,6 +222,8 @@ async function ensureCache() {
         if (normalized) state.items.set(parseDbzyId(normalized.id), normalized);
       }
       state.expiresAt = Number(raw.expiresAt) || 0;
+      state.lastSuccessAt = cleanText(raw.lastSuccessAt) || null;
+      state.lastError = raw.lastError && typeof raw.lastError === 'object' ? raw.lastError : null;
     } catch {
       state.expiresAt = 0;
     } finally {
@@ -314,13 +401,71 @@ function normalizeCategories(raw) {
 
 function withoutPlayback(item) {
   const { episodes, actor, director, screenshots, ...summary } = item;
-  return { ...summary, episodeCount: episodes.length || item.episodeCount || 0 };
+  return {
+    ...summary,
+    episodeCount: episodes.length || item.episodeCount || 0,
+    availability: categoryAvailability('dbzy', item.categoryId),
+  };
 }
 
 function itemsForCategory(categoryId) {
   const childIds = new Set([categoryId, ...state.categories.filter((item) => item.parentId === categoryId).map((item) => item.id)]);
   return [...state.items.values()].filter((item) => childIds.has(item.categoryId) && !HIDDEN_CATEGORY_IDS.has(item.categoryId))
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function overrideMap() {
+  return new Map(all(
+    `SELECT source_item_id, visibility, note, updated_at AS updatedAt
+     FROM video_content_overrides WHERE source_key = 'dbzy'`,
+  ).map((item) => [item.source_item_id, item]));
+}
+
+function isItemHidden(id) {
+  return one(
+    `SELECT 1 AS hidden FROM video_content_overrides
+     WHERE source_key = 'dbzy' AND source_item_id = ? AND visibility = 'hidden'`,
+    [String(id)],
+  )?.hidden === 1;
+}
+
+function categoryIsAvailable(categoryId) {
+  return !HIDDEN_CATEGORY_IDS.has(Number(categoryId)) && categoryAvailability('dbzy', Number(categoryId)).available;
+}
+
+function itemIsPublic(item, context = null) {
+  if (context) {
+    return context.availableCategoryIds.has(Number(item.categoryId)) && !context.hiddenItemIds.has(String(item.id));
+  }
+  return categoryIsAvailable(item.categoryId) && !isItemHidden(item.id);
+}
+
+function publicFilterContext() {
+  const categoryIds = new Set([
+    ...state.categories.map((item) => item.id),
+    ...[...state.items.values()].map((item) => item.categoryId),
+  ]);
+  return {
+    availableCategoryIds: new Set([...categoryIds].filter(categoryIsAvailable)),
+    hiddenItemIds: new Set(all(
+      `SELECT source_item_id FROM video_content_overrides
+       WHERE source_key = 'dbzy' AND visibility = 'hidden'`,
+    ).map((item) => item.source_item_id)),
+  };
+}
+
+function withCategoryAvailability(item) {
+  return { ...item, availability: categoryAvailability('dbzy', item.id) };
+}
+
+function adminSummary(item, override) {
+  return {
+    ...withoutPlayback(item),
+    visibility: override?.visibility || 'active',
+    overrideNote: override?.note || '',
+    overrideUpdatedAt: override?.updatedAt || null,
+    sourceCount: Math.max(0, ...item.episodes.map((episode) => episode.candidates.length)),
+  };
 }
 
 function randomPageForCategory(categoryId) {
@@ -332,7 +477,14 @@ async function persistCache() {
   const file = config.dbzyCacheFile;
   const temp = `${file}.${process.pid}.tmp`;
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(temp, JSON.stringify({ version: 1, expiresAt: state.expiresAt, categories: state.categories, items: [...state.items.values()] }), 'utf8');
+  await writeFile(temp, JSON.stringify({
+    version: 1,
+    expiresAt: state.expiresAt,
+    lastSuccessAt: state.lastSuccessAt,
+    lastError: state.lastError,
+    categories: state.categories,
+    items: [...state.items.values()],
+  }), 'utf8');
   await rename(temp, file);
 }
 

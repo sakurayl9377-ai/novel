@@ -11,6 +11,7 @@ process.env.ALLOW_DEV_AUTH_CODES = "true";
 process.env.SMTP_HOST = "";
 process.env.SMTP_USER = "";
 process.env.SMTP_PASS = "";
+process.env.DBZY_SYNC_ENABLED = "false";
 
 const { buildServer } = await import("./server.js");
 const { one, run } = await import("./db.js");
@@ -56,6 +57,35 @@ try {
       (item) => item.id === "nvidia",
     ),
     "admin settings should publish chat bot provider presets",
+  );
+
+  const videoOverview = await request(
+    baseUrl,
+    `${apiPrefix}/admin/video/overview?pageSize=5`,
+    { token: auth.token },
+  );
+  assert(
+    videoOverview.source && videoOverview.scheduler?.enabled === false,
+    "video admin overview should expose source and scheduler status",
+  );
+  const videoPolicy = await request(
+    baseUrl,
+    `${apiPrefix}/admin/video/categories/34/policy`,
+    {
+      method: "PATCH",
+      token: auth.token,
+      body: {
+        mode: "scheduled",
+        dailyStart: "00:00",
+        dailyEnd: "06:00",
+        timezone: "Asia/Hong_Kong",
+        ageRestricted: true,
+      },
+    },
+  );
+  assert(
+    videoPolicy.availability?.policy?.ageRestricted === true,
+    "video category policy should be editable through the shared admin",
   );
 
   const progressBaseTime = Date.now() - 10_000;

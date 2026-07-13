@@ -155,6 +155,20 @@ viewRoot.addEventListener("change", async (event) => {
     await renderContentOps();
     return;
   }
+  if (event.target?.id === "videoCategoryFilter") {
+    state.videoOps.categoryId = Number(event.target.value || 0);
+    state.pages.videoOps = 1;
+    state.videoOps.selectedId = "";
+    await renderVideoOps();
+    return;
+  }
+  if (event.target?.id === "videoKindFilter") {
+    state.videoOps.kind = event.target.value || "";
+    state.pages.videoOps = 1;
+    state.videoOps.selectedId = "";
+    await renderVideoOps();
+    return;
+  }
   if (event.target?.id === "analyticsDays") {
     state.analytics.days = Number(event.target.value || 7);
     await renderAnalytics();
@@ -221,6 +235,7 @@ viewRoot.addEventListener("click", async (event) => {
     actionElement.disabled = true;
     await handleGrowthAction(action, actionElement);
     await handleContentAction(action, actionElement);
+    await handleVideoAction(action, actionElement);
     await handleCommunityAction(action, actionElement);
     await handleOperationsAction(action, actionElement);
     await handleAiNovelAction(action, actionElement);
@@ -287,6 +302,7 @@ async function loadView() {
 
   if (state.view === "dashboard") await renderDashboard();
   if (state.view === "contentOps") await renderContentOps();
+  if (state.view === "videoOps") await renderVideoOps();
   if (state.view === "growthOps") await renderGrowthOps();
   if (state.view === "comments") await renderComments();
   if (state.view === "danmaku") await renderDanmaku();

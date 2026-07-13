@@ -8,11 +8,13 @@ import { recordAdminAudit } from './admin-audit.js';
 import { adminRequired, authOptional, authRequired } from './auth.js';
 import { seedChatBotRooms } from './chat-bot.js';
 import { config } from './config.js';
+import { startDbzySyncScheduler, stopDbzySyncScheduler } from './dbzy-sync-scheduler.js';
 import { closeDb, migrate, seedAdmin } from './db.js';
 import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
+import { adminVideoRoutes } from './routes-admin-video.js';
 import { aiNovelRoutes } from './routes-ai-novels.js';
 import { authRoutes } from './routes-auth.js';
 import { contentRoutes } from './routes-content.js';
@@ -34,7 +36,10 @@ export async function buildServer() {
     trustProxy: config.trustedProxies,
   });
 
+  startDbzySyncScheduler(app.log);
+
   app.addHook('onClose', async () => {
+    stopDbzySyncScheduler();
     closeDb();
   });
 
@@ -72,6 +77,7 @@ export async function buildServer() {
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
       api.register(adminOperationsRoutes);
+      api.register(adminVideoRoutes);
       api.register(userRoutes);
     },
     { prefix: config.apiPrefix },

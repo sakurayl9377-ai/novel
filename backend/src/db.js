@@ -651,6 +651,38 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_content_catalog_source
       ON content_catalog(source_key, last_seen_at);
 
+    CREATE TABLE IF NOT EXISTS video_content_overrides (
+      source_key TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'active',
+      note TEXT NOT NULL DEFAULT '',
+      updated_by INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (source_key, source_item_id),
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (visibility IN ('active', 'hidden'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_content_overrides_visibility
+      ON video_content_overrides(source_key, visibility, updated_at);
+
+    CREATE TABLE IF NOT EXISTS video_category_policies (
+      source_key TEXT NOT NULL,
+      category_id INTEGER NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'always',
+      daily_start TEXT NOT NULL DEFAULT '00:00',
+      daily_end TEXT NOT NULL DEFAULT '23:59',
+      timezone TEXT NOT NULL DEFAULT 'Asia/Hong_Kong',
+      age_restricted INTEGER NOT NULL DEFAULT 0,
+      updated_by INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (source_key, category_id),
+      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (mode IN ('always', 'hidden', 'scheduled'))
+    );
+
     CREATE TABLE IF NOT EXISTS content_source_health (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       content_type TEXT NOT NULL,
@@ -1224,6 +1256,18 @@ export function migrate() {
       ON horse_race_bets(user_id, round_id);
   `);
   seedChatRooms();
+  db.prepare(
+    `INSERT OR IGNORE INTO video_category_policies
+     (source_key, category_id, mode, daily_start, daily_end, timezone, age_restricted)
+     VALUES ('dbzy', 34, 'scheduled', '00:00', '06:00', ?, 1)`,
+  ).run(config.videoPolicyTimezone);
+  for (const categoryId of [35, 36]) {
+    db.prepare(
+      `INSERT OR IGNORE INTO video_category_policies
+       (source_key, category_id, mode, daily_start, daily_end, timezone, age_restricted)
+       VALUES ('dbzy', ?, 'hidden', '00:00', '23:59', ?, 0)`,
+    ).run(categoryId, config.videoPolicyTimezone);
+  }
   seedShopItems();
   seedChatBlockKeywords();
   encryptStoredSettingSecrets();

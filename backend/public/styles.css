@@ -31,6 +31,73 @@ textarea {
   font: inherit;
 }
 
+.video-source-strip,
+.video-catalog-toolbar,
+.video-admin-row,
+.video-policy-card .section-title,
+.video-candidate-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.video-source-strip span,
+.video-source-strip small,
+.video-admin-row small,
+.video-candidate-list small {
+  display: block;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.video-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.video-policy-card {
+  border: 1px solid #dde5ef;
+  border-radius: 14px;
+  padding: 14px;
+  background: #fff;
+}
+
+.video-policy-card.closed { border-color: rgba(239, 68, 68, .35); }
+.video-policy-card .compact-form { margin: 12px 0; }
+.video-catalog-toolbar { margin: 18px 0 10px; justify-content: flex-start; }
+.video-catalog-toolbar label { display: flex; align-items: center; gap: 8px; }
+
+.video-admin-list { display: grid; gap: 8px; }
+.video-admin-row {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dde5ef;
+  border-radius: 12px;
+  padding: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.video-admin-row:hover,
+.video-admin-row.selected { border-color: #2563eb; background: #eff6ff; }
+.video-admin-row img,
+.video-cover-placeholder { width: 52px; height: 72px; border-radius: 8px; object-fit: cover; flex: 0 0 auto; }
+.video-cover-placeholder { display: grid; place-items: center; background: #f1f5f9; font-weight: 800; }
+.video-admin-row > span:nth-child(2) { flex: 1; min-width: 0; }
+.video-detail-header { align-items: flex-start; }
+.video-summary { color: #64748b; line-height: 1.7; }
+.video-episodes details { border-top: 1px solid #dde5ef; padding: 12px 0; }
+.video-episodes summary { display: flex; justify-content: space-between; cursor: pointer; }
+.video-candidate-list { margin-top: 10px; display: grid; gap: 8px; }
+.video-candidate-list > div { border-radius: 10px; background: #f8fafc; padding: 10px; }
+
+@media (max-width: 760px) {
+  .video-source-strip,
+  .video-catalog-toolbar { align-items: stretch; flex-direction: column; }
+}
+
 .growth-ops-toolbar {
   display: grid;
   grid-template-columns: repeat(3, minmax(140px, 220px));

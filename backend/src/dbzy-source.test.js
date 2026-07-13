@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dbzyInternals, normalizeVod, parsePlaylists } from './dbzy-source.js';
+import { dbzyInternals, normalizeVod, parsePlaylists, redactPlaybackCandidate } from './dbzy-source.js';
 
 test('MacCMS $$$/#/$ playlists merge matching episodes and keep HTTPS HLS only', () => {
   const episodes = parsePlaylists(
@@ -37,7 +37,18 @@ test('vod detail is normalized for the app and insecure artwork is upgraded', ()
   assert.equal(item.episodes[0].candidates[0].hlsUrl, 'https://video.example/index.m3u8');
 });
 
-test('sensitive and non-entertainment roots are hidden by default', () => {
-  assert.deepEqual([...dbzyInternals.HIDDEN_CATEGORY_IDS], [34, 35, 36]);
+test('category visibility is policy-driven and short categories remain identified', () => {
+  assert.deepEqual([...dbzyInternals.HIDDEN_CATEGORY_IDS], []);
   assert.deepEqual([...dbzyInternals.SHORT_CATEGORY_IDS], [37, 43, 44, 45, 46, 47, 48, 49]);
+});
+
+test('admin playback candidates expose the host but never the URL or token', () => {
+  const candidate = redactPlaybackCandidate({
+    name: '蓝光-2',
+    hlsUrl: 'https://video.example/episode/index.m3u8?token=secret-value',
+  });
+  assert.deepEqual(candidate, {
+    name: '蓝光-2', host: 'video.example', protocol: 'https', format: 'HLS', health: 'ready',
+  });
+  assert.equal(JSON.stringify(candidate).includes('secret-value'), false);
 });

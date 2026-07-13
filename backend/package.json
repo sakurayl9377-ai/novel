@@ -9,7 +9,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "smoke": "node src/smoke-test.js",
-    "test:suibian": "node --test src/suibian-source.test.js src/dbzy-source.test.js",
+    "test:suibian": "node --test src/suibian-source.test.js src/dbzy-source.test.js src/video-category-policy.test.js src/dbzy-sync-scheduler.test.js",
     "test:ai-novels": "node src/ai-novel-test.js",
     "security": "node src/security-test.js"
   },
