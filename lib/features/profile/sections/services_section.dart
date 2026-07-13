@@ -98,6 +98,7 @@ class _MoreServicesCard extends StatefulWidget {
     required this.onHistoryRecords,
     required this.onBookshelf,
     required this.onShop,
+    required this.onSuibian,
     required this.onDressUp,
     required this.onSpace,
     required this.onFavorites,
@@ -112,6 +113,7 @@ class _MoreServicesCard extends StatefulWidget {
   final VoidCallback onHistoryRecords;
   final VoidCallback onBookshelf;
   final VoidCallback onShop;
+  final VoidCallback onSuibian;
   final VoidCallback onDressUp;
   final VoidCallback onSpace;
   final VoidCallback onFavorites;
@@ -147,10 +149,10 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
         color: const Color(0xFFE78A98),
       ),
       _ProfileShortcutEntry(
-        Icons.auto_awesome_motion_outlined,
-        '我的装扮',
-        widget.onDressUp,
-        color: const Color(0xFFB25DFF),
+        Icons.play_circle_outline_rounded,
+        '随便看',
+        widget.onSuibian,
+        color: const Color(0xFFFF5B51),
       ),
       _ProfileShortcutEntry(
         Icons.menu_book_outlined,
@@ -177,10 +179,10 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
         color: const Color(0xFF1E9CCF),
       ),
       _ProfileShortcutEntry(
-        Icons.photo_library_outlined,
-        '空间',
-        widget.onSpace,
-        color: const Color(0xFF6B72D6),
+        Icons.auto_awesome_motion_outlined,
+        '我的装扮',
+        widget.onDressUp,
+        color: const Color(0xFFB25DFF),
       ),
       _ProfileShortcutEntry(
         Icons.sports_esports_outlined,
@@ -205,6 +207,12 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
         '下载',
         widget.onDownloads,
         color: const Color(0xFF496579),
+      ),
+      _ProfileShortcutEntry(
+        Icons.photo_library_outlined,
+        '空间',
+        widget.onSpace,
+        color: const Color(0xFF6B72D6),
       ),
       if (widget.onAdminCenter != null)
         _ProfileShortcutEntry(

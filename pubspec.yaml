@@ -47,6 +47,8 @@ dependencies:
   flutter_chat_ui: ^2.11.1
   flutter_chat_core: ^2.9.0
   record: ^7.1.1
+  webview_flutter: 4.14.1
+  webview_flutter_android: 4.13.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

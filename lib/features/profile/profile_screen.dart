@@ -30,6 +30,7 @@ import '../../screens/manga_detail_screen.dart';
 import '../../screens/message_center_screen.dart';
 import '../../screens/search_screen.dart';
 import '../../screens/settings_screen.dart';
+import '../../screens/suibian_web_screen.dart';
 
 export 'controller/profile_controller.dart';
 

@@ -280,6 +280,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onHistoryRecords: _openHistoryRecords,
                       onBookshelf: _openBookshelf,
                       onShop: _openShop,
+                      onSuibian: () => unawaited(_openSuibian()),
                       onDressUp: _openMyDressUp,
                       onSpace: _openMySpace,
                       onFavorites: _openFavorites,
@@ -384,6 +385,20 @@ class _ProfileScreenState extends State<ProfileScreen>
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const HorseRaceGameScreen()),
+    );
+  }
+
+  Future<void> _openSuibian() async {
+    if (!await _ensureLogin()) return;
+    if (!mounted) return;
+    final token = context.read<InteractionAuthProvider>().token.trim();
+    if (token.isEmpty) {
+      _showMessage('登录状态已失效，请重新登录');
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => SuibianWebScreen(novelToken: token)),
     );
   }
 
