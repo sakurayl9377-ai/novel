@@ -549,6 +549,17 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_suibian_favorites_user
       ON suibian_favorites(user_id, updated_at DESC);
 
+    CREATE TABLE IF NOT EXISTS suibian_likes (
+      user_id INTEGER NOT NULL,
+      drama_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, drama_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_suibian_likes_drama
+      ON suibian_likes(drama_id);
+
     CREATE TABLE IF NOT EXISTS suibian_watch_history (
       user_id INTEGER NOT NULL,
       drama_id TEXT NOT NULL,

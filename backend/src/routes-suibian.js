@@ -110,6 +110,27 @@ export async function suibianRoutes(app) {
     items: all(`SELECT drama_id AS dramaId, title, category, created_at AS createdAt, updated_at AS updatedAt FROM suibian_favorites WHERE user_id = ? ORDER BY updated_at DESC`, [request.user.id]),
   }));
 
+  app.get('/suibian/me/likes', { preHandler: app.authRequired }, async (request) => ({
+    items: all(`SELECT drama_id AS dramaId, created_at AS createdAt FROM suibian_likes WHERE user_id = ? ORDER BY created_at DESC`, [request.user.id]),
+  }));
+
+  app.put('/suibian/me/likes/:dramaId', { preHandler: app.authRequired }, async (request) => {
+    const dramaId = requiredString(request.params?.dramaId, 'dramaId', 100);
+    run(`INSERT INTO suibian_likes (user_id, drama_id) VALUES (?, ?) ON CONFLICT(user_id, drama_id) DO NOTHING`, [request.user.id, dramaId]);
+    return { liked: true };
+  });
+
+  app.delete('/suibian/me/likes/:dramaId', { preHandler: app.authRequired }, async (request) => {
+    run('DELETE FROM suibian_likes WHERE user_id = ? AND drama_id = ?', [request.user.id, requiredString(request.params?.dramaId, 'dramaId', 100)]);
+    return { liked: false };
+  });
+
+  app.get('/suibian/likes/:dramaId', async (request) => {
+    const dramaId = requiredString(request.params?.dramaId, 'dramaId', 100);
+    const row = all('SELECT COUNT(*) AS count FROM suibian_likes WHERE drama_id = ?', [dramaId])[0];
+    return { count: Number(row?.count || 0) };
+  });
+
   app.put('/suibian/me/favorites/:dramaId', { preHandler: app.authRequired }, async (request) => {
     const dramaId = requiredString(request.params?.dramaId, 'dramaId', 100);
     const body = request.body || {};
