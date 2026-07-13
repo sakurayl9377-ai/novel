@@ -53,6 +53,7 @@ migrate_working_dir/
 backend/data/*.sqlite
 backend/data/*.sqlite-*
 backend/data/uploads/
+backend/data/dbzy-cache.json
 backend/.env
 
 # Symbolication related
