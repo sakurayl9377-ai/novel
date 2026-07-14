@@ -10,11 +10,13 @@ import '../models/reading_settings.dart';
 import '../providers/bookshelf_provider.dart';
 import '../providers/reading_provider.dart';
 import '../providers/book_source_provider.dart';
+import '../providers/interaction_auth_provider.dart';
 import '../providers/tts_provider.dart';
 import '../services/tts_media_control_service.dart';
 import '../services/app_telemetry_service.dart';
 import '../utils/auth_gate.dart';
 import '../widgets/reading_settings_panel.dart';
+import '../widgets/continuous_chapter_view.dart';
 import '../widgets/page_turn_view.dart';
 
 class ReadingScreen extends StatefulWidget {
@@ -60,6 +62,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   int? _pausedTtsCharPosition;
   bool _ttsMediaControlsBound = false;
   bool _handlingTtsMediaChapterChange = false;
+  int _continuousReaderSession = 0;
   TtsMediaControlService? _ttsMediaControlService;
   TtsProvider? _ttsProvider;
   Future<void> _progressSaveChain = Future.value();
@@ -117,6 +120,7 @@ class _ReadingScreenState extends State<ReadingScreen>
       setState(() {
         _chapters = chapters;
         _currentChapterIndex = currentIndex;
+        _continuousReaderSession++;
       });
       final readingProvider = context.read<ReadingProvider>();
       readingProvider.setChapters(chapters);
@@ -195,6 +199,7 @@ class _ReadingScreenState extends State<ReadingScreen>
           _lastCharPosition = restorePosition;
           _lastScrollPosition = restorePosition == 0 ? 0 : _lastScrollPosition;
           _currentPageIndex = pageIndex;
+          _continuousReaderSession++;
         });
       }
       AppTelemetryService.instance.trackEvent(
@@ -246,6 +251,7 @@ class _ReadingScreenState extends State<ReadingScreen>
           _lastCharPosition = restorePosition;
           _lastScrollPosition = restorePosition == 0 ? 0 : _lastScrollPosition;
           _currentPageIndex = pageIndex;
+          _continuousReaderSession++;
         });
         AppTelemetryService.instance.trackEvent(
           'content_load',
@@ -428,6 +434,151 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (oldPercent != newPercent && mounted) {
       setState(() {});
     }
+  }
+
+  Future<String> _loadContinuousChapterContent(int chapterIndex) async {
+    if (chapterIndex < 0 || chapterIndex >= _chapters.length) return '';
+
+    // Do not show a login dialog merely because a neighbouring chapter is
+    // being prefetched. Explicit chapter navigation still uses the normal
+    // login gate below.
+    final canPreview =
+        chapterIndex < _guestChapterLimit ||
+        context.read<InteractionAuthProvider>().isLoggedIn;
+    if (!canPreview) return '';
+
+    final chapter = _chapters[chapterIndex];
+    if (widget.novel.isLocal) return chapter.content;
+
+    final content = await context.read<BookSourceProvider>().getChapterContent(
+      widget.novel,
+      chapter,
+    );
+    return _formatChapterContent(content);
+  }
+
+  void _updateContinuousReadingPosition(
+    int chapterIndex,
+    String content,
+    int charPosition, {
+    required bool settled,
+  }) {
+    if (!mounted ||
+        chapterIndex < 0 ||
+        chapterIndex >= _chapters.length ||
+        content.isEmpty) {
+      return;
+    }
+
+    final safePosition = charPosition.clamp(0, content.length).toInt();
+    final chapterChanged = chapterIndex != _currentChapterIndex;
+    final oldPercent = _chapterProgressPercentForPosition(_lastCharPosition);
+    final newPercent = ((safePosition / content.length) * 100)
+        .clamp(0.0, 100.0)
+        .round();
+    final shouldRebuild = chapterChanged || oldPercent != newPercent;
+
+    void applyPosition() {
+      _currentChapterIndex = chapterIndex;
+      _content = content;
+      _restoreCharPosition = safePosition;
+      _lastCharPosition = safePosition;
+      // A continuous scroll offset spans several chapters and must not be
+      // reused when this chapter is opened on a later app launch.
+      _lastScrollPosition = 0;
+      _currentPageIndex = _pageIndexForCharPosition(content, safePosition);
+    }
+
+    if (shouldRebuild) {
+      setState(applyPosition);
+    } else {
+      applyPosition();
+    }
+
+    if (chapterChanged) {
+      context.read<ReadingProvider>().setCurrentChapter(
+        _chapters[chapterIndex],
+      );
+      final ttsProvider = context.read<TtsProvider>();
+      if (ttsProvider.isSpeaking ||
+          ttsProvider.isPaused ||
+          ttsProvider.isStarting) {
+        unawaited(ttsProvider.stopSpeaking());
+      }
+    }
+
+    if (settled) {
+      unawaited(
+        _saveProgressNow(charPosition: safePosition, scrollPosition: 0),
+      );
+    }
+  }
+
+  Widget _buildContinuousChapterSection({
+    required Chapter chapter,
+    required int chapterIndex,
+    required String content,
+    required double fontSize,
+    required String? fontFamily,
+    required Color color,
+    required double lineHeight,
+    required bool isNight,
+    required TtsProvider ttsProvider,
+  }) {
+    final isActiveChapter = chapterIndex == _currentChapterIndex;
+    final text = isActiveChapter
+        ? _buildReaderText(
+            pageContent: content,
+            pageStartOffset: 0,
+            fontSize: fontSize,
+            fontFamily: fontFamily,
+            color: color,
+            lineHeight: lineHeight,
+            isNight: isNight,
+            ttsProvider: ttsProvider,
+          )
+        : Text(
+            content,
+            softWrap: true,
+            overflow: TextOverflow.clip,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontFamily: fontFamily,
+              color: color,
+              height: lineHeight,
+            ),
+          );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 30),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (chapter.title.trim().isNotEmpty) ...[
+            Text(
+              chapter.title,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: fontSize + 2,
+                fontFamily: fontFamily,
+                fontWeight: FontWeight.w600,
+                color: color,
+                height: 1.35,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Divider(
+              height: 1,
+              color: (isNight ? Colors.white : Colors.black).withValues(
+                alpha: 0.12,
+              ),
+            ),
+            const SizedBox(height: 22),
+          ],
+          text,
+        ],
+      ),
+    );
   }
 
   Future<void> _goToNextChapter() async {
@@ -996,6 +1147,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     final bgColor = _parseColor(settings.backgroundColor);
     final isNight = settings.nightMode;
     final chapterProgressPercent = _displayChapterProgressPercent(ttsProvider);
+    final useContinuousScrolling =
+        settings.pageTurnMode == ReadingSettings.defaultPageTurnMode;
 
     return PopScope(
       canPop: _isLeaving,
@@ -1025,6 +1178,60 @@ class _ReadingScreenState extends State<ReadingScreen>
                           )
                         : _content.isEmpty
                         ? _buildEmptyContent(isNight)
+                        : useContinuousScrolling
+                        ? ContinuousChapterView(
+                            key: ValueKey(
+                              'continuous-reader-${widget.novel.id}-$_continuousReaderSession',
+                            ),
+                            chapters: _chapters,
+                            initialChapterIndex: _currentChapterIndex,
+                            initialContent: _content,
+                            initialTextOffset: _lastCharPosition,
+                            activeChapterIndex: ttsProvider.isSpeaking
+                                ? _currentChapterIndex
+                                : null,
+                            activeTextOffset: ttsProvider.isSpeaking
+                                ? ttsProvider.currentStartOffset
+                                : null,
+                            loadChapterContent: _loadContinuousChapterContent,
+                            sectionBuilder:
+                                (chapter, chapterIndex, chapterContent) {
+                                  return _buildContinuousChapterSection(
+                                    chapter: chapter,
+                                    chapterIndex: chapterIndex,
+                                    content: chapterContent,
+                                    fontSize: settings.fontSize,
+                                    fontFamily: _getFontFamily(
+                                      settings.fontFamily,
+                                    ),
+                                    color: isNight
+                                        ? AppTheme.nightText
+                                        : AppTheme.textPrimary,
+                                    lineHeight: settings.lineHeight,
+                                    isNight: isNight,
+                                    ttsProvider: ttsProvider,
+                                  );
+                                },
+                            onReadingPositionChanged:
+                                (chapterIndex, chapterContent, charPosition) {
+                                  _updateContinuousReadingPosition(
+                                    chapterIndex,
+                                    chapterContent,
+                                    charPosition,
+                                    settled: false,
+                                  );
+                                },
+                            onReadingPositionSettled:
+                                (chapterIndex, chapterContent, charPosition) {
+                                  _updateContinuousReadingPosition(
+                                    chapterIndex,
+                                    chapterContent,
+                                    charPosition,
+                                    settled: true,
+                                  );
+                                },
+                            onTap: _toggleControls,
+                          )
                         : PageTurnView(
                             key: ValueKey(
                               'reader-${widget.novel.id}-$_currentChapterIndex',

@@ -59,11 +59,12 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   final Map<int, double> _pageAspectRatios = {};
   final Map<int, double> _pageHeights = {};
   final Set<int> _prefetchedPages = {};
-  Timer? _restoreProgressTimer;
   Timer? _aspectRatioSaveTimer;
-  double? _restoreProgressTarget;
   double _viewportWidth = 0;
   int _chapterProgressPercent = 0;
+  int _scrollCorrectionGeneration = 0;
+  bool _hasUserScrolledSinceChapterLoad = false;
+  bool _isChangingChapter = false;
   bool _isLoading = true;
   bool _showBars = true;
   String? _errorMessage;
@@ -115,7 +116,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   void dispose() {
     _chapterLoadGeneration++;
     _saveTimer?.cancel();
-    _restoreProgressTimer?.cancel();
     _aspectRatioSaveTimer?.cancel();
     unawaited(_saveAspectRatioCache());
     unawaited(_saveHistory());
@@ -141,11 +141,17 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   }) async {
     final stopwatch = Stopwatch()..start();
     final loadGeneration = ++_chapterLoadGeneration;
-    final canOpen = await _ensureChapterUnlocked(index, showError: true);
+    // A denied attempt to open a later chapter should leave the current
+    // chapter visible instead of replacing it with an error page.
+    final canOpen = await _ensureChapterUnlocked(
+      index,
+      showError: _images.isEmpty,
+    );
     if (!canOpen || !_isCurrentChapterLoad(loadGeneration)) return;
 
     _saveTimer?.cancel();
-    _cancelRestoreScroll();
+    _scrollCorrectionGeneration++;
+    _hasUserScrolledSinceChapterLoad = false;
     if (_images.isNotEmpty) await _saveHistory();
     _aspectRatioSaveTimer?.cancel();
     if (_pageAspectRatios.isNotEmpty) await _saveAspectRatioCache();
@@ -209,7 +215,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       _refreshChapterProgress();
       _restoreScroll(
         initialScrollOffset,
-        progress: initialScrollProgress ?? widget.initialScrollProgress,
+        // Only the very first load receives the saved history progress.
+        // Subsequent chapter changes must always start at the new chapter's
+        // beginning instead of reusing the old chapter's percentage.
+        progress: initialScrollProgress,
         pageIndex: initialPageIndex,
         pageOffsetRatio: initialPageOffsetRatio,
       );
@@ -219,6 +228,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         _preloadInitialPages(
           images,
           chapter.url,
+          chapterLoadGeneration: loadGeneration,
           initialPageIndex: initialPageIndex,
         ),
       );
@@ -276,8 +286,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             _pageStartForIndex(normalizedPageIndex) +
             _estimatedPageHeight(normalizedPageIndex) * normalizedPageRatio;
       } else if (normalizedProgress != null && maxOffset > 0) {
-        _restoreProgressTarget = normalizedProgress;
-        _armRestoreProgressTimer();
         target = maxOffset * normalizedProgress;
       }
       _scrollController.jumpTo(target.clamp(0.0, maxOffset).toDouble());
@@ -285,35 +293,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) => jump());
-  }
-
-  void _cancelRestoreScroll() {
-    _restoreProgressTimer?.cancel();
-    _restoreProgressTimer = null;
-    _restoreProgressTarget = null;
-  }
-
-  void _armRestoreProgressTimer() {
-    _restoreProgressTimer?.cancel();
-    _restoreProgressTimer = Timer(const Duration(milliseconds: 1200), () {
-      _restoreProgressTimer = null;
-      _restoreProgressTarget = null;
-    });
-  }
-
-  void _applyPendingProgressRestore() {
-    final progress = _restoreProgressTarget;
-    if (progress == null || !_scrollController.hasClients) return;
-    _armRestoreProgressTimer();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final position = _scrollController.position;
-      final target = position.maxScrollExtent * progress;
-      _scrollController.jumpTo(
-        target.clamp(0.0, position.maxScrollExtent).toDouble(),
-      );
-      _refreshChapterProgress();
-    });
   }
 
   void _handleScrollChanged() {
@@ -338,6 +317,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   Future<void> _preloadInitialPages(
     List<String> images,
     String referer, {
+    required int chapterLoadGeneration,
     int initialPageIndex = 0,
   }) async {
     if (images.isEmpty) return;
@@ -356,6 +336,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         anchor,
         images[anchor],
         referer,
+        chapterLoadGeneration: chapterLoadGeneration,
         priority: 1000,
       ).timeout(const Duration(seconds: 5));
       for (final index in indexes.where((index) => index != anchor)) {
@@ -364,6 +345,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             index,
             images[index],
             referer,
+            chapterLoadGeneration: chapterLoadGeneration,
             priority: 100 - (index - anchor).abs(),
           ),
         );
@@ -377,17 +359,30 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     int index,
     String url,
     String referer, {
+    int? chapterLoadGeneration,
     int priority = 0,
   }) {
+    final generation = chapterLoadGeneration ?? _chapterLoadGeneration;
+    if (!_isCurrentChapterLoad(generation) || referer != _currentChapter.url) {
+      return Future<void>.value();
+    }
     if (!_prefetchedPages.add(index)) return Future<void>.value();
     return _imagePrefetchScheduler.schedule(
-      () => _loadPageImage(index, url, referer),
+      () => _loadPageImage(index, url, referer, generation),
       priority: priority,
     );
   }
 
-  Future<void> _loadPageImage(int index, String url, String referer) async {
-    if (!mounted) return;
+  Future<void> _loadPageImage(
+    int index,
+    String url,
+    String referer,
+    int chapterLoadGeneration,
+  ) async {
+    if (!_isCurrentChapterLoad(chapterLoadGeneration) ||
+        referer != _currentChapter.url) {
+      return;
+    }
     final provider = ExtendedNetworkImageProvider(
       url,
       headers: mangaImageHeaders(referer: referer),
@@ -402,12 +397,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (imageInfo, synchronousCall) {
+        if (!_isCurrentChapterLoad(chapterLoadGeneration) ||
+            referer != _currentChapter.url) {
+          if (!completer.isCompleted) completer.complete();
+          return;
+        }
         final image = imageInfo.image;
         final width = image.width.toDouble();
         final height = image.height.toDouble();
         if (width > 0 && height > 0) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _updatePageAspectRatio(index, width / height);
+            if (_isCurrentChapterLoad(chapterLoadGeneration) &&
+                referer == _currentChapter.url) {
+              _updatePageAspectRatio(index, width / height);
+            }
           });
         }
         if (!completer.isCompleted) completer.complete();
@@ -510,7 +513,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     final oldHeight = _pageHeights[index];
     if (oldHeight == null) {
       _pageHeights[index] = height;
-      _applyPendingProgressRestore();
       return;
     }
 
@@ -523,14 +525,11 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     final pageStart = _pageStartForIndex(index);
     _pageHeights[index] = height;
 
-    if (_restoreProgressTarget != null) {
-      _applyPendingProgressRestore();
-      return;
-    }
-
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
     final currentOffset = position.pixels;
+    final correctionGeneration = _scrollCorrectionGeneration;
+    final chapterUrl = _currentChapter.url;
     if (pageStart >= currentOffset) return;
 
     final correction = pageStart + oldHeight <= currentOffset
@@ -543,7 +542,16 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       position.maxScrollExtent,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
+      if (!mounted ||
+          !_scrollController.hasClients ||
+          _hasUserScrolledSinceChapterLoad ||
+          correctionGeneration != _scrollCorrectionGeneration ||
+          chapterUrl != _currentChapter.url) {
+        return;
+      }
+      if ((_scrollController.position.pixels - currentOffset).abs() >= 1) {
+        return;
+      }
       _scrollController.jumpTo(target.toDouble());
     });
   }
@@ -617,9 +625,21 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   }
 
   Future<void> _changeChapterTo(int index) async {
-    final canOpen = await _ensureChapterUnlocked(index);
-    if (!canOpen) return;
-    await _loadChapter(_chapters[index], index);
+    if (index < 0 ||
+        index >= _chapters.length ||
+        index == _currentIndex ||
+        _isChangingChapter ||
+        _isLoading) {
+      return;
+    }
+    setState(() => _isChangingChapter = true);
+    try {
+      // _loadChapter owns the login check. Calling it twice made chapter
+      // navigation race with itself and could require a second action.
+      await _loadChapter(_chapters[index], index);
+    } finally {
+      if (mounted) setState(() => _isChangingChapter = false);
+    }
   }
 
   Future<void> _showChapterSheet() async {
@@ -716,8 +736,12 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final isNight = Theme.of(context).brightness == Brightness.dark;
-    final canPrev = _currentIndex > 0;
-    final canNext = _currentIndex >= 0 && _currentIndex < _chapters.length - 1;
+    final canPrev = _currentIndex > 0 && !_isChangingChapter && !_isLoading;
+    final canNext =
+        _currentIndex >= 0 &&
+        _currentIndex < _chapters.length - 1 &&
+        !_isChangingChapter &&
+        !_isLoading;
 
     return Scaffold(
       backgroundColor: isNight ? AppTheme.nightBackground : Colors.black,
@@ -884,7 +908,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           onNotification: (notification) {
             if (notification is UserScrollNotification &&
                 notification.direction != ScrollDirection.idle) {
-              _cancelRestoreScroll();
+              _hasUserScrolledSinceChapterLoad = true;
+              _scrollCorrectionGeneration++;
             }
             if (notification is ScrollUpdateNotification ||
                 notification is UserScrollNotification) {
@@ -902,6 +927,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
                 return const SizedBox(height: 24);
               }
               return _MangaPageImage(
+                key: ValueKey('${_currentChapter.url}|${_images[index]}'),
                 url: _images[index],
                 referer: _currentChapter.url,
                 index: index,
@@ -924,6 +950,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
 
 class _MangaPageImage extends StatefulWidget {
   const _MangaPageImage({
+    super.key,
     required this.url,
     required this.referer,
     required this.index,
