@@ -1,0 +1,11 @@
+{
+  "versionName": "4.1.19",
+  "versionCode": 57,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "BC915B9EC698FC8D66FE23034A9012D898C1A731A0E6F721076E1F7FD7037648",
+  "force": false,
+  "notes": [
+    "切换章节时只显示新章节，不再自动夹带上一章结尾。",
+    "恢复听书文字的平滑跟随滚动，并保持程序滚动不误切章节。"
+  ]
+}
