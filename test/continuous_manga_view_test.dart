@@ -7,68 +7,76 @@ import 'package:novel_app/models/manga.dart';
 import 'package:novel_app/widgets/continuous_manga_view.dart';
 
 void main() {
-  testWidgets('preloads adjacent chapters and preserves the current position', (
-    tester,
-  ) async {
-    final controller = ScrollController();
-    final loaded = <int>[];
-    final reported = <int>[];
-    const chapters = [
-      MangaChapter(title: 'Chapter 1', url: 'https://example.com/1'),
-      MangaChapter(title: 'Chapter 2', url: 'https://example.com/2'),
-      MangaChapter(title: 'Chapter 3', url: 'https://example.com/3'),
-    ];
+  testWidgets(
+    'starts at the selected chapter and loads previous on upward swipe',
+    (tester) async {
+      final controller = ScrollController();
+      final loaded = <int>[];
+      final reported = <int>[];
+      const chapters = [
+        MangaChapter(title: 'Chapter 1', url: 'https://example.com/1'),
+        MangaChapter(title: 'Chapter 2', url: 'https://example.com/2'),
+        MangaChapter(title: 'Chapter 3', url: 'https://example.com/3'),
+      ];
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SizedBox(
-            width: 420,
-            height: 600,
-            child: ContinuousMangaView(
-              controller: controller,
-              chapters: chapters,
-              initialChapterIndex: 1,
-              initialImages: const ['https://example.invalid/current.jpg'],
-              canLoadChapter: (_) => true,
-              loadChapterImages: (index) async {
-                loaded.add(index);
-                return ['https://example.invalid/$index.jpg'];
-              },
-              onPositionChanged: (position) {
-                reported.add(position.chapterIndex);
-              },
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 420,
+              height: 600,
+              child: ContinuousMangaView(
+                controller: controller,
+                chapters: chapters,
+                initialChapterIndex: 1,
+                initialImages: const ['https://example.invalid/current.jpg'],
+                canLoadChapter: (_) => true,
+                loadChapterImages: (index) async {
+                  loaded.add(index);
+                  return ['https://example.invalid/$index.jpg'];
+                },
+                onPositionChanged: (position) {
+                  reported.add(position.chapterIndex);
+                },
+              ),
             ),
           ),
         ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
 
-    expect(loaded, containsAll(<int>[0, 2]));
-    expect(controller.offset, greaterThan(600));
-    expect(reported, isNotEmpty);
-    expect(reported.last, 1);
+      expect(loaded, contains(2));
+      expect(loaded, isNot(contains(0)));
+      expect(controller.offset, 0);
+      expect(reported, isNotEmpty);
+      expect(reported.last, 1);
+      expect(
+        tester.getCenter(find.text('Chapter 2')).dy,
+        closeTo(35, 3),
+        reason: 'the selected chapter header must remain at the viewport top',
+      );
 
-    await tester.pump(const Duration(milliseconds: 100));
-    controller.jumpTo(controller.offset * 0.5);
-    await tester.pump();
-    expect(reported.last, 0);
-    expect(controller.offset, greaterThan(0));
+      await tester.drag(find.byType(Scrollable), const Offset(0, 300));
+      await tester.pump();
+      await tester.pump();
+      expect(loaded, contains(0));
+      expect(reported.last, 0);
+      expect(controller.offset, greaterThan(0));
 
-    await tester.pump(const Duration(milliseconds: 100));
-    controller.jumpTo(controller.position.maxScrollExtent);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
-    controller.jumpTo(controller.position.maxScrollExtent);
-    await tester.pump();
-    expect(reported.last, 2);
+      await tester.pump(const Duration(milliseconds: 100));
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      expect(reported.last, 2);
 
-    await tester.pumpWidget(const SizedBox.shrink());
-    controller.dispose();
-  });
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
 
   testWidgets('a delayed previous chapter does not cancel an active drag', (
     tester,
@@ -103,7 +111,7 @@ void main() {
     );
     await tester.pump();
     final gesture = await tester.startGesture(const Offset(400, 400));
-    await gesture.moveBy(const Offset(0, -120));
+    await gesture.moveBy(const Offset(0, 120));
     await tester.pump();
     final beforeInsert = controller.offset;
 
@@ -114,9 +122,9 @@ void main() {
     final afterInsert = controller.offset;
     expect(afterInsert, greaterThan(beforeInsert + 500));
 
-    await gesture.moveBy(const Offset(0, -80));
+    await gesture.moveBy(const Offset(0, 80));
     await tester.pump();
-    expect(controller.offset, greaterThan(afterInsert + 40));
+    expect(controller.offset, lessThan(afterInsert - 40));
     await gesture.up();
     await tester.pump();
 

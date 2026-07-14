@@ -50,6 +50,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
   # Kept below 2.4: sqlite3 3.x native-asset hooks run during Android builds
   # even for dev dependencies and require an external GitHub binary download.

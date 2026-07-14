@@ -51,4 +51,37 @@ void main() {
     expect(source, contains('ValueListenableBuilder<int>'));
     expect(source, contains('if (chapterChanged) {\n        setState(apply);'));
   });
+
+  test('explicit chapter navigation always starts from the chapter head', () {
+    final source = File(
+      'lib/screens/manga_reader_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('await _loadChapter(_chapters[index], index);'));
+    expect(
+      source,
+      isNot(
+        contains(
+          'await _loadChapter(\n          _chapters[index],\n          index,\n          initialPageIndex:',
+        ),
+      ),
+    );
+  });
+
+  test(
+    'the visible manga page is warmed before leaving the loading screen',
+    () {
+      final source = File(
+        'lib/screens/manga_reader_screen.dart',
+      ).readAsStringSync();
+
+      final warmIndex = source.indexOf('await _preloadPageImage(');
+      final revealIndex = source.indexOf(
+        'setState(() {\n        _images = images;',
+      );
+      expect(warmIndex, greaterThan(0));
+      expect(revealIndex, greaterThan(warmIndex));
+      expect(source, contains('.timeout(const Duration(seconds: 3))'));
+    },
+  );
 }

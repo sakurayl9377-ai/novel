@@ -31,6 +31,10 @@ class MangaReaderScreen extends StatefulWidget {
     this.initialScrollProgress,
     this.initialPageIndex = 0,
     this.initialPageOffsetRatio = 0,
+    this.chapterImageLoader,
+    this.canLoadChapterOverride,
+    this.warmVisiblePage = true,
+    this.mangaPageBuilder,
   });
 
   final Manga manga;
@@ -40,6 +44,16 @@ class MangaReaderScreen extends StatefulWidget {
   final double? initialScrollProgress;
   final int initialPageIndex;
   final double initialPageOffsetRatio;
+  final Future<List<String>> Function(MangaChapter chapter)? chapterImageLoader;
+  final bool Function(int chapterIndex)? canLoadChapterOverride;
+  final bool warmVisiblePage;
+  final Widget Function(
+    BuildContext context,
+    int chapterIndex,
+    int pageIndex,
+    String imageUrl,
+  )?
+  mangaPageBuilder;
 
   @override
   State<MangaReaderScreen> createState() => _MangaReaderScreenState();
@@ -79,6 +93,11 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   static const Duration _imageCacheMaxAge = Duration(days: 14);
 
   List<MangaChapter> get _chapters => widget.manga.chapters;
+
+  Future<List<String>> _fetchChapterImages(MangaChapter chapter) {
+    return widget.chapterImageLoader?.call(chapter) ??
+        _service.fetchChapterImages(chapter);
+  }
 
   @override
   void initState() {
@@ -182,7 +201,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
 
     try {
       final cachedRatiosFuture = _loadAspectRatioCache(chapter.url);
-      final images = await _service.fetchChapterImages(chapter);
+      final images = await _fetchChapterImages(chapter);
       final cachedRatios = await cachedRatiosFuture;
       if (!_isCurrentChapterLoad(loadGeneration)) return;
       if (images.isEmpty) {
@@ -203,6 +222,24 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         });
         return;
       }
+      if (widget.warmVisiblePage) {
+        final visiblePageIndex = initialPageIndex
+            .clamp(0, images.length - 1)
+            .toInt();
+        try {
+          await _preloadPageImage(
+            visiblePageIndex,
+            images[visiblePageIndex],
+            chapter.url,
+            chapterLoadGeneration: loadGeneration,
+            priority: 1000,
+          ).timeout(const Duration(seconds: 3));
+        } catch (_) {
+          // Keep the stable loading screen for at most three seconds, then let
+          // the page-level retry and placeholder handle a slow image.
+        }
+      }
+      if (!_isCurrentChapterLoad(loadGeneration)) return;
       setState(() {
         _images = images;
         _pageAspectRatios.addAll(cachedRatios);
@@ -222,18 +259,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       );
       _startSaveTimer();
       unawaited(_saveHistory());
-      unawaited(
-        _preloadInitialPages(
-          images,
-          chapter.url,
-          chapterLoadGeneration: loadGeneration,
-          initialPageIndex: initialPageIndex,
-        ),
-      );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_isCurrentChapterLoad(loadGeneration)) return;
-        _prefetchNearScrollOffset();
-      });
+      if (widget.mangaPageBuilder == null) {
+        unawaited(
+          _preloadInitialPages(
+            images,
+            chapter.url,
+            chapterLoadGeneration: loadGeneration,
+            initialPageIndex: initialPageIndex,
+          ),
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_isCurrentChapterLoad(loadGeneration)) return;
+          _prefetchNearScrollOffset();
+        });
+      }
     } catch (error) {
       if (!_isCurrentChapterLoad(loadGeneration)) return;
       AppTelemetryService.instance.trackEvent(
@@ -577,6 +616,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     int chapterIndex, {
     bool showError = false,
   }) async {
+    final override = widget.canLoadChapterOverride;
+    if (override != null) return override(chapterIndex);
     final canOpen = await ensureLoggedInForContent(
       context,
       allowed: chapterIndex == 0,
@@ -828,13 +869,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           initialPageIndex: _continuousPageIndex,
           initialPageOffsetRatio: _continuousPageOffsetRatio,
           canLoadChapter: (index) =>
-              index == 0 || context.read<InteractionAuthProvider>().isLoggedIn,
-          loadChapterImages: (index) =>
-              _service.fetchChapterImages(_chapters[index]),
+              widget.canLoadChapterOverride?.call(index) ??
+              (index == 0 ||
+                  context.read<InteractionAuthProvider>().isLoggedIn),
+          loadChapterImages: (index) => _fetchChapterImages(_chapters[index]),
           onPositionChanged: (position) =>
               _applyContinuousPosition(position, settled: false),
           onPositionSettled: (position) =>
               _applyContinuousPosition(position, settled: true),
+          pageBuilder: widget.mangaPageBuilder,
         );
       },
     );
