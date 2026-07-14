@@ -34,7 +34,21 @@ void main() {
 
     expect(source, contains('if (_showBars) _buildTopControls()'));
     expect(source, contains('if (_showBars) _buildBottomControls'));
+    expect(
+      source,
+      contains('Positioned.fill(\n            child: GestureDetector('),
+    );
     expect(source, isNot(contains('bottomNavigationBar: _showBars')));
     expect(source, isNot(contains('appBar: _showBars')));
+  });
+
+  test('progress updates do not rebuild the entire reader screen', () {
+    final source = File(
+      'lib/screens/manga_reader_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('ValueNotifier<int> _chapterProgressNotifier'));
+    expect(source, contains('ValueListenableBuilder<int>'));
+    expect(source, contains('if (chapterChanged) {\n        setState(apply);'));
   });
 }

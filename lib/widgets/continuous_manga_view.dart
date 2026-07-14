@@ -73,6 +73,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   final Map<(int, int), double> _aspectRatios = <(int, int), double>{};
   final Map<(int, int), double> _pageHeights = <(int, int), double>{};
   final Map<(int, int), double> _pendingAspectRatios = <(int, int), double>{};
+  Timer? _aspectRatioFlushTimer;
 
   double _viewportWidth = 390;
   bool _isUserScrolling = false;
@@ -105,6 +106,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
 
   @override
   void dispose() {
+    _aspectRatioFlushTimer?.cancel();
     widget.controller.removeListener(_handleScrollChanged);
     super.dispose();
   }
@@ -148,7 +150,6 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       return;
     }
     _loading.add(chapterIndex);
-    if (mounted) setState(() {});
     try {
       final images = await widget.loadChapterImages(chapterIndex);
       if (!mounted ||
@@ -185,7 +186,6 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       // Adjacent chapter loading is best-effort; the visible chapter remains.
     } finally {
       _loading.remove(chapterIndex);
-      if (mounted) setState(() {});
     }
   }
 
@@ -376,15 +376,19 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
     final key = (chapterIndex, pageIndex);
     final old = _aspectRatios[key];
     if (old != null && (old - ratio).abs() < 0.01) return;
-    if (_isUserScrolling || _maintainingScrollOffset) {
-      _pendingAspectRatios[key] = ratio;
-      return;
-    }
-    _applyAspectRatios(<(int, int), double>{key: ratio});
+    _pendingAspectRatios[key] = ratio;
+    if (_isUserScrolling || _maintainingScrollOffset) return;
+    _aspectRatioFlushTimer ??= Timer(const Duration(milliseconds: 60), () {
+      _aspectRatioFlushTimer = null;
+      if (!mounted || _isUserScrolling || _maintainingScrollOffset) return;
+      _flushPendingAspectRatios();
+    });
   }
 
   bool _flushPendingAspectRatios() {
     if (_pendingAspectRatios.isEmpty) return false;
+    _aspectRatioFlushTimer?.cancel();
+    _aspectRatioFlushTimer = null;
     final pending = Map<(int, int), double>.from(_pendingAspectRatios);
     _pendingAspectRatios.clear();
     _applyAspectRatios(pending, reportSettled: true);

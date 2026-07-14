@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -163,5 +164,18 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     controller.dispose();
+  });
+
+  test('adjacent loading does not rebuild just to show hidden load state', () {
+    final source = File(
+      'lib/widgets/continuous_manga_view.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('_loading.add(chapterIndex);'));
+    expect(
+      source,
+      isNot(contains('_loading.add(chapterIndex);\n    if (mounted) setState')),
+    );
+    expect(source, contains('Timer(const Duration(milliseconds: 60)'));
   });
 }

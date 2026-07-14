@@ -63,6 +63,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   Timer? _aspectRatioSaveTimer;
   double _viewportWidth = 0;
   int _chapterProgressPercent = 0;
+  final ValueNotifier<int> _chapterProgressNotifier = ValueNotifier<int>(0);
   int _continuousReaderSession = 0;
   int _continuousPageIndex = 0;
   double _continuousPageOffsetRatio = 0;
@@ -125,6 +126,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     unawaited(_saveAspectRatioCache());
     unawaited(_saveHistory());
     _scrollController.dispose();
+    _chapterProgressNotifier.dispose();
     _telemetryTrace.close(
       metadata: {
         'chapterIndex': _currentIndex,
@@ -173,6 +175,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       _errorMessage = null;
       _showBars = true;
     });
+    _chapterProgressNotifier.value = 0;
     if (_scrollController.hasClients) {
       _scrollController.jumpTo(0);
     }
@@ -608,18 +611,26 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
 
     return Scaffold(
       backgroundColor: isNight ? AppTheme.nightBackground : Colors.black,
-      body: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _toggleBars,
-        child: Stack(
-          children: [
-            Positioned.fill(child: _buildBody(isNight)),
-            if (_images.isNotEmpty && !_isLoading && _errorMessage == null)
-              _buildChapterProgressBadge(),
-            if (_showBars) _buildTopControls(),
-            if (_showBars) _buildBottomControls(canPrev, canNext),
-          ],
-        ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _toggleBars,
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _buildBody(isNight)),
+                  if (_images.isNotEmpty &&
+                      !_isLoading &&
+                      _errorMessage == null)
+                    _buildChapterProgressBadge(),
+                ],
+              ),
+            ),
+          ),
+          if (_showBars) _buildTopControls(),
+          if (_showBars) _buildBottomControls(canPrev, canNext),
+        ],
       ),
     );
   }
@@ -752,12 +763,15 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-            child: Text(
-              '$_chapterProgressPercent%',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _chapterProgressNotifier,
+              builder: (context, progress, _) => Text(
+                '$progress%',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),
@@ -854,9 +868,16 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
 
     if (chapterChanged || progressChanged) {
-      setState(apply);
+      if (chapterChanged) {
+        setState(apply);
+      } else {
+        apply();
+      }
     } else {
       apply();
+    }
+    if (_chapterProgressNotifier.value != position.progressPercent) {
+      _chapterProgressNotifier.value = position.progressPercent;
     }
     if (settled) unawaited(_saveHistory());
   }
