@@ -47,6 +47,8 @@ class AnimePlayerScreen extends StatefulWidget {
   final AnimeEpisode episode;
   final bool resumeFromHistory;
   final String offlineOriginalUrl;
+  final Future<String> Function(AnimeEpisode episode)? episodeUrlResolver;
+  final bool requireLoginAfterFirstEpisode;
 
   const AnimePlayerScreen({
     super.key,
@@ -55,6 +57,8 @@ class AnimePlayerScreen extends StatefulWidget {
     required this.episode,
     this.resumeFromHistory = false,
     this.offlineOriginalUrl = '',
+    this.episodeUrlResolver,
+    this.requireLoginAfterFirstEpisode = true,
   });
 
   @override
@@ -378,20 +382,25 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
         (_shouldResume(episode, resumeHistory)
             ? resumeHistory!.position
             : null);
-    final episodeUri = Uri.parse(episode.url);
-    final videoOptions = VideoPlayerOptions(mixWithOthers: false);
-    final videoController = episodeUri.scheme == 'file'
-        ? VideoPlayerController.file(
-            File(episodeUri.toFilePath()),
-            videoPlayerOptions: videoOptions,
-          )
-        : VideoPlayerController.networkUrl(
-            episodeUri,
-            httpHeaders: _videoHeaders(episode.url),
-            formatHint: _videoFormatHint(episode.url),
-            videoPlayerOptions: videoOptions,
-          );
+    VideoPlayerController? videoController;
     try {
+      final playbackUrl = widget.episodeUrlResolver == null
+          ? episode.url
+          : await widget.episodeUrlResolver!(episode);
+      if (!_isCurrentEpisodeLoad(loadGeneration)) return;
+      final episodeUri = Uri.parse(playbackUrl);
+      final videoOptions = VideoPlayerOptions(mixWithOthers: false);
+      videoController = episodeUri.scheme == 'file'
+          ? VideoPlayerController.file(
+              File(episodeUri.toFilePath()),
+              videoPlayerOptions: videoOptions,
+            )
+          : VideoPlayerController.networkUrl(
+              episodeUri,
+              httpHeaders: _videoHeaders(playbackUrl),
+              formatHint: _videoFormatHint(playbackUrl),
+              videoPlayerOptions: videoOptions,
+            );
       await videoController.initialize().timeout(const Duration(seconds: 10));
       if (!_isCurrentEpisodeLoad(loadGeneration)) {
         await videoController.dispose();
@@ -406,7 +415,7 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
       }
       await videoController.play();
     } catch (error) {
-      await videoController.dispose();
+      await videoController?.dispose();
       if (!_isCurrentEpisodeLoad(loadGeneration)) return;
       _failedPlaybackSources.add(targetSource.name);
       final fallback = _fallbackPlaybackTarget(
@@ -956,6 +965,7 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
     int episodeIndex, {
     bool showError = false,
   }) async {
+    if (!widget.requireLoginAfterFirstEpisode) return true;
     final canOpen = await ensureLoggedInForContent(
       context,
       allowed: episodeIndex == 0,

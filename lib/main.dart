@@ -24,6 +24,7 @@ import 'screens/anime_screen.dart';
 import 'screens/manga_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/video_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -223,13 +224,13 @@ class _MainScaffoldState extends State<MainScaffold> {
   int _currentIndex = 0;
   final Set<int> _visitedTabIndexes = {0};
   late final List<_TabRouteObserver> _routeObservers;
-  final List<bool> _hideBottomNavByTab = List<bool>.filled(4, false);
+  final List<bool> _hideBottomNavByTab = List<bool>.filled(5, false);
   late final List<GlobalKey<NavigatorState>> _navigatorKeys = List.generate(
-    4,
+    5,
     (_) => GlobalKey<NavigatorState>(),
   );
   late final List<HeroController> _heroControllers = List.generate(
-    4,
+    5,
     (_) => MaterialApp.createMaterialHeroController(),
   );
   bool _didCheckStartupUpdate = false;
@@ -238,6 +239,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     'novel_home',
     'manga_home',
     'anime_home',
+    'video_home',
     'profile_home',
   ];
 
@@ -245,7 +247,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   void initState() {
     super.initState();
     _routeObservers = List.generate(
-      4,
+      5,
       (index) => _TabRouteObserver(
         onChanged: (hideBottomNav) {
           if (!mounted || _hideBottomNavByTab[index] == hideBottomNav) return;
@@ -534,6 +536,8 @@ class _MainScaffoldState extends State<MainScaffold> {
       case 2:
         return const AnimeScreen();
       case 3:
+        return const VideoScreen();
+      case 4:
         return const ProfileScreen();
       default:
         return const SearchScreen(autofocus: false);
@@ -547,7 +551,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     final pages = IndexedStack(
       index: _currentIndex,
       children: List.generate(
-        4,
+        5,
         (index) => _visitedTabIndexes.contains(index)
             ? _buildTabNavigator(index)
             : const SizedBox.shrink(),
@@ -583,6 +587,10 @@ class _MainScaffoldState extends State<MainScaffold> {
                           label: Text('动漫'),
                         ),
                         NavigationRailDestination(
+                          icon: Icon(Icons.live_tv_outlined),
+                          label: Text('影视'),
+                        ),
+                        NavigationRailDestination(
                           icon: Icon(Icons.person_outline),
                           label: Text('我的'),
                         ),
@@ -611,6 +619,10 @@ class _MainScaffoldState extends State<MainScaffold> {
                   BottomNavigationBarItem(
                     icon: Icon(Icons.movie_filter_outlined),
                     label: '动漫',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: Icon(Icons.live_tv_outlined),
+                    label: '影视',
                   ),
                   BottomNavigationBarItem(
                     icon: Icon(Icons.person_outline),
