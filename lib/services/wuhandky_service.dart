@@ -8,6 +8,12 @@ import '../models/wuhandky_video.dart';
 import 'site_domain_service.dart';
 
 class WuhandkyService {
+  static const Set<String> _httpImageHosts = {
+    'pic.fzmmx.com',
+    'pic.danzhoufdc.com',
+    'pic.monidai.com',
+    'img.ukuapi.com',
+  };
   static final Uri siteUri = Uri.parse('https://www.wuhandky.com/');
   static const SiteDomainConfig _domain = SiteDomainConfig(
     key: 'video_wuhandky',
@@ -194,7 +200,12 @@ class WuhandkyService {
     final embeddedHttp = normalized.indexOf('http', 1);
     if (embeddedHttp > 0) normalized = normalized.substring(embeddedHttp);
     if (normalized.startsWith('//')) normalized = 'https:$normalized';
-    return normalized.isEmpty ? '' : baseUri.resolve(normalized).toString();
+    if (normalized.isEmpty) return '';
+    final resolved = baseUri.resolve(normalized);
+    if (resolved.scheme == 'https' && _httpImageHosts.contains(resolved.host)) {
+      return resolved.replace(scheme: 'http').toString();
+    }
+    return resolved.toString();
   }
 
   String _backgroundImage(String style) =>

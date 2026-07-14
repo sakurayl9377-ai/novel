@@ -79,10 +79,10 @@ void main() {
   });
 
   test(
-    'fullscreen video uses cover fit while inline player remains 16 by 9',
+    'fullscreen video uses contain fit while inline player remains 16 by 9',
     () {
       expect(screen, contains('class _ManagedAnimeFullScreen'));
-      expect(screen, contains('fit: BoxFit.cover'));
+      expect(screen, contains('fit: BoxFit.contain'));
       expect(
         screen,
         contains('AspectRatio(aspectRatio: 16 / 9, child: _buildPlayerArea())'),

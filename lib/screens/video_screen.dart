@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../models/wuhandky_video.dart';
 import '../services/wuhandky_service.dart';
+import '../widgets/wuhandky_cover_image.dart';
 import 'video_detail_screen.dart';
 
 class VideoScreen extends StatefulWidget {
@@ -286,7 +286,17 @@ class _VideoCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 7),
-          Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+          SizedBox(
+            height: 22,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                item.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -300,22 +310,7 @@ class _VideoPoster extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (url.isEmpty) {
-      return const ColoredBox(
-        color: Color(0xFFE7E7E7),
-        child: Icon(Icons.movie_outlined),
-      );
-    }
-    return CachedNetworkImage(
-      imageUrl: url,
-      fit: BoxFit.cover,
-      httpHeaders: const {'Referer': 'https://www.wuhandky.com/'},
-      placeholder: (_, _) => const ColoredBox(color: Color(0xFFE7E7E7)),
-      errorWidget: (_, _, _) => const ColoredBox(
-        color: Color(0xFFE7E7E7),
-        child: Icon(Icons.broken_image_outlined),
-      ),
-    );
+    return WuhandkyCoverImage(imageUrl: url);
   }
 }
 

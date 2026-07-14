@@ -1907,10 +1907,8 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
   }
 }
 
-/// Fullscreen deliberately has a different fit policy from the inline player:
-/// inline stays 16:9, while fullscreen fills the physical display and clips
-/// only the excess edge of the video. Chewie's stock fullscreen keeps the
-/// controller aspect ratio and therefore leaves bars on modern wide phones.
+/// Fullscreen preserves the complete source frame. Wide phones may show black
+/// bars, but subtitles and picture edges must never be cropped.
 class _ManagedAnimeFullScreen extends StatelessWidget {
   const _ManagedAnimeFullScreen({
     required this.sessionListenable,
@@ -1983,7 +1981,7 @@ class _ManagedAnimeFullScreen extends StatelessWidget {
                         final width = size.width > 0 ? size.width : 16.0;
                         final height = size.height > 0 ? size.height : 9.0;
                         return FittedBox(
-                          fit: BoxFit.cover,
+                          fit: BoxFit.contain,
                           alignment: Alignment.center,
                           child: SizedBox(
                             width: width,

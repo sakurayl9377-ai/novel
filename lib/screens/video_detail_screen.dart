@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../models/anime.dart';
 import '../models/wuhandky_video.dart';
 import '../services/wuhandky_service.dart';
+import '../widgets/wuhandky_cover_image.dart';
 import 'anime_player_screen.dart';
 
 class VideoDetailScreen extends StatefulWidget {
@@ -150,22 +150,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               child: SizedBox(
                 width: 118,
                 height: 174,
-                child: detail.coverUrl.isEmpty
-                    ? const ColoredBox(
-                        color: Color(0xFFE7E7E7),
-                        child: Icon(Icons.movie_outlined),
-                      )
-                    : CachedNetworkImage(
-                        imageUrl: detail.coverUrl,
-                        fit: BoxFit.cover,
-                        httpHeaders: const {
-                          'Referer': 'https://www.wuhandky.com/',
-                        },
-                        errorWidget: (_, _, _) => const ColoredBox(
-                          color: Color(0xFFE7E7E7),
-                          child: Icon(Icons.movie_outlined),
-                        ),
-                      ),
+                child: WuhandkyCoverImage(imageUrl: detail.coverUrl),
               ),
             ),
             const SizedBox(width: 16),
@@ -236,8 +221,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              childAspectRatio: 2.15,
+              crossAxisCount: 3,
+              childAspectRatio: 2.35,
               crossAxisSpacing: 9,
               mainAxisSpacing: 9,
             ),
@@ -245,11 +230,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
             itemBuilder: (context, index) {
               final episode = source.episodes[index];
               return OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
                 onPressed: () => _play(detail, source, episode),
-                child: Text(
-                  episode.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(episode.title, maxLines: 1),
                 ),
               );
             },

@@ -23,6 +23,17 @@ void main() {
     expect(items.single.score, '8.8');
   });
 
+  test('uses the compatible scheme for known cover hosts', () {
+    const html = '''
+      <a class="video-pic" href="/album/demo.html" title="示例影片"
+         data-original="https://pic.fzmmx.com/cover.jpg"></a>
+    ''';
+
+    final item = service.parseList(html).single;
+
+    expect(item.coverUrl, 'http://pic.fzmmx.com/cover.jpg');
+  });
+
   test('parses detail sources and restores episode order', () {
     const html = '''
       <meta property="og:title" content="示例剧集">

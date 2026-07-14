@@ -38,12 +38,12 @@ void main() {
     expect(darkTheme, contains('shortEdges'));
   });
 
-  test('video and the control overlay fill the physical viewport', () {
+  test('video stays complete while controls fill the physical viewport', () {
     final player = File(
       'lib/screens/anime_player_screen.dart',
     ).readAsStringSync();
 
-    expect(player, contains('fit: BoxFit.cover'));
+    expect(player, contains('fit: BoxFit.contain'));
     expect(player, contains('Positioned.fill(child: controlsBuilder())'));
     expect(
       player,
