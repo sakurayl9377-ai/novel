@@ -4,18 +4,16 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter/rendering.dart';
 
 import '../config/theme.dart';
 import '../models/manga.dart';
 import '../models/manga_read_history.dart';
-import '../providers/interaction_auth_provider.dart';
 import '../services/app_telemetry_service.dart';
 import '../services/bounded_task_scheduler.dart';
 import '../services/manga_service.dart';
 import '../services/storage_service.dart';
 import '../utils/auth_gate.dart';
-import '../widgets/continuous_manga_view.dart';
 import 'comment_thread_screen.dart';
 import 'manga_screen.dart';
 
@@ -63,8 +61,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   final MangaService _service = MangaService();
   final StorageService _storageService = StorageService();
   final ScrollController _scrollController = ScrollController();
-  final ContinuousMangaNavigationController _mangaNavigationController =
-      ContinuousMangaNavigationController();
   final BoundedTaskScheduler _imagePrefetchScheduler = BoundedTaskScheduler(
     maxConcurrent: 2,
   );
@@ -75,15 +71,13 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   late int _currentIndex;
   List<String> _images = [];
   final Map<int, double> _pageAspectRatios = {};
+  final Map<int, double> _pageHeights = {};
   final Set<int> _prefetchedPages = {};
   Timer? _aspectRatioSaveTimer;
   double _viewportWidth = 0;
   int _chapterProgressPercent = 0;
-  final ValueNotifier<int> _chapterProgressNotifier = ValueNotifier<int>(0);
-  int _continuousReaderSession = 0;
-  int _continuousPageIndex = 0;
-  double _continuousPageOffsetRatio = 0;
-  double? _continuousInitialProgress;
+  int _scrollCorrectionGeneration = 0;
+  bool _hasUserScrolledSinceChapterLoad = false;
   bool _isChangingChapter = false;
   bool _isLoading = true;
   bool _showBars = true;
@@ -104,6 +98,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_handleScrollChanged);
     _telemetryTrace = AppTelemetryService.instance.openScreen(
       'manga_reader',
       metadata: {
@@ -124,9 +119,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       );
     }
     if (_currentIndex < 0) _currentIndex = 0;
-    _continuousPageIndex = widget.initialPageIndex;
-    _continuousPageOffsetRatio = widget.initialPageOffsetRatio;
-    _continuousInitialProgress = widget.initialScrollProgress;
     unawaited(
       _loadChapter(
         _currentChapter,
@@ -146,8 +138,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     _aspectRatioSaveTimer?.cancel();
     unawaited(_saveAspectRatioCache());
     unawaited(_saveHistory());
+    _scrollController.removeListener(_handleScrollChanged);
     _scrollController.dispose();
-    _chapterProgressNotifier.dispose();
     _telemetryTrace.close(
       metadata: {
         'chapterIndex': _currentIndex,
@@ -177,28 +169,26 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     if (!canOpen || !_isCurrentChapterLoad(loadGeneration)) return;
 
     _saveTimer?.cancel();
-    if (_images.isNotEmpty) await _saveHistory();
+    _scrollCorrectionGeneration++;
+    _hasUserScrolledSinceChapterLoad = false;
+    final hadVisibleChapter = _images.isNotEmpty;
+    if (hadVisibleChapter) await _saveHistory();
     _aspectRatioSaveTimer?.cancel();
     if (_pageAspectRatios.isNotEmpty) await _saveAspectRatioCache();
     if (!_isCurrentChapterLoad(loadGeneration)) return;
-    setState(() {
-      _currentChapter = chapter;
-      _currentIndex = index;
-      _images = [];
-      _pageAspectRatios.clear();
-      _prefetchedPages.clear();
-      _chapterProgressPercent = 0;
-      _continuousPageIndex = initialPageIndex;
-      _continuousPageOffsetRatio = initialPageOffsetRatio;
-      _continuousInitialProgress = initialScrollProgress;
-      _continuousReaderSession++;
-      _isLoading = true;
-      _errorMessage = null;
-      _showBars = true;
-    });
-    _chapterProgressNotifier.value = 0;
-    if (_scrollController.hasClients) {
-      _scrollController.jumpTo(0);
+    if (!hadVisibleChapter) {
+      setState(() {
+        _currentChapter = chapter;
+        _currentIndex = index;
+        _images = [];
+        _pageAspectRatios.clear();
+        _pageHeights.clear();
+        _prefetchedPages.clear();
+        _chapterProgressPercent = 0;
+        _isLoading = true;
+        _errorMessage = null;
+        _showBars = true;
+      });
     }
 
     try {
@@ -218,10 +208,18 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             'reason': 'empty_images',
           },
         );
-        setState(() {
-          _isLoading = false;
-          _errorMessage = '章节图片解析失败，请稍后重试';
-        });
+        if (hadVisibleChapter) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('章节图片解析失败，请稍后重试')));
+          }
+        } else {
+          setState(() {
+            _isLoading = false;
+            _errorMessage = '章节图片解析失败，请稍后重试';
+          });
+        }
         return;
       }
       if (widget.warmVisiblePage) {
@@ -229,12 +227,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             .clamp(0, images.length - 1)
             .toInt();
         try {
-          await _preloadPageImage(
-            visiblePageIndex,
+          await _warmPageImage(
             images[visiblePageIndex],
             chapter.url,
-            chapterLoadGeneration: loadGeneration,
-            priority: 1000,
           ).timeout(const Duration(seconds: 3));
         } catch (_) {
           // Keep the stable loading screen for at most three seconds, then let
@@ -242,10 +237,19 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         }
       }
       if (!_isCurrentChapterLoad(loadGeneration)) return;
+      if (_scrollController.hasClients) _scrollController.jumpTo(0);
       setState(() {
+        _currentChapter = chapter;
+        _currentIndex = index;
         _images = images;
+        _pageAspectRatios.clear();
         _pageAspectRatios.addAll(cachedRatios);
+        _pageHeights.clear();
+        _prefetchedPages.clear();
+        _chapterProgressPercent = 0;
         _isLoading = false;
+        _errorMessage = null;
+        _showBars = true;
       });
       AppTelemetryService.instance.trackEvent(
         'content_load',
@@ -258,6 +262,13 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           'pageCount': images.length,
           'cachedRatios': cachedRatios.length,
         },
+      );
+      _refreshChapterProgress();
+      _restoreScroll(
+        initialScrollOffset,
+        progress: initialScrollProgress,
+        pageIndex: initialPageIndex,
+        pageOffsetRatio: initialPageOffsetRatio,
       );
       _startSaveTimer();
       unawaited(_saveHistory());
@@ -288,15 +299,107 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           'errorType': error.runtimeType.toString(),
         },
       );
-      setState(() {
-        _isLoading = false;
-        _errorMessage = '章节加载失败，请稍后重试';
-      });
+      if (hadVisibleChapter) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('章节加载失败，请稍后重试')));
+        }
+      } else {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = '章节加载失败，请稍后重试';
+        });
+      }
     }
   }
 
   bool _isCurrentChapterLoad(int generation) {
     return mounted && generation == _chapterLoadGeneration;
+  }
+
+  void _restoreScroll(
+    double offset, {
+    double? progress,
+    int pageIndex = 0,
+    double pageOffsetRatio = 0,
+  }) {
+    if (_images.isEmpty) return;
+    final normalizedProgress = progress?.clamp(0.0, 1.0).toDouble();
+    final normalizedPageIndex = pageIndex.clamp(0, _images.length - 1).toInt();
+    final normalizedPageRatio = pageOffsetRatio.clamp(0.0, 1.0).toDouble();
+    if (offset <= 0 &&
+        (normalizedProgress == null || normalizedProgress <= 0) &&
+        normalizedPageIndex <= 0 &&
+        normalizedPageRatio <= 0) {
+      return;
+    }
+
+    void jump() {
+      if (!mounted || !_scrollController.hasClients) return;
+      final position = _scrollController.position;
+      final maxOffset = position.maxScrollExtent;
+      var target = offset;
+      if (normalizedPageIndex > 0 || normalizedPageRatio > 0) {
+        target =
+            _pageStartForIndex(normalizedPageIndex) +
+            _estimatedPageHeight(normalizedPageIndex) * normalizedPageRatio;
+      } else if (normalizedProgress != null && maxOffset > 0) {
+        target = maxOffset * normalizedProgress;
+      }
+      _scrollController.jumpTo(target.clamp(0.0, maxOffset).toDouble());
+      _refreshChapterProgress();
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => jump());
+  }
+
+  void _handleScrollChanged() {
+    _refreshChapterProgress();
+  }
+
+  void _refreshChapterProgress() {
+    if (!mounted) return;
+    final nextPercent = _currentChapterProgressPercent();
+    if (nextPercent == _chapterProgressPercent) return;
+    setState(() => _chapterProgressPercent = nextPercent);
+  }
+
+  int _currentChapterProgressPercent() {
+    if (_images.isEmpty || !_scrollController.hasClients) return 0;
+    final position = _scrollController.position;
+    final maxOffset = position.maxScrollExtent;
+    if (maxOffset <= 0) return position.pixels > 0 ? 100 : 0;
+    return ((position.pixels / maxOffset) * 100).clamp(0.0, 100.0).round();
+  }
+
+  Future<void> _warmPageImage(String url, String referer) async {
+    final provider = ExtendedNetworkImageProvider(
+      url,
+      headers: mangaImageHeaders(referer: referer),
+      cache: true,
+      retries: 3,
+      timeLimit: const Duration(seconds: 15),
+      cacheMaxAge: _imageCacheMaxAge,
+      imageCacheName: _imageCacheName,
+    );
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    final completer = Completer<void>();
+    late ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (_, _) {
+        if (!completer.isCompleted) completer.complete();
+      },
+      onError: (_, _) {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+    stream.addListener(listener);
+    try {
+      await completer.future.timeout(const Duration(seconds: 12));
+    } finally {
+      stream.removeListener(listener);
+    }
   }
 
   Future<void> _preloadInitialPages(
@@ -414,44 +517,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
   }
 
-  Future<void> _warmChapterHeadForNavigation(
-    int chapterIndex,
-    List<String> images,
-  ) async {
-    if (images.isEmpty ||
-        chapterIndex < 0 ||
-        chapterIndex >= _chapters.length) {
-      return;
-    }
-    final referer = _chapters[chapterIndex].url;
-    final provider = ExtendedNetworkImageProvider(
-      images.first,
-      headers: mangaImageHeaders(referer: referer),
-      cache: true,
-      retries: 3,
-      timeLimit: const Duration(seconds: 15),
-      cacheMaxAge: _imageCacheMaxAge,
-      imageCacheName: _imageCacheName,
-    );
-    final stream = provider.resolve(createLocalImageConfiguration(context));
-    final completer = Completer<void>();
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (_, _) {
-        if (!completer.isCompleted) completer.complete();
-      },
-      onError: (_, _) {
-        if (!completer.isCompleted) completer.complete();
-      },
-    );
-    stream.addListener(listener);
-    try {
-      await completer.future.timeout(const Duration(seconds: 4));
-    } finally {
-      stream.removeListener(listener);
-    }
-  }
-
   void _prefetchNearScrollOffset() {
     if (_images.isEmpty) return;
     final offset = _scrollController.hasClients
@@ -493,6 +558,46 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     );
   }
 
+  void _updatePageHeight(int index, double height) {
+    if (height <= 0 || !height.isFinite) return;
+    final oldHeight = _pageHeights[index];
+    if (oldHeight == null || (oldHeight - height).abs() < 1) {
+      _pageHeights[index] = height;
+      return;
+    }
+
+    final pageStart = _pageStartForIndex(index);
+    final delta = height - oldHeight;
+    _pageHeights[index] = height;
+    if (!_scrollController.hasClients ||
+        pageStart >= _scrollController.offset) {
+      return;
+    }
+    final position = _scrollController.position;
+    final currentOffset = position.pixels;
+    final correctionGeneration = _scrollCorrectionGeneration;
+    final chapterUrl = _currentChapter.url;
+    final correction = pageStart + oldHeight <= currentOffset
+        ? delta
+        : delta * ((currentOffset - pageStart) / oldHeight).clamp(0.0, 1.0);
+    if (correction.abs() < 1) return;
+    final target = (currentOffset + correction).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_scrollController.hasClients ||
+          _hasUserScrolledSinceChapterLoad ||
+          correctionGeneration != _scrollCorrectionGeneration ||
+          chapterUrl != _currentChapter.url ||
+          (_scrollController.offset - currentOffset).abs() >= 1) {
+        return;
+      }
+      _scrollController.jumpTo(target.toDouble());
+    });
+  }
+
   String _aspectRatioCacheKey(String chapterUrl) {
     final digest = crypto.sha256.convert(utf8.encode(chapterUrl));
     return 'manga_page_ratios_v1_$digest';
@@ -531,9 +636,19 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   }
 
   double _estimatedPageHeight(int index) {
+    final measuredHeight = _pageHeights[index];
+    if (measuredHeight != null) return measuredHeight;
     final width = _viewportWidth > 0 ? _viewportWidth : 390.0;
     final aspectRatio = _pageAspectRatios[index] ?? _defaultPageAspectRatio;
     return width / aspectRatio;
+  }
+
+  double _pageStartForIndex(int index) {
+    var offset = 0.0;
+    for (var i = 0; i < index; i++) {
+      offset += _estimatedPageHeight(i);
+    }
+    return offset;
   }
 
   void _startSaveTimer() {
@@ -544,7 +659,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   }
 
   Future<void> _saveHistory() async {
-    if (_images.isEmpty) return;
+    if (_images.isEmpty || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final location = _currentPageLocation(position.pixels);
     await _storageService.saveMangaReadHistory(
       MangaReadHistory(
         mangaId: widget.manga.id,
@@ -553,16 +670,33 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         chapterTitle: _currentChapter.title,
         chapterUrl: _currentChapter.url,
         chapterIndex: _currentIndex,
-        scrollOffset: 0,
-        contentExtent: 0,
+        scrollOffset: position.pixels,
+        contentExtent: position.maxScrollExtent,
         updatedAtMs: DateTime.now().millisecondsSinceEpoch,
         chapters: widget.manga.chapters,
-        pageIndex: _continuousPageIndex,
-        pageOffsetRatio: _continuousPageOffsetRatio,
+        pageIndex: location.pageIndex,
+        pageOffsetRatio: location.pageOffsetRatio,
         pageCount: _images.length,
         chapterProgress: _chapterProgressPercent / 100,
       ),
     );
+  }
+
+  ({int pageIndex, double pageOffsetRatio}) _currentPageLocation(
+    double scrollOffset,
+  ) {
+    var pageStart = 0.0;
+    for (var i = 0; i < _images.length; i++) {
+      final pageHeight = _estimatedPageHeight(i);
+      if (scrollOffset <= pageStart + pageHeight || i == _images.length - 1) {
+        final ratio = pageHeight <= 0
+            ? 0.0
+            : ((scrollOffset - pageStart) / pageHeight).clamp(0.0, 1.0);
+        return (pageIndex: i, pageOffsetRatio: ratio.toDouble());
+      }
+      pageStart += pageHeight;
+    }
+    return (pageIndex: 0, pageOffsetRatio: 0);
   }
 
   void _changeChapter(int offset) {
@@ -581,13 +715,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
     setState(() => _isChangingChapter = true);
     try {
-      final canOpen = await _ensureChapterUnlocked(index);
-      if (!canOpen || !mounted) return;
-      unawaited(_saveHistory());
-      final navigated = await _mangaNavigationController.goToChapterHead(index);
-      if (!navigated && mounted) {
-        await _loadChapter(_chapters[index], index);
-      }
+      await _loadChapter(_chapters[index], index);
     } finally {
       if (mounted) setState(() => _isChangingChapter = false);
     }
@@ -850,15 +978,12 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-            child: ValueListenableBuilder<int>(
-              valueListenable: _chapterProgressNotifier,
-              builder: (context, progress, _) => Text(
-                '$progress%',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
+            child: Text(
+              '$_chapterProgressPercent%',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -902,81 +1027,150 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         _viewportWidth = constraints.maxWidth;
-        final readerSession = _continuousReaderSession;
-        return ContinuousMangaView(
-          key: ValueKey(
-            'continuous-manga-${widget.manga.id}-$_continuousReaderSession',
+        return NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            if (notification is UserScrollNotification &&
+                notification.direction != ScrollDirection.idle) {
+              _hasUserScrolledSinceChapterLoad = true;
+              _scrollCorrectionGeneration++;
+            }
+            if (notification is ScrollUpdateNotification ||
+                notification is UserScrollNotification) {
+              _prefetchNearScrollOffset();
+            }
+            if (notification is ScrollEndNotification) {
+              unawaited(_saveHistory());
+            }
+            return false;
+          },
+          child: ListView.builder(
+            key: ValueKey('manga-chapter-${_currentChapter.url}'),
+            controller: _scrollController,
+            padding: EdgeInsets.zero,
+            scrollCacheExtent: const ScrollCacheExtent.viewport(3),
+            itemCount: _images.length + 1,
+            itemBuilder: (context, index) {
+              if (index == _images.length) {
+                return const SizedBox(height: 24);
+              }
+              final customPage = widget.mangaPageBuilder?.call(
+                context,
+                _currentIndex,
+                index,
+                _images[index],
+              );
+              if (customPage != null) {
+                return KeyedSubtree(
+                  key: ValueKey('${_currentChapter.url}|${_images[index]}'),
+                  child: customPage,
+                );
+              }
+              return _MangaPageImage(
+                key: ValueKey('${_currentChapter.url}|${_images[index]}'),
+                url: _images[index],
+                referer: _currentChapter.url,
+                index: index,
+                aspectRatio:
+                    _pageAspectRatios[index] ?? _defaultPageAspectRatio,
+                onAspectRatioChanged: (ratio) {
+                  _updatePageAspectRatio(index, ratio);
+                },
+                onHeightChanged: (height) {
+                  _updatePageHeight(index, height);
+                },
+              );
+            },
           ),
-          controller: _scrollController,
-          navigationController: _mangaNavigationController,
-          prepareChapterHead: widget.mangaPageBuilder == null
-              ? _warmChapterHeadForNavigation
-              : null,
-          chapters: _chapters,
-          initialChapterIndex: _currentIndex,
-          initialImages: _images,
-          initialPageAspectRatios: _pageAspectRatios,
-          initialScrollProgress: _continuousInitialProgress,
-          initialPageIndex: _continuousPageIndex,
-          initialPageOffsetRatio: _continuousPageOffsetRatio,
-          canLoadChapter: (index) =>
-              widget.canLoadChapterOverride?.call(index) ??
-              (index == 0 ||
-                  context.read<InteractionAuthProvider>().isLoggedIn),
-          loadChapterImages: (index) => _fetchChapterImages(_chapters[index]),
-          onPositionChanged: (position) {
-            if (readerSession != _continuousReaderSession) return;
-            _applyContinuousPosition(position, settled: false);
-          },
-          onPositionSettled: (position) {
-            if (readerSession != _continuousReaderSession) return;
-            _applyContinuousPosition(position, settled: true);
-          },
-          pageBuilder: widget.mangaPageBuilder,
+        );
+      },
+    );
+  }
+}
+
+class _MangaPageImage extends StatefulWidget {
+  const _MangaPageImage({
+    super.key,
+    required this.url,
+    required this.referer,
+    required this.index,
+    required this.aspectRatio,
+    required this.onAspectRatioChanged,
+    required this.onHeightChanged,
+  });
+
+  final String url;
+  final String referer;
+  final int index;
+  final double aspectRatio;
+  final ValueChanged<double> onAspectRatioChanged;
+  final ValueChanged<double> onHeightChanged;
+
+  @override
+  State<_MangaPageImage> createState() => _MangaPageImageState();
+}
+
+class _MangaPageImageState extends State<_MangaPageImage> {
+  double _lastReportedHeight = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final pageHeight = constraints.maxWidth / widget.aspectRatio;
+        if ((_lastReportedHeight - pageHeight).abs() >= 1) {
+          _lastReportedHeight = pageHeight;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) widget.onHeightChanged(pageHeight);
+          });
+        }
+        return SizedBox(
+          width: double.infinity,
+          height: pageHeight,
+          child: ColoredBox(
+            color: Colors.white,
+            child: ExtendedImage.network(
+              widget.url,
+              cache: true,
+              retries: 3,
+              timeLimit: const Duration(seconds: 15),
+              cacheMaxAge: _MangaReaderScreenState._imageCacheMaxAge,
+              imageCacheName: _MangaReaderScreenState._imageCacheName,
+              width: double.infinity,
+              height: pageHeight,
+              fit: BoxFit.contain,
+              alignment: Alignment.topCenter,
+              headers: mangaImageHeaders(referer: widget.referer),
+              clearMemoryCacheIfFailed: true,
+              filterQuality: FilterQuality.low,
+              loadStateChanged: _handleLoadState,
+            ),
+          ),
         );
       },
     );
   }
 
-  void _applyContinuousPosition(
-    ContinuousMangaPosition position, {
-    required bool settled,
-  }) {
-    if (!mounted ||
-        position.chapterIndex < 0 ||
-        position.chapterIndex >= _chapters.length) {
-      return;
+  Widget _handleLoadState(ExtendedImageState state) {
+    switch (state.extendedImageLoadState) {
+      case LoadState.loading:
+        return const ColoredBox(color: Color(0xFFF4F4F4));
+      case LoadState.completed:
+        final image = state.extendedImageInfo?.image;
+        if (image != null && image.width > 0 && image.height > 0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              widget.onAspectRatioChanged(image.width / image.height);
+            }
+          });
+        }
+        return state.completedWidget;
+      case LoadState.failed:
+        return Center(
+          child: Text(
+            '第 ${widget.index + 1} 页加载失败',
+            style: const TextStyle(color: Colors.black45, fontSize: 12),
+          ),
+        );
     }
-    final chapterChanged = position.chapterIndex != _currentIndex;
-    final progressChanged = position.progressPercent != _chapterProgressPercent;
-
-    void apply() {
-      if (chapterChanged) {
-        unawaited(_saveAspectRatioCache());
-        _pageAspectRatios.clear();
-        _prefetchedPages.clear();
-      }
-      _currentIndex = position.chapterIndex;
-      _currentChapter = _chapters[position.chapterIndex];
-      _images = position.images;
-      _continuousPageIndex = position.pageIndex;
-      _continuousPageOffsetRatio = position.pageOffsetRatio;
-      _continuousInitialProgress = null;
-      _chapterProgressPercent = position.progressPercent;
-    }
-
-    if (chapterChanged || progressChanged) {
-      if (chapterChanged) {
-        setState(apply);
-      } else {
-        apply();
-      }
-    } else {
-      apply();
-    }
-    if (_chapterProgressNotifier.value != position.progressPercent) {
-      _chapterProgressNotifier.value = position.progressPercent;
-    }
-    if (settled) unawaited(_saveHistory());
   }
 }

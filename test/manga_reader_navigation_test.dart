@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -42,6 +43,7 @@ void main() {
         title: 'Navigation Test',
         chapters: chapters,
       );
+      final secondChapter = Completer<List<String>>();
 
       await tester.pumpWidget(
         MaterialApp(
@@ -52,9 +54,12 @@ void main() {
             canLoadChapterOverride: (_) => true,
             warmVisiblePage: false,
             mangaPageBuilder: (_, _, _, _) => const SizedBox(height: 900),
-            chapterImageLoader: (chapter) async => [
-              'https://example.invalid/${chapter.url}.jpg',
-            ],
+            chapterImageLoader: (chapter) {
+              if (chapter.url == 'chapter-2') return secondChapter.future;
+              return Future.value([
+                'https://example.invalid/${chapter.url}.jpg',
+              ]);
+            },
           ),
         ),
       );
@@ -69,6 +74,9 @@ void main() {
       expect(nextButton.onPressed, isNotNull);
       nextButton.onPressed!();
       await tester.pump();
+      expect(find.textContaining('1/3 · Chapter 1'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      secondChapter.complete(const ['https://example.invalid/chapter-2.jpg']);
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 200)),
       );
