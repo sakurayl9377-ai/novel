@@ -52,6 +52,7 @@ class ContinuousMangaView extends StatefulWidget {
     required this.loadChapterImages,
     required this.canLoadChapter,
     this.navigationController,
+    this.prepareChapterHead,
     this.initialPageAspectRatios = const <int, double>{},
     this.initialScrollProgress,
     this.initialPageIndex = 0,
@@ -69,6 +70,8 @@ class ContinuousMangaView extends StatefulWidget {
   final Future<List<String>> Function(int chapterIndex) loadChapterImages;
   final bool Function(int chapterIndex) canLoadChapter;
   final ContinuousMangaNavigationController? navigationController;
+  final Future<void> Function(int chapterIndex, List<String> images)?
+  prepareChapterHead;
   final double? initialScrollProgress;
   final int initialPageIndex;
   final double initialPageOffsetRatio;
@@ -181,19 +184,27 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       }
     }
     if (!mounted || generation != _navigationGeneration) return false;
+    final prepareChapterHead = widget.prepareChapterHead;
+    if (prepareChapterHead != null) {
+      try {
+        await prepareChapterHead(
+          chapterIndex,
+          images,
+        ).timeout(const Duration(seconds: 4));
+      } catch (_) {
+        // A broken or unusually slow image must not block chapter navigation.
+      }
+      if (!mounted || generation != _navigationGeneration) return false;
+    }
 
-    final firstLoaded = _loaded.isEmpty ? chapterIndex : _loaded.firstKey()!;
-    final lastLoaded = _loaded.isEmpty ? chapterIndex : _loaded.lastKey()!;
-    final isAdjacent =
-        chapterIndex >= firstLoaded - 1 && chapterIndex <= lastLoaded + 1;
     _maintainingScrollOffset = true;
     setState(() {
-      if (!isAdjacent) {
-        _loaded.clear();
-        _aspectRatios.clear();
-        _pageHeights.clear();
-        _pendingAspectRatios.clear();
-      }
+      // Explicit button/catalog navigation must have one unambiguous origin.
+      // Seamless multi-chapter windows remain available for normal scrolling.
+      _loaded.clear();
+      _aspectRatios.removeWhere((key, _) => key.$1 != chapterIndex);
+      _pageHeights.removeWhere((key, _) => key.$1 != chapterIndex);
+      _pendingAspectRatios.clear();
       _loaded[chapterIndex] = List<String>.from(images!);
       _activeChapterIndex = chapterIndex;
       _lastReportedChapter = null;
@@ -208,11 +219,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       _maintainingScrollOffset = false;
       return false;
     }
-    final target = _chapterStart(chapterIndex).clamp(
-      widget.controller.position.minScrollExtent,
-      widget.controller.position.maxScrollExtent,
-    );
-    widget.controller.jumpTo(target);
+    widget.controller.jumpTo(widget.controller.position.minScrollExtent);
     await _afterNextFrame();
     if (!mounted || generation != _navigationGeneration) return false;
     final headerContext = _chapterHeaderKeys[chapterIndex]?.currentContext;

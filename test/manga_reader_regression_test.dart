@@ -3,6 +3,15 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('manga history persists page count for page-based progress', () {
+    final source = File(
+      'lib/screens/manga_reader_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('pageCount: _images.length'));
+    expect(source, contains('chapterProgress: _chapterProgressPercent / 100'));
+  });
+
   test('continuous reader owns chapter restore and position history', () {
     final source = File(
       'lib/screens/manga_reader_screen.dart',

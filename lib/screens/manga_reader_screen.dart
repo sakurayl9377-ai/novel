@@ -414,6 +414,44 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
   }
 
+  Future<void> _warmChapterHeadForNavigation(
+    int chapterIndex,
+    List<String> images,
+  ) async {
+    if (images.isEmpty ||
+        chapterIndex < 0 ||
+        chapterIndex >= _chapters.length) {
+      return;
+    }
+    final referer = _chapters[chapterIndex].url;
+    final provider = ExtendedNetworkImageProvider(
+      images.first,
+      headers: mangaImageHeaders(referer: referer),
+      cache: true,
+      retries: 3,
+      timeLimit: const Duration(seconds: 15),
+      cacheMaxAge: _imageCacheMaxAge,
+      imageCacheName: _imageCacheName,
+    );
+    final stream = provider.resolve(createLocalImageConfiguration(context));
+    final completer = Completer<void>();
+    late ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (_, _) {
+        if (!completer.isCompleted) completer.complete();
+      },
+      onError: (_, _) {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+    stream.addListener(listener);
+    try {
+      await completer.future.timeout(const Duration(seconds: 4));
+    } finally {
+      stream.removeListener(listener);
+    }
+  }
+
   void _prefetchNearScrollOffset() {
     if (_images.isEmpty) return;
     final offset = _scrollController.hasClients
@@ -521,6 +559,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         chapters: widget.manga.chapters,
         pageIndex: _continuousPageIndex,
         pageOffsetRatio: _continuousPageOffsetRatio,
+        pageCount: _images.length,
+        chapterProgress: _chapterProgressPercent / 100,
       ),
     );
   }
@@ -869,6 +909,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
           ),
           controller: _scrollController,
           navigationController: _mangaNavigationController,
+          prepareChapterHead: widget.mangaPageBuilder == null
+              ? _warmChapterHeadForNavigation
+              : null,
           chapters: _chapters,
           initialChapterIndex: _currentIndex,
           initialImages: _images,

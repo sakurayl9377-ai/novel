@@ -13,6 +13,7 @@ void main() {
       final scrollController = ScrollController();
       final navigationController = ContinuousMangaNavigationController();
       final thirdChapter = Completer<List<String>>();
+      final preparedChapter = Completer<void>();
       final reported = <int>[];
       const chapters = [
         MangaChapter(title: 'Chapter 1', url: 'https://example.com/1'),
@@ -26,6 +27,11 @@ void main() {
             body: ContinuousMangaView(
               controller: scrollController,
               navigationController: navigationController,
+              prepareChapterHead: (chapterIndex, images) {
+                expect(chapterIndex, 2);
+                expect(images, const ['chapter-2-page']);
+                return preparedChapter.future;
+              },
               chapters: chapters,
               initialChapterIndex: 0,
               initialImages: const ['chapter-0-page'],
@@ -57,10 +63,18 @@ void main() {
       );
 
       thirdChapter.complete(const ['chapter-2-page']);
+      await tester.pump();
+      expect(
+        find.text('page for chapter 0'),
+        findsOneWidget,
+        reason: 'the old page remains until the target first image is ready',
+      );
+      preparedChapter.complete();
       await tester.pumpAndSettle();
       expect(await navigation, isTrue);
       expect(find.text('page for chapter 2'), findsOneWidget);
       expect(reported.last, 2);
+      expect(scrollController.offset, 0);
 
       await tester.pumpWidget(const SizedBox.shrink());
       scrollController.dispose();
