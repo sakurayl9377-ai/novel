@@ -624,7 +624,18 @@ class _ReadingScreenState extends State<ReadingScreen>
       });
       await _loadCurrentChapter();
       if (mounted && _content.isNotEmpty) {
-        await _saveProgressNow(charPosition: 0, scrollPosition: 0);
+        // Returning to a previous chapter should meet its ending, so the
+        // reader continues naturally into the current chapter when scrolling
+        // down again instead of restarting the older chapter at 0%.
+        final endPosition = _content.length;
+        setState(() {
+          _restoreCharPosition = endPosition;
+          _lastCharPosition = endPosition;
+          _lastScrollPosition = 0;
+          _currentPageIndex = _pageIndexForCharPosition(_content, endPosition);
+          _continuousReaderSession++;
+        });
+        await _saveProgressNow(charPosition: endPosition, scrollPosition: 0);
       }
     }
   }

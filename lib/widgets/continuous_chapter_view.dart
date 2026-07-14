@@ -57,6 +57,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   final Set<int> _failedIndexes = <int>{};
 
   bool _didRestoreInitialPosition = false;
+  bool _isUserScrollGesture = false;
   int? _lastReportedChapterIndex;
   int? _lastReportedCharPosition;
 
@@ -226,18 +227,21 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     final position = _scrollController.position;
     final ratio = (textOffset / content.length).clamp(0.0, 1.0);
-    final target =
-        (position.pixels +
-                sectionTop +
-                sectionHeight * ratio -
-                position.viewportDimension * _readingAnchorFraction)
-            .clamp(0.0, position.maxScrollExtent)
-            .toDouble();
-    _scrollController.animateTo(
-      target,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOut,
-    );
+    final activeY = sectionTop + sectionHeight * ratio;
+    final viewportHeight = position.viewportDimension;
+
+    // TTS sends frequent word-level progress updates.  Only move when the
+    // active sentence has left the comfortable reading area; repeatedly
+    // animating to every word creates scroll notifications that can be
+    // mistaken for a manual cross-chapter swipe.
+    final upperBound = viewportHeight * 0.24;
+    final lowerBound = viewportHeight * 0.72;
+    if (activeY >= upperBound && activeY <= lowerBound) return;
+
+    final target = (position.pixels + activeY - viewportHeight * 0.46)
+        .clamp(0.0, position.maxScrollExtent)
+        .toDouble();
+    _scrollController.jumpTo(target);
   }
 
   double? _sectionTopFor(int chapterIndex) {
@@ -332,12 +336,27 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   bool _handleScrollNotification(ScrollNotification notification) {
     if (notification.depth != 0) return false;
     _loadNearEdges(notification.metrics);
-    if (notification is ScrollUpdateNotification) {
+
+    // Only a real finger drag is allowed to change the active chapter and
+    // saved reading position. Layout changes, chapter prefetch correction,
+    // and TTS follow-scroll all dispatch scroll notifications too.
+    if (notification is UserScrollNotification) {
+      if (notification.direction == ScrollDirection.idle) {
+        if (_isUserScrollGesture) {
+          _reportReadingPosition(settled: true);
+        }
+        _isUserScrollGesture = false;
+      } else {
+        _isUserScrollGesture = true;
+      }
+    } else if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      _isUserScrollGesture = true;
       _reportReadingPosition(settled: false);
-    } else if (notification is ScrollEndNotification ||
-        (notification is UserScrollNotification &&
-            notification.direction == ScrollDirection.idle)) {
+    } else if (notification is ScrollEndNotification &&
+        (_isUserScrollGesture || notification.dragDetails != null)) {
       _reportReadingPosition(settled: true);
+      _isUserScrollGesture = false;
     }
     return false;
   }
