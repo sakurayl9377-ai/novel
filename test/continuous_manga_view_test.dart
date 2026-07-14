@@ -8,6 +8,66 @@ import 'package:novel_app/widgets/continuous_manga_view.dart';
 
 void main() {
   testWidgets(
+    'manual chapter navigation keeps the current page while loading',
+    (tester) async {
+      final scrollController = ScrollController();
+      final navigationController = ContinuousMangaNavigationController();
+      final thirdChapter = Completer<List<String>>();
+      final reported = <int>[];
+      const chapters = [
+        MangaChapter(title: 'Chapter 1', url: 'https://example.com/1'),
+        MangaChapter(title: 'Chapter 2', url: 'https://example.com/2'),
+        MangaChapter(title: 'Chapter 3', url: 'https://example.com/3'),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ContinuousMangaView(
+              controller: scrollController,
+              navigationController: navigationController,
+              chapters: chapters,
+              initialChapterIndex: 0,
+              initialImages: const ['chapter-0-page'],
+              canLoadChapter: (_) => true,
+              loadChapterImages: (index) {
+                if (index == 2) return thirdChapter.future;
+                return Future.value(['chapter-$index-page']);
+              },
+              pageBuilder: (_, chapterIndex, _, _) => SizedBox(
+                height: 1000,
+                child: Text('page for chapter $chapterIndex'),
+              ),
+              onPositionChanged: (position) {
+                reported.add(position.chapterIndex);
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('page for chapter 0'), findsOneWidget);
+
+      final navigation = navigationController.goToChapterHead(2);
+      await tester.pump();
+      expect(
+        find.text('page for chapter 0'),
+        findsOneWidget,
+        reason: 'the visible reader must not be replaced by a loading screen',
+      );
+
+      thirdChapter.complete(const ['chapter-2-page']);
+      await tester.pumpAndSettle();
+      expect(await navigation, isTrue);
+      expect(find.text('page for chapter 2'), findsOneWidget);
+      expect(reported.last, 2);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      scrollController.dispose();
+    },
+  );
+
+  testWidgets(
     'starts at the selected chapter and loads previous on upward swipe',
     (tester) async {
       final controller = ScrollController();

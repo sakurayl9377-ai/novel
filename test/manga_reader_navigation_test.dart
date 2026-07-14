@@ -72,7 +72,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 200)),
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
       final textsAfterNext = tester
           .widgetList<Text>(find.byType(Text))
           .map((widget) => widget.data ?? '')
@@ -94,7 +94,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 200)),
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.textContaining('1/3 · Chapter 1'), findsOneWidget);
 
       await tester.tap(find.byTooltip('章节目录'));
@@ -104,7 +104,7 @@ void main() {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 200)),
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.textContaining('3/3 · Chapter 3'), findsOneWidget);
       expect(find.textContaining('1/3 · Chapter 1'), findsNothing);
     },

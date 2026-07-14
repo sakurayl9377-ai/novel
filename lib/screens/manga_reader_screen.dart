@@ -63,6 +63,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   final MangaService _service = MangaService();
   final StorageService _storageService = StorageService();
   final ScrollController _scrollController = ScrollController();
+  final ContinuousMangaNavigationController _mangaNavigationController =
+      ContinuousMangaNavigationController();
   final BoundedTaskScheduler _imagePrefetchScheduler = BoundedTaskScheduler(
     maxConcurrent: 2,
   );
@@ -539,9 +541,13 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     }
     setState(() => _isChangingChapter = true);
     try {
-      // _loadChapter owns the login check. Calling it twice made chapter
-      // navigation race with itself and could require a second action.
-      await _loadChapter(_chapters[index], index);
+      final canOpen = await _ensureChapterUnlocked(index);
+      if (!canOpen || !mounted) return;
+      unawaited(_saveHistory());
+      final navigated = await _mangaNavigationController.goToChapterHead(index);
+      if (!navigated && mounted) {
+        await _loadChapter(_chapters[index], index);
+      }
     } finally {
       if (mounted) setState(() => _isChangingChapter = false);
     }
@@ -856,11 +862,13 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         _viewportWidth = constraints.maxWidth;
+        final readerSession = _continuousReaderSession;
         return ContinuousMangaView(
           key: ValueKey(
             'continuous-manga-${widget.manga.id}-$_continuousReaderSession',
           ),
           controller: _scrollController,
+          navigationController: _mangaNavigationController,
           chapters: _chapters,
           initialChapterIndex: _currentIndex,
           initialImages: _images,
@@ -873,10 +881,14 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
               (index == 0 ||
                   context.read<InteractionAuthProvider>().isLoggedIn),
           loadChapterImages: (index) => _fetchChapterImages(_chapters[index]),
-          onPositionChanged: (position) =>
-              _applyContinuousPosition(position, settled: false),
-          onPositionSettled: (position) =>
-              _applyContinuousPosition(position, settled: true),
+          onPositionChanged: (position) {
+            if (readerSession != _continuousReaderSession) return;
+            _applyContinuousPosition(position, settled: false);
+          },
+          onPositionSettled: (position) {
+            if (readerSession != _continuousReaderSession) return;
+            _applyContinuousPosition(position, settled: true);
+          },
           pageBuilder: widget.mangaPageBuilder,
         );
       },

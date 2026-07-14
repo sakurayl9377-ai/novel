@@ -24,6 +24,24 @@ class ContinuousMangaPosition {
   final int progressPercent;
 }
 
+class ContinuousMangaNavigationController {
+  _ContinuousMangaViewState? _state;
+
+  bool get isAttached => _state != null;
+
+  Future<bool> goToChapterHead(int chapterIndex) {
+    final state = _state;
+    if (state == null) return Future<bool>.value(false);
+    return state._goToChapterHead(chapterIndex);
+  }
+
+  void _attach(_ContinuousMangaViewState state) => _state = state;
+
+  void _detach(_ContinuousMangaViewState state) {
+    if (identical(_state, state)) _state = null;
+  }
+}
+
 class ContinuousMangaView extends StatefulWidget {
   const ContinuousMangaView({
     super.key,
@@ -33,6 +51,7 @@ class ContinuousMangaView extends StatefulWidget {
     required this.initialImages,
     required this.loadChapterImages,
     required this.canLoadChapter,
+    this.navigationController,
     this.initialPageAspectRatios = const <int, double>{},
     this.initialScrollProgress,
     this.initialPageIndex = 0,
@@ -49,6 +68,7 @@ class ContinuousMangaView extends StatefulWidget {
   final Map<int, double> initialPageAspectRatios;
   final Future<List<String>> Function(int chapterIndex) loadChapterImages;
   final bool Function(int chapterIndex) canLoadChapter;
+  final ContinuousMangaNavigationController? navigationController;
   final double? initialScrollProgress;
   final int initialPageIndex;
   final double initialPageOffsetRatio;
@@ -81,6 +101,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   final Map<(int, int), double> _aspectRatios = <(int, int), double>{};
   final Map<(int, int), double> _pageHeights = <(int, int), double>{};
   final Map<(int, int), double> _pendingAspectRatios = <(int, int), double>{};
+  final Map<int, GlobalKey> _chapterHeaderKeys = <int, GlobalKey>{};
   Timer? _aspectRatioFlushTimer;
 
   double _viewportWidth = 390;
@@ -94,10 +115,12 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   int? _lastReportedChapter;
   int? _lastReportedPage;
   double? _lastReportedRatio;
+  int _navigationGeneration = 0;
 
   @override
   void initState() {
     super.initState();
+    widget.navigationController?._attach(this);
     _activeChapterIndex = _safeIndex(widget.initialChapterIndex);
     _loaded[_activeChapterIndex] = List<String>.from(widget.initialImages);
     for (final entry in widget.initialPageAspectRatios.entries) {
@@ -115,14 +138,122 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
 
   @override
   void dispose() {
+    _navigationGeneration++;
+    widget.navigationController?._detach(this);
     _aspectRatioFlushTimer?.cancel();
     widget.controller.removeListener(_handleScrollChanged);
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant ContinuousMangaView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(
+      oldWidget.navigationController,
+      widget.navigationController,
+    )) {
+      oldWidget.navigationController?._detach(this);
+      widget.navigationController?._attach(this);
+    }
+  }
+
   int _safeIndex(int index) {
     if (widget.chapters.isEmpty) return 0;
     return index.clamp(0, widget.chapters.length - 1).toInt();
+  }
+
+  Future<bool> _goToChapterHead(int chapterIndex) async {
+    if (chapterIndex < 0 ||
+        chapterIndex >= widget.chapters.length ||
+        !widget.canLoadChapter(chapterIndex)) {
+      return false;
+    }
+    final generation = ++_navigationGeneration;
+    var images = _loaded[chapterIndex];
+    if (images == null) {
+      try {
+        images = await widget.loadChapterImages(chapterIndex);
+      } catch (_) {
+        return false;
+      }
+      if (!mounted || generation != _navigationGeneration || images.isEmpty) {
+        return false;
+      }
+    }
+    if (!mounted || generation != _navigationGeneration) return false;
+
+    final firstLoaded = _loaded.isEmpty ? chapterIndex : _loaded.firstKey()!;
+    final lastLoaded = _loaded.isEmpty ? chapterIndex : _loaded.lastKey()!;
+    final isAdjacent =
+        chapterIndex >= firstLoaded - 1 && chapterIndex <= lastLoaded + 1;
+    _maintainingScrollOffset = true;
+    setState(() {
+      if (!isAdjacent) {
+        _loaded.clear();
+        _aspectRatios.clear();
+        _pageHeights.clear();
+        _pendingAspectRatios.clear();
+      }
+      _loaded[chapterIndex] = List<String>.from(images!);
+      _activeChapterIndex = chapterIndex;
+      _lastReportedChapter = null;
+      _lastReportedPage = null;
+      _lastReportedRatio = null;
+    });
+
+    await _afterNextFrame();
+    if (!mounted ||
+        generation != _navigationGeneration ||
+        !widget.controller.hasClients) {
+      _maintainingScrollOffset = false;
+      return false;
+    }
+    final target = _chapterStart(chapterIndex).clamp(
+      widget.controller.position.minScrollExtent,
+      widget.controller.position.maxScrollExtent,
+    );
+    widget.controller.jumpTo(target);
+    await _afterNextFrame();
+    if (!mounted || generation != _navigationGeneration) return false;
+    final headerContext = _chapterHeaderKeys[chapterIndex]?.currentContext;
+    if (headerContext != null && headerContext.mounted) {
+      await Scrollable.ensureVisible(
+        headerContext,
+        alignment: 0,
+        duration: Duration.zero,
+      );
+      await _afterNextFrame();
+      if (!mounted || generation != _navigationGeneration) return false;
+    }
+    _maintainingScrollOffset = false;
+    _reportChapterHead(chapterIndex);
+    unawaited(_loadAdjacent(chapterIndex + 1, before: false));
+    _trimAround(chapterIndex);
+    return true;
+  }
+
+  void _reportChapterHead(int chapterIndex) {
+    final images = _loaded[chapterIndex];
+    if (images == null || images.isEmpty) return;
+    _lastReportedChapter = chapterIndex;
+    _lastReportedPage = 0;
+    _lastReportedRatio = 0;
+    final value = ContinuousMangaPosition(
+      chapterIndex: chapterIndex,
+      images: images,
+      pageIndex: 0,
+      pageOffsetRatio: 0,
+      progressPercent: 0,
+    );
+    widget.onPositionChanged?.call(value);
+    widget.onPositionSettled?.call(value);
+  }
+
+  Future<void> _afterNextFrame() {
+    final completer = Completer<void>();
+    WidgetsBinding.instance.addPostFrameCallback((_) => completer.complete());
+    WidgetsBinding.instance.scheduleFrame();
+    return completer.future;
   }
 
   void _restoreInitialPosition() {
@@ -546,6 +677,10 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
               if (item.type == _ContinuousMangaItemType.header) {
                 final chapter = widget.chapters[item.chapterIndex];
                 return SizedBox(
+                  key: _chapterHeaderKeys.putIfAbsent(
+                    item.chapterIndex,
+                    GlobalKey.new,
+                  ),
                   height: _chapterHeaderHeight,
                   child: ColoredBox(
                     color: Colors.black,
