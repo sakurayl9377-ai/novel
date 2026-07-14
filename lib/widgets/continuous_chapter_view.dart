@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -48,10 +49,11 @@ class ContinuousChapterView extends StatefulWidget {
 class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   static const double _loadAheadExtent = 640;
   static const double _readingAnchorFraction = 0.38;
+  static const int _liveReportIntervalMs = 80;
 
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _viewportKey = GlobalKey();
-  final Map<int, String> _contents = <int, String>{};
+  final SplayTreeMap<int, String> _contents = SplayTreeMap<int, String>();
   final Map<int, GlobalKey> _sectionKeys = <int, GlobalKey>{};
   final Set<int> _loadingIndexes = <int>{};
   final Set<int> _failedIndexes = <int>{};
@@ -62,11 +64,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   bool _revealPreviousEndingAfterLoad = false;
   int? _lastReportedChapterIndex;
   int? _lastReportedCharPosition;
+  int _lastLiveReportAtMs = 0;
 
-  List<int> get _loadedIndexes {
-    final indexes = _contents.keys.toList()..sort();
-    return indexes;
-  }
+  Iterable<int> get _loadedIndexes => _contents.keys;
 
   @override
   void initState() {
@@ -340,6 +340,13 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     }
   }
 
+  void _reportLiveReadingPosition() {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _lastLiveReportAtMs < _liveReportIntervalMs) return;
+    _lastLiveReportAtMs = nowMs;
+    _reportReadingPosition(settled: false);
+  }
+
   void _loadNearEdges(ScrollMetrics metrics) {
     final loaded = _loadedIndexes;
     if (loaded.isEmpty) return;
@@ -382,7 +389,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       if ((notification.scrollDelta ?? 0) < 0) {
         _requestPreviousFromUserGesture(notification.metrics);
       }
-      _reportReadingPosition(settled: false);
+      _reportLiveReadingPosition();
     } else if (notification is OverscrollNotification &&
         notification.overscroll < 0) {
       _isUserScrollGesture = true;
@@ -445,7 +452,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
               children: [
                 _buildEdgeLoader(before: true),
                 for (final chapterIndex in loaded)
-                  Container(
+                  RepaintBoundary(
                     key: _keyFor(chapterIndex),
                     child: widget.sectionBuilder(
                       widget.chapters[chapterIndex],

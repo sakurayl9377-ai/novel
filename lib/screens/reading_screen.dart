@@ -476,7 +476,12 @@ class _ReadingScreenState extends State<ReadingScreen>
     final newPercent = ((safePosition / content.length) * 100)
         .clamp(0.0, 100.0)
         .round();
-    final shouldRebuild = chapterChanged || oldPercent != newPercent;
+    // While a finger is moving, the controls are hidden and rebuilding the
+    // entire reader for every percentage change only introduces jank. Keep
+    // the position current in memory, then refresh visible progress when the
+    // gesture settles or the anchored chapter actually changes.
+    final shouldRebuild =
+        chapterChanged || (settled && oldPercent != newPercent);
 
     void applyPosition() {
       _currentChapterIndex = chapterIndex;
