@@ -1,0 +1,11 @@
+{
+  "versionName": "4.1.18",
+  "versionCode": 56,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "7361BF3C0A5F3A28637FE77060DD9DEF5704F3AEE2F8C429080E5E515EA470D3",
+  "force": false,
+  "notes": [
+    "修复听书自动滚动误触发章节跳转的问题。",
+    "优化连续阅读回到上一章时的定位，默认从上一章结尾继续。"
+  ]
+}
