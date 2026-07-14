@@ -196,6 +196,10 @@ class _VideoScreenState extends State<VideoScreen>
                 itemBuilder: (context, index) => _VideoCard(
                   item: _items[index],
                   onTap: () => _open(_items[index]),
+                  resolveCover: () => _service.resolveCoverUrl(
+                    title: _items[index].title,
+                    itemKey: _items[index].detailUrl,
+                  ),
                 ),
               ),
       ),
@@ -215,10 +219,15 @@ class _VideoScreenState extends State<VideoScreen>
 }
 
 class _VideoCard extends StatelessWidget {
-  const _VideoCard({required this.item, required this.onTap});
+  const _VideoCard({
+    required this.item,
+    required this.onTap,
+    required this.resolveCover,
+  });
 
   final WuhandkyVideoItem item;
   final VoidCallback onTap;
+  final Future<String?> Function() resolveCover;
 
   @override
   Widget build(BuildContext context) {
@@ -234,7 +243,11 @@ class _VideoCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _VideoPoster(url: item.coverUrl),
+                  _VideoPoster(
+                    url: item.coverUrl,
+                    title: item.title,
+                    resolveCover: resolveCover,
+                  ),
                   if (item.note.isNotEmpty)
                     Positioned(
                       left: 0,
@@ -304,13 +317,23 @@ class _VideoCard extends StatelessWidget {
 }
 
 class _VideoPoster extends StatelessWidget {
-  const _VideoPoster({required this.url});
+  const _VideoPoster({
+    required this.url,
+    required this.title,
+    required this.resolveCover,
+  });
 
   final String url;
+  final String title;
+  final Future<String?> Function() resolveCover;
 
   @override
   Widget build(BuildContext context) {
-    return WuhandkyCoverImage(imageUrl: url);
+    return WuhandkyCoverImage(
+      imageUrl: url,
+      title: title,
+      resolveFallback: resolveCover,
+    );
   }
 }
 

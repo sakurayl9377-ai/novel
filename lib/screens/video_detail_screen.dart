@@ -150,7 +150,15 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               child: SizedBox(
                 width: 118,
                 height: 174,
-                child: WuhandkyCoverImage(imageUrl: detail.coverUrl),
+                child: WuhandkyCoverImage(
+                  imageUrl: detail.coverUrl,
+                  title: detail.title,
+                  resolveFallback: () => _service.resolveCoverUrl(
+                    title: detail.title,
+                    itemKey: detail.detailUrl,
+                    year: detail.year,
+                  ),
+                ),
               ),
             ),
             const SizedBox(width: 16),

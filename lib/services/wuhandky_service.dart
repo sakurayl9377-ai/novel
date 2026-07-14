@@ -5,9 +5,11 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 
 import '../models/wuhandky_video.dart';
+import 'interaction_auth_service.dart';
 import 'site_domain_service.dart';
 
 class WuhandkyService {
+  static final Map<String, String> _resolvedCoverCache = <String, String>{};
   static const Set<String> _httpImageHosts = {
     'pic.fzmmx.com',
     'pic.danzhoufdc.com',
@@ -78,6 +80,48 @@ class WuhandkyService {
       throw Exception('播放地址无效');
     }
     return uri.toString();
+  }
+
+  Future<String?> resolveCoverUrl({
+    required String title,
+    required String itemKey,
+    String year = '',
+  }) async {
+    final normalizedKey = itemKey.trim();
+    if (normalizedKey.isEmpty || title.trim().isEmpty) return null;
+    final cached = _resolvedCoverCache[normalizedKey];
+    if (cached != null) return cached.isEmpty ? null : cached;
+    try {
+      final uri =
+          Uri.parse(
+            '${InteractionAuthService.baseUrl}/video-covers/resolve',
+          ).replace(
+            queryParameters: {
+              'source': 'wuhandky',
+              'itemKey': normalizedKey,
+              'title': title.trim(),
+              if (year.trim().isNotEmpty) 'year': year.trim(),
+            },
+          );
+      final response = await http
+          .get(uri, headers: const {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+      final payload = jsonDecode(utf8.decode(response.bodyBytes));
+      if (payload is! Map) return null;
+      final coverUrl = payload['coverUrl']?.toString().trim() ?? '';
+      final parsed = Uri.tryParse(coverUrl);
+      if (parsed == null ||
+          !parsed.hasScheme ||
+          !{'http', 'https'}.contains(parsed.scheme)) {
+        _resolvedCoverCache[normalizedKey] = '';
+        return null;
+      }
+      _resolvedCoverCache[normalizedKey] = coverUrl;
+      return coverUrl;
+    } catch (_) {
+      return null;
+    }
   }
 
   List<WuhandkyVideoItem> parseList(String html, {Uri? baseUri}) {

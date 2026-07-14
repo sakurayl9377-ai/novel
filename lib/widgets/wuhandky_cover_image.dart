@@ -5,10 +5,14 @@ class WuhandkyCoverImage extends StatefulWidget {
   const WuhandkyCoverImage({
     super.key,
     required this.imageUrl,
+    this.title = '',
+    this.resolveFallback,
     this.fit = BoxFit.cover,
   });
 
   final String imageUrl;
+  final String title;
+  final Future<String?> Function()? resolveFallback;
   final BoxFit fit;
 
   static String? httpFallbackFor(String value) {
@@ -24,6 +28,8 @@ class WuhandkyCoverImage extends StatefulWidget {
 class _WuhandkyCoverImageState extends State<WuhandkyCoverImage> {
   late String _activeUrl;
   bool _fallbackScheduled = false;
+  bool _resolvedFallbackAttempted = false;
+  bool _resolvingFallback = false;
 
   @override
   void initState() {
@@ -37,6 +43,8 @@ class _WuhandkyCoverImageState extends State<WuhandkyCoverImage> {
     if (oldWidget.imageUrl != widget.imageUrl) {
       _activeUrl = widget.imageUrl.trim();
       _fallbackScheduled = false;
+      _resolvedFallbackAttempted = false;
+      _resolvingFallback = false;
     }
   }
 
@@ -59,18 +67,70 @@ class _WuhandkyCoverImageState extends State<WuhandkyCoverImage> {
           });
           return _placeholder();
         }
+        if (!_resolvedFallbackAttempted && widget.resolveFallback != null) {
+          _resolvedFallbackAttempted = true;
+          _scheduleResolvedFallback();
+          return _placeholder(showProgress: true);
+        }
         return _placeholder(showError: true);
       },
     );
   }
 
-  Widget _placeholder({bool showError = false}) {
+  void _scheduleResolvedFallback() {
+    if (_resolvingFallback) return;
+    _resolvingFallback = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final resolved = await widget.resolveFallback?.call();
+      if (!mounted) return;
+      final next = resolved?.trim() ?? '';
+      setState(() {
+        _resolvingFallback = false;
+        if (next.isNotEmpty && next != _activeUrl) {
+          _activeUrl = next;
+          _fallbackScheduled = false;
+        }
+      });
+    });
+  }
+
+  Widget _placeholder({bool showError = false, bool showProgress = false}) {
     return ColoredBox(
       color: const Color(0xFFE7E7E7),
       child: Center(
-        child: Icon(
-          showError ? Icons.broken_image_outlined : Icons.image_outlined,
-          color: const Color(0xFF757575),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: showProgress
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      showError
+                          ? Icons.broken_image_outlined
+                          : Icons.image_outlined,
+                      color: const Color(0xFF757575),
+                    ),
+                    if (showError && widget.title.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.title.trim(),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF666666),
+                          fontSize: 11,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
         ),
       ),
     );
