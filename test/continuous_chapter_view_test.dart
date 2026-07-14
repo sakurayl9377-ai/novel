@@ -13,7 +13,7 @@ void main() {
     );
   }
 
-  testWidgets('preloads adjacent chapters into one continuous scroll view', (
+  testWidgets('starts clean and preloads only the following chapter', (
     tester,
   ) async {
     final requestedIndexes = <int>[];
@@ -59,8 +59,9 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(requestedIndexes, containsAll(<int>[0, 2]));
-    expect(find.text('Chapter 0'), findsOneWidget);
+    expect(requestedIndexes, contains(2));
+    expect(requestedIndexes, isNot(contains(0)));
+    expect(find.text('Chapter 0'), findsNothing);
     expect(find.text('Chapter 1'), findsOneWidget);
     expect(find.text('Chapter 2'), findsOneWidget);
 

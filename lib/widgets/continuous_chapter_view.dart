@@ -58,6 +58,8 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
   bool _didRestoreInitialPosition = false;
   bool _isUserScrollGesture = false;
+  bool _allowPreviousChapterLoad = false;
+  bool _revealPreviousEndingAfterLoad = false;
   int? _lastReportedChapterIndex;
   int? _lastReportedCharPosition;
 
@@ -76,7 +78,10 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _restoreInitialPosition();
-      _preloadNeighbours(initialIndex);
+      // A fresh chapter should start cleanly at its own heading.  The
+      // previous chapter is loaded only after the reader intentionally swipes
+      // upward toward it; otherwise its ending appears above every new start.
+      _preloadNextChapter(initialIndex);
     });
   }
 
@@ -114,8 +119,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     return _sectionKeys.putIfAbsent(chapterIndex, GlobalKey.new);
   }
 
-  void _preloadNeighbours(int chapterIndex) {
-    unawaited(_loadChapter(chapterIndex - 1));
+  void _preloadNextChapter(int chapterIndex) {
     unawaited(_loadChapter(chapterIndex + 1));
   }
 
@@ -136,6 +140,11 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     final beforeOffset = _scrollController.hasClients
         ? _scrollController.offset
         : 0.0;
+    final revealPreviousEnding =
+        chapterIndex < anchorIndex && _revealPreviousEndingAfterLoad;
+    if (revealPreviousEnding) {
+      _revealPreviousEndingAfterLoad = false;
+    }
 
     try {
       final content = await widget.loadChapterContent(chapterIndex);
@@ -159,7 +168,10 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
           final delta = afterTop - beforeTop;
           if (delta.abs() >= 0.5) {
             final position = _scrollController.position;
-            final target = (beforeOffset + delta).clamp(
+            final revealOffset = revealPreviousEnding
+                ? position.viewportDimension * 0.65
+                : 0.0;
+            final target = (beforeOffset + delta - revealOffset).clamp(
               0.0,
               position.maxScrollExtent,
             );
@@ -167,6 +179,11 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
           }
         }
         _loadNearEdges(_scrollController.position);
+        if (revealPreviousEnding) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _reportReadingPosition(settled: true);
+          });
+        }
       });
     } catch (_) {
       if (mounted) _failedIndexes.add(chapterIndex);
@@ -225,23 +242,24 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       return;
     }
 
+    if (_isUserScrollGesture) return;
     final position = _scrollController.position;
     final ratio = (textOffset / content.length).clamp(0.0, 1.0);
-    final activeY = sectionTop + sectionHeight * ratio;
-    final viewportHeight = position.viewportDimension;
-
-    // TTS sends frequent word-level progress updates.  Only move when the
-    // active sentence has left the comfortable reading area; repeatedly
-    // animating to every word creates scroll notifications that can be
-    // mistaken for a manual cross-chapter swipe.
-    final upperBound = viewportHeight * 0.24;
-    final lowerBound = viewportHeight * 0.72;
-    if (activeY >= upperBound && activeY <= lowerBound) return;
-
-    final target = (position.pixels + activeY - viewportHeight * 0.46)
-        .clamp(0.0, position.maxScrollExtent)
-        .toDouble();
-    _scrollController.jumpTo(target);
+    final target =
+        (position.pixels +
+                sectionTop +
+                sectionHeight * ratio -
+                position.viewportDimension * _readingAnchorFraction)
+            .clamp(0.0, position.maxScrollExtent)
+            .toDouble();
+    if ((target - position.pixels).abs() < 2) return;
+    unawaited(
+      _scrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      ),
+    );
   }
 
   double? _sectionTopFor(int chapterIndex) {
@@ -325,7 +343,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   void _loadNearEdges(ScrollMetrics metrics) {
     final loaded = _loadedIndexes;
     if (loaded.isEmpty) return;
-    if (metrics.pixels <= _loadAheadExtent) {
+    if (_allowPreviousChapterLoad && metrics.pixels <= _loadAheadExtent) {
       unawaited(_loadChapter(loaded.first - 1));
     }
     if (metrics.maxScrollExtent - metrics.pixels <= _loadAheadExtent) {
@@ -333,9 +351,15 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     }
   }
 
+  void _requestPreviousFromUserGesture(ScrollMetrics metrics) {
+    _allowPreviousChapterLoad = true;
+    if (metrics.pixels <= 24) {
+      _revealPreviousEndingAfterLoad = true;
+    }
+  }
+
   bool _handleScrollNotification(ScrollNotification notification) {
     if (notification.depth != 0) return false;
-    _loadNearEdges(notification.metrics);
 
     // Only a real finger drag is allowed to change the active chapter and
     // saved reading position. Layout changes, chapter prefetch correction,
@@ -348,16 +372,27 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         _isUserScrollGesture = false;
       } else {
         _isUserScrollGesture = true;
+        if (notification.direction == ScrollDirection.forward) {
+          _requestPreviousFromUserGesture(notification.metrics);
+        }
       }
     } else if (notification is ScrollUpdateNotification &&
         notification.dragDetails != null) {
       _isUserScrollGesture = true;
+      if ((notification.scrollDelta ?? 0) < 0) {
+        _requestPreviousFromUserGesture(notification.metrics);
+      }
       _reportReadingPosition(settled: false);
+    } else if (notification is OverscrollNotification &&
+        notification.overscroll < 0) {
+      _isUserScrollGesture = true;
+      _requestPreviousFromUserGesture(notification.metrics);
     } else if (notification is ScrollEndNotification &&
         (_isUserScrollGesture || notification.dragDetails != null)) {
       _reportReadingPosition(settled: true);
       _isUserScrollGesture = false;
     }
+    _loadNearEdges(notification.metrics);
     return false;
   }
 
@@ -373,6 +408,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     final loading = _loadingIndexes.contains(target);
     final failed = _failedIndexes.contains(target);
+    if (!loading && !failed) return const SizedBox(height: 12);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 20),
       child: Center(
@@ -382,13 +418,10 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
                 icon: const Icon(Icons.refresh),
                 label: const Text('章节加载失败，点击重试'),
               )
-            : SizedBox(
+            : const SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: loading ? null : Colors.transparent,
-                ),
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
       ),
     );
