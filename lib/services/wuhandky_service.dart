@@ -12,6 +12,7 @@ class WuhandkyService {
   static const SiteDomainConfig _domain = SiteDomainConfig(
     key: 'video_wuhandky',
     primaryOrigin: 'https://www.wuhandky.com',
+    fallbackOrigins: ['http://www.wuhandky.com'],
   );
   static const Map<String, String> _headers = {
     'User-Agent':
@@ -157,14 +158,24 @@ class WuhandkyService {
   }
 
   Future<http.Response> _get(Uri uri) async {
-    final response = await _domainService.get(
-      _domain,
-      uri,
-      headers: _headers,
-      timeout: const Duration(seconds: 15),
-    );
-    _ensureSuccess(response);
-    return response;
+    try {
+      final response = await _domainService.get(
+        _domain,
+        uri,
+        headers: _headers,
+        timeout: const Duration(seconds: 15),
+      );
+      _ensureSuccess(response);
+      return response;
+    } catch (error) {
+      final message = error.toString().toLowerCase();
+      if (message.contains('handshake') ||
+          message.contains('certificate') ||
+          message.contains('tls')) {
+        throw Exception('影视源安全连接异常，请切换网络后重试');
+      }
+      rethrow;
+    }
   }
 
   void _ensureSuccess(http.Response response) {

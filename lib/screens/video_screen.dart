@@ -204,6 +204,12 @@ class _VideoScreenState extends State<VideoScreen>
 
   String _friendlyError(Object error) {
     final text = error.toString().replaceFirst('Exception: ', '');
+    final lower = text.toLowerCase();
+    if (lower.contains('handshake') ||
+        lower.contains('certificate') ||
+        lower.contains('tls')) {
+      return '影视源连接异常，已尝试兼容线路，请切换网络后重试';
+    }
     return text.isEmpty ? '影视源暂时不可用，请稍后重试' : text;
   }
 }
