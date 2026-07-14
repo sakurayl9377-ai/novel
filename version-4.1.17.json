@@ -1,0 +1,11 @@
+{
+  "versionName": "4.1.17",
+  "versionCode": 55,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "9955F4524A450BBDB80501792F48BCA03185F9D66BAB655FBF1ED7F514F7C7B5",
+  "force": false,
+  "notes": [
+    "小说阅读支持前后章节连续滚动，可无缝回看上一章结尾。",
+    "修复漫画切换章节时进度跳跃、页面乱跳和重复操作问题。"
+  ]
+}
