@@ -26,4 +26,15 @@ void main() {
       expect(source, isNot(contains('void _handleScrollChanged()')));
     },
   );
+
+  test('reader controls overlay content without resizing the viewport', () {
+    final source = File(
+      'lib/screens/manga_reader_screen.dart',
+    ).readAsStringSync();
+
+    expect(source, contains('if (_showBars) _buildTopControls()'));
+    expect(source, contains('if (_showBars) _buildBottomControls'));
+    expect(source, isNot(contains('bottomNavigationBar: _showBars')));
+    expect(source, isNot(contains('appBar: _showBars')));
+  });
 }

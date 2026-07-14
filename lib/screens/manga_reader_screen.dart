@@ -608,16 +608,53 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
 
     return Scaffold(
       backgroundColor: isNight ? AppTheme.nightBackground : Colors.black,
-      appBar: _showBars
-          ? AppBar(
-              backgroundColor: Colors.black,
-              foregroundColor: Colors.white,
-              title: Text(
-                '${widget.manga.title} ${_currentChapter.title}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              actions: [
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _toggleBars,
+        child: Stack(
+          children: [
+            Positioned.fill(child: _buildBody(isNight)),
+            if (_images.isNotEmpty && !_isLoading && _errorMessage == null)
+              _buildChapterProgressBadge(),
+            if (_showBars) _buildTopControls(),
+            if (_showBars) _buildBottomControls(canPrev, canNext),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopControls() {
+    return Positioned(
+      left: 0,
+      top: 0,
+      right: 0,
+      child: Material(
+        color: Colors.black,
+        child: SafeArea(
+          bottom: false,
+          child: SizedBox(
+            height: kToolbarHeight,
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: '返回',
+                  onPressed: () => Navigator.maybePop(context),
+                  color: Colors.white,
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                Expanded(
+                  child: Text(
+                    '${widget.manga.title} ${_currentChapter.title}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
                 IconButton(
                   tooltip: '章节评论',
                   onPressed: () {
@@ -636,75 +673,72 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
                       ),
                     );
                   },
+                  color: Colors.white,
                   icon: const Icon(Icons.chat_bubble_outline),
                 ),
                 IconButton(
                   tooltip: '章节目录',
                   onPressed: _chapters.isEmpty ? null : _showChapterSheet,
+                  color: Colors.white,
                   icon: const Icon(Icons.list),
                 ),
               ],
-            )
-          : null,
-      body: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _toggleBars,
-        child: Stack(
-          children: [
-            Positioned.fill(child: _buildBody(isNight)),
-            if (_images.isNotEmpty && !_isLoading && _errorMessage == null)
-              _buildChapterProgressBadge(),
-          ],
+            ),
+          ),
         ),
       ),
-      bottomNavigationBar: _showBars
-          ? SafeArea(
-              top: false,
-              child: Container(
-                height: 54,
-                color: Colors.black,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Row(
-                  children: [
-                    IconButton(
-                      tooltip: '上一章',
-                      onPressed: canPrev ? () => _changeChapter(-1) : null,
-                      icon: Icon(
-                        Icons.chevron_left,
-                        color: canPrev ? Colors.white : Colors.white38,
-                      ),
-                    ),
-                    Expanded(
-                      child: Text(
-                        '${_currentIndex + 1}/${_chapters.length} · ${_currentChapter.title}',
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: '下一章',
-                      onPressed: canNext ? () => _changeChapter(1) : null,
-                      icon: Icon(
-                        Icons.chevron_right,
-                        color: canNext ? Colors.white : Colors.white38,
-                      ),
-                    ),
-                  ],
+    );
+  }
+
+  Widget _buildBottomControls(bool canPrev, bool canNext) {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Material(
+        color: Colors.black,
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: 54,
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: '上一章',
+                  onPressed: canPrev ? () => _changeChapter(-1) : null,
+                  icon: Icon(
+                    Icons.chevron_left,
+                    color: canPrev ? Colors.white : Colors.white38,
+                  ),
                 ),
-              ),
-            )
-          : null,
+                Expanded(
+                  child: Text(
+                    '${_currentIndex + 1}/${_chapters.length} · ${_currentChapter.title}',
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '下一章',
+                  onPressed: canNext ? () => _changeChapter(1) : null,
+                  icon: Icon(
+                    Icons.chevron_right,
+                    color: canNext ? Colors.white : Colors.white38,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
   Widget _buildChapterProgressBadge() {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final bottom = _showBars ? 14.0 : bottomInset + 18.0;
+    final bottom = _showBars ? bottomInset + 68.0 : bottomInset + 18.0;
 
     return Positioned(
       right: 16,
