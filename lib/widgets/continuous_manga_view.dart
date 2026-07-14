@@ -110,7 +110,6 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   double _viewportWidth = 390;
   bool _isUserScrolling = false;
   bool _maintainingScrollOffset = false;
-  bool _allowPreviousChapterLoad = false;
   bool _revealPreviousEndingAfterLoad = false;
   bool _didRestore = false;
   int _activeChapterIndex = 0;
@@ -119,6 +118,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   int? _lastReportedPage;
   double? _lastReportedRatio;
   int _navigationGeneration = 0;
+  int _layoutGeneration = 0;
 
   @override
   void initState() {
@@ -142,6 +142,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   @override
   void dispose() {
     _navigationGeneration++;
+    _layoutGeneration++;
     widget.navigationController?._detach(this);
     _aspectRatioFlushTimer?.cancel();
     widget.controller.removeListener(_handleScrollChanged);
@@ -172,6 +173,9 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       return false;
     }
     final generation = ++_navigationGeneration;
+    ++_layoutGeneration;
+    _aspectRatioFlushTimer?.cancel();
+    _aspectRatioFlushTimer = null;
     var images = _loaded[chapterIndex];
     if (images == null) {
       try {
@@ -300,10 +304,12 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
         !widget.canLoadChapter(chapterIndex)) {
       return;
     }
+    final layoutGeneration = _layoutGeneration;
     _loading.add(chapterIndex);
     try {
       final images = await widget.loadChapterImages(chapterIndex);
       if (!mounted ||
+          layoutGeneration != _layoutGeneration ||
           images.isEmpty ||
           (chapterIndex - _activeChapterIndex).abs() > 2) {
         return;
@@ -319,7 +325,9 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
       setState(() => _loaded[chapterIndex] = List<String>.from(images));
       if (before) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !widget.controller.hasClients) {
+          if (!mounted ||
+              layoutGeneration != _layoutGeneration ||
+              !widget.controller.hasClients) {
             _maintainingScrollOffset = false;
             return;
           }
@@ -330,7 +338,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
             _correctScrollOffset(insertedExtent - revealOffset);
           }
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
+            if (!mounted || layoutGeneration != _layoutGeneration) return;
             _maintainingScrollOffset = false;
             if (!_flushPendingAspectRatios()) {
               _reportPosition(settled: !_isUserScrolling, force: true);
@@ -349,9 +357,6 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
     if (!widget.controller.hasClients) return;
     if (_maintainingScrollOffset) return;
     final position = widget.controller.position;
-    if (_allowPreviousChapterLoad && position.pixels <= _loadAheadExtent) {
-      unawaited(_loadAdjacent(_loaded.firstKey()! - 1, before: true));
-    }
     if (position.maxScrollExtent - position.pixels <= _loadAheadExtent) {
       unawaited(_loadAdjacent(_loaded.lastKey()! + 1, before: false));
     }
@@ -392,9 +397,8 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
   }
 
   void _requestPreviousChapter(ScrollMetrics metrics) {
-    _allowPreviousChapterLoad = true;
-    if (metrics.pixels <= 24) _revealPreviousEndingAfterLoad = true;
-    if (metrics.pixels <= _loadAheadExtent && _loaded.isNotEmpty) {
+    if (metrics.pixels <= 24 && _loaded.isNotEmpty) {
+      _revealPreviousEndingAfterLoad = true;
       unawaited(_loadAdjacent(_loaded.firstKey()! - 1, before: true));
     }
   }
@@ -405,9 +409,10 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
         _loaded.isEmpty) {
       return;
     }
-    final anchor =
-        widget.controller.offset +
-        widget.controller.position.viewportDimension * 0.35;
+    final anchor = widget.controller.offset <= 1
+        ? 0.0
+        : widget.controller.offset +
+              widget.controller.position.viewportDimension * 0.35;
     var cursor = 0.0;
     for (final entry in _loaded.entries) {
       final chapterIndex = entry.key;
@@ -465,6 +470,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
         .where((index) => (index - activeIndex).abs() > 2)
         .toList();
     if (remove.isEmpty || !widget.controller.hasClients) return;
+    final layoutGeneration = _layoutGeneration;
     final removedBefore = remove.any((index) => index < activeIndex);
     final removedBeforeExtent = remove
         .where((index) => index < activeIndex)
@@ -485,13 +491,15 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
     });
     if (!removedBefore) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !widget.controller.hasClients) {
+      if (!mounted ||
+          layoutGeneration != _layoutGeneration ||
+          !widget.controller.hasClients) {
         _maintainingScrollOffset = false;
         return;
       }
       _correctScrollOffset(-removedBeforeExtent);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted || layoutGeneration != _layoutGeneration) return;
         _maintainingScrollOffset = false;
         if (!_flushPendingAspectRatios()) {
           _reportPosition(settled: true, force: true);
@@ -580,6 +588,7 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
     bool reportSettled = false,
   }) {
     if (!mounted || ratios.isEmpty) return;
+    final layoutGeneration = _layoutGeneration;
     final entries = ratios.entries.toList()
       ..sort((a, b) {
         final chapterOrder = a.key.$1.compareTo(b.key.$1);
@@ -622,14 +631,16 @@ class _ContinuousMangaViewState extends State<ContinuousMangaView> {
     if (needsOffsetCorrection) _maintainingScrollOffset = true;
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !widget.controller.hasClients) {
+      if (!mounted ||
+          layoutGeneration != _layoutGeneration ||
+          !widget.controller.hasClients) {
         _maintainingScrollOffset = false;
         return;
       }
       if (needsOffsetCorrection) {
         _correctScrollOffset(correctedOffset - beforeOffset);
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
+          if (!mounted || layoutGeneration != _layoutGeneration) return;
           _maintainingScrollOffset = false;
           if (reportSettled) {
             _reportPosition(settled: true, force: true);

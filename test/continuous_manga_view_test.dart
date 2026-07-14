@@ -87,6 +87,7 @@ void main() {
       final controller = ScrollController();
       final loaded = <int>[];
       final reported = <int>[];
+      final reportedProgress = <int>[];
       const chapters = [
         MangaChapter(title: 'Chapter 1', url: 'https://example.com/1'),
         MangaChapter(title: 'Chapter 2', url: 'https://example.com/2'),
@@ -111,6 +112,7 @@ void main() {
                 },
                 onPositionChanged: (position) {
                   reported.add(position.chapterIndex);
+                  reportedProgress.add(position.progressPercent);
                 },
               ),
             ),
@@ -125,6 +127,7 @@ void main() {
       expect(controller.offset, 0);
       expect(reported, isNotEmpty);
       expect(reported.last, 1);
+      expect(reportedProgress.last, 0);
       expect(
         tester.getCenter(find.text('Chapter 2')).dy,
         closeTo(35, 3),
