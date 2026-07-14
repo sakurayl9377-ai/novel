@@ -1,6 +1,7 @@
 import { all, one, run } from "./db.js";
 import { grantReward } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
+import { resolveVideoCover } from "./video-cover-resolver.js";
 import {
   badRequest,
   optionalInt,
@@ -17,6 +18,26 @@ const autoBilibiliCacheTtlMs = 10 * 60 * 1000;
 const autoBilibiliCacheMaxEntries = 16;
 
 export async function contentRoutes(app) {
+  app.get("/video-covers/resolve", async (request, reply) => {
+    const limited = enforceRateLimits(request, reply, [
+      {
+        scope: "video_cover_resolve",
+        key: request.ip,
+        limit: 120,
+        windowMs: 5 * 60 * 1000,
+        error: "video_cover_rate_limited",
+      },
+    ]);
+    if (limited) return limited;
+    const query = request.query || {};
+    return resolveVideoCover({
+      sourceKey: optionalString(query.source, 40) || "wuhandky",
+      itemKey: requiredString(query.itemKey, "itemKey", 500),
+      title: requiredString(query.title, "title", 200),
+      year: optionalString(query.year, 10),
+    });
+  });
+
   app.get("/comments", async (request) => {
     const query = request.query || {};
     const targetType = parseTargetType(query.targetType || query.type);
