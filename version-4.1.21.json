@@ -1,0 +1,12 @@
+{
+  "versionName": "4.1.21",
+  "versionCode": 59,
+  "apkUrl": "https://49.232.137.85/app3/app-release.apk",
+  "sha256": "5E40C5F5BFAD58F19694EADC53469CDC08BADA96440839F4805A443625CDF4A9",
+  "force": false,
+  "notes": [
+    "修复部分手机网络打开影视栏目时出现 TLS Handshake BAD_SIGNATURE 的问题。",
+    "影视源 HTTPS 握手失败时自动切换兼容线路并记住可用地址。",
+    "连接失败时显示清晰的中文提示，不再暴露底层英文错误。"
+  ]
+}
