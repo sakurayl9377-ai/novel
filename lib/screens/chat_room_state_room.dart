@@ -4,6 +4,7 @@ abstract class _ChatRoomRoomState extends _ChatRoomComposerState {
   @override
   Future<void> _loadRoomSnapshot({required bool showError}) async {
     if (_isLoadingRoomSnapshot) return;
+    final membershipRevision = _roomMembershipRevision;
     if (mounted) setState(() => _isLoadingRoomSnapshot = true);
     try {
       final auth = context.read<InteractionAuthProvider>();
@@ -11,13 +12,17 @@ abstract class _ChatRoomRoomState extends _ChatRoomComposerState {
         roomId: widget.roomId,
         token: auth.token,
       );
-      if (!mounted) return;
+      if (!mounted || membershipRevision != _roomMembershipRevision) return;
       setState(() {
         _roomSnapshot = found;
         _isJoinedRoom = found.isJoined;
       });
     } catch (_) {
-      if (mounted && showError) _showMessage('聊天室信息加载失败');
+      if (mounted &&
+          showError &&
+          membershipRevision == _roomMembershipRevision) {
+        _showMessage('聊天室信息加载失败');
+      }
     } finally {
       if (mounted) setState(() => _isLoadingRoomSnapshot = false);
     }
@@ -94,9 +99,11 @@ abstract class _ChatRoomRoomState extends _ChatRoomComposerState {
       );
       if (!mounted) return;
       setState(() {
+        _roomMembershipRevision += 1;
         _roomSnapshot = joined;
         _isJoinedRoom = true;
       });
+      unawaited(_connect(announceEntrance: true));
       _showMessage('已加入聊天室');
     } catch (error) {
       if (!mounted) return;
@@ -119,9 +126,11 @@ abstract class _ChatRoomRoomState extends _ChatRoomComposerState {
       );
       if (!mounted) return;
       setState(() {
+        _roomMembershipRevision += 1;
         _roomSnapshot = left;
         _isJoinedRoom = false;
       });
+      _disconnectChat();
       _showMessage('已退出聊天室');
     } catch (error) {
       if (!mounted) return;

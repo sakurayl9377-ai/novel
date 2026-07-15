@@ -163,6 +163,14 @@ void main() {
             type: LibraryItemType.manga,
           ),
         );
+        await database.saveDownloadItem(
+          _download(
+            'manga-running',
+            updatedAtMs: 50,
+            status: 'downloading',
+            type: LibraryItemType.manga,
+          ),
+        );
 
         final recovered = await database.recoverInterruptedDownloads();
 
@@ -181,6 +189,10 @@ void main() {
         expect(
           recovered.singleWhere((item) => item.id == 'manga').status,
           'done',
+        );
+        expect(
+          recovered.singleWhere((item) => item.id == 'manga-running').status,
+          'queued',
         );
       },
     );

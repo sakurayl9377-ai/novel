@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../models/interaction_user.dart';
 import '../services/app_install_report_service.dart';
 import '../services/app_telemetry_service.dart';
+import '../services/auth_session_storage.dart';
 import '../services/interaction_auth_service.dart';
 import '../services/progress_sync_service.dart';
 import '../services/storage_service.dart';
@@ -14,16 +15,20 @@ class InteractionAuthProvider extends ChangeNotifier {
   InteractionAuthProvider({
     InteractionAuthService? authService,
     AppInstallReportService? appInstallReportService,
+    AuthSessionStorage? sessionStorage,
   }) : _authService = authService ?? InteractionAuthService(),
        _appInstallReportService =
-           appInstallReportService ?? AppInstallReportService();
+           appInstallReportService ?? AppInstallReportService(),
+       _sessionStorage = sessionStorage ?? SecureAuthSessionStorage();
 
   static const String _tokenKey = 'interaction_auth_token';
   static const String _userKey = 'interaction_auth_user';
   static const String _accountsKey = 'interaction_auth_accounts';
+  static const String _sessionKey = 'interaction_auth_session_v2';
 
   final InteractionAuthService _authService;
   final AppInstallReportService _appInstallReportService;
+  final AuthSessionStorage _sessionStorage;
   final StorageService _storage = StorageService();
 
   bool _isLoading = false;
@@ -40,15 +45,10 @@ class InteractionAuthProvider extends ChangeNotifier {
   Future<void> loadSession() async {
     _setLoading(true);
     try {
-      _token = _storage.getString(_tokenKey) ?? '';
-      final userJson = _storage.getString(_userKey);
-      if (userJson != null) {
-        final decoded = jsonDecode(userJson);
-        if (decoded is Map) {
-          _user = InteractionUser.fromJson(decoded.cast<String, dynamic>());
-        }
-      }
-      _accounts = _readAccounts();
+      final persisted = await _loadPersistedSession();
+      _token = persisted.token;
+      _user = persisted.user;
+      _accounts = persisted.accounts;
       if (_token.isNotEmpty) {
         try {
           _user = await _authService.me(_token);
@@ -159,14 +159,17 @@ class InteractionAuthProvider extends ChangeNotifier {
       _upsertCurrentAccount();
       await _saveSession();
       _scheduleAppInstallReport();
-    } catch (_) {
-      _accounts = _accounts
-          .where(
-            (item) =>
-                item.token != account.token && item.user.id != account.user.id,
-          )
-          .toList();
-      await _saveAccounts();
+    } on InteractionAuthException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        _accounts = _accounts
+            .where(
+              (item) =>
+                  item.token != account.token &&
+                  item.user.id != account.user.id,
+            )
+            .toList();
+        await _saveAccounts();
+      }
       rethrow;
     } finally {
       _setLoading(false);
@@ -198,9 +201,10 @@ class InteractionAuthProvider extends ChangeNotifier {
     final userId = _user?.id;
     if (userId != null) {
       _accounts = _accounts.where((item) => item.user.id != userId).toList();
-      await _saveAccounts();
     }
-    await clearSession();
+    _token = '';
+    _user = null;
+    await _persistClearedSession();
     if (token.isNotEmpty) {
       try {
         await _authService.logout(token);
@@ -213,41 +217,66 @@ class InteractionAuthProvider extends ChangeNotifier {
   Future<void> clearSession() async {
     _token = '';
     _user = null;
+    await _persistClearedSession();
+  }
+
+  Future<void> _persistClearedSession() async {
     ProgressSyncService.instance.clearSession();
     AppTelemetryService.instance.setAuthToken('');
-    await _storage.remove(_tokenKey);
-    await _storage.remove(_userKey);
+    try {
+      await _writeSessionEnvelope();
+    } catch (_) {
+      // A logout must not resurrect an old token on the next launch. If the
+      // updated envelope cannot be written, remove it even though this also
+      // discards the saved account switcher list.
+      await _sessionStorage.delete(_sessionKey);
+    }
+    await _removeLegacySessionValues();
     notifyListeners();
   }
 
   Future<void> _saveSession() async {
-    await _storage.setString(_tokenKey, _token);
-    final user = _user;
-    if (user != null) {
-      await _storage.setString(_userKey, jsonEncode(user.toJson()));
-    }
-    await _saveAccounts();
+    await _writeSessionEnvelope();
+    await _removeLegacySessionValues();
     notifyListeners();
   }
 
-  List<InteractionAccountSession> _readAccounts() {
-    final raw = _storage.getString(_accountsKey);
-    if (raw == null || raw.isEmpty) return const [];
+  InteractionUser? _readUser(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is! List) return const [];
-      return decoded
-          .whereType<Map>()
-          .map(
-            (item) => InteractionAccountSession.fromJson(
-              item.cast<String, dynamic>(),
-            ),
-          )
-          .where((item) => item.token.isNotEmpty && item.user.id > 0)
-          .toList();
+      if (decoded is! Map) return null;
+      return InteractionUser.fromJson(decoded.cast<String, dynamic>());
     } catch (_) {
-      return const [];
+      return null;
     }
+  }
+
+  List<InteractionAccountSession>? _readAccounts(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is List ? _decodeAccounts(decoded) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<InteractionAccountSession>? _decodeAccounts(List<dynamic> decoded) {
+    final accounts = <InteractionAccountSession>[];
+    for (final item in decoded) {
+      if (item is! Map) return null;
+      try {
+        final account = InteractionAccountSession.fromJson(
+          item.cast<String, dynamic>(),
+        );
+        if (account.token.isEmpty || account.user.id <= 0) return null;
+        accounts.add(account);
+      } catch (_) {
+        return null;
+      }
+    }
+    return accounts;
   }
 
   void _upsertCurrentAccount() {
@@ -261,10 +290,100 @@ class InteractionAuthProvider extends ChangeNotifier {
   }
 
   Future<void> _saveAccounts() async {
-    await _storage.setString(
-      _accountsKey,
-      jsonEncode(_accounts.map((item) => item.toJson()).toList()),
+    await _writeSessionEnvelope();
+    await _removeLegacySessionValues();
+  }
+
+  Future<_PersistedAuthSession> _loadPersistedSession() async {
+    final envelopeRaw = await _sessionStorage.read(_sessionKey);
+    final envelope = _decodeSessionEnvelope(envelopeRaw);
+
+    final secureToken = await _sessionStorage.read(_tokenKey);
+    final secureUserJson = await _sessionStorage.read(_userKey);
+    final secureAccountsJson = await _sessionStorage.read(_accountsKey);
+    final legacyToken = _storage.getString(_tokenKey);
+    final legacyUserJson = _storage.getString(_userKey);
+    final legacyAccountsJson = _storage.getString(_accountsKey);
+    final hasOldValues =
+        secureToken != null ||
+        secureUserJson != null ||
+        secureAccountsJson != null ||
+        legacyToken != null ||
+        legacyUserJson != null ||
+        legacyAccountsJson != null;
+    if (envelope != null) {
+      if (hasOldValues) await _removeLegacySessionValues();
+      return envelope;
+    }
+
+    final token = secureToken?.isNotEmpty == true
+        ? secureToken!
+        : legacyToken ?? '';
+    final user = _readUser(secureUserJson) ?? _readUser(legacyUserJson);
+    final accounts =
+        _readAccounts(secureAccountsJson) ??
+        _readAccounts(legacyAccountsJson) ??
+        const <InteractionAccountSession>[];
+    final migrated = _PersistedAuthSession(
+      token: token,
+      user: user,
+      accounts: accounts,
     );
+    if (envelopeRaw != null || hasOldValues) {
+      await _writeSessionEnvelope(migrated);
+      await _removeLegacySessionValues();
+    }
+    return migrated;
+  }
+
+  _PersistedAuthSession? _decodeSessionEnvelope(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['version'] != 2) return null;
+      final token = decoded['token'];
+      final rawUser = decoded['user'];
+      final rawAccounts = decoded['accounts'];
+      if (token is! String || rawAccounts is! List) return null;
+      final user = rawUser == null
+          ? null
+          : rawUser is Map
+          ? InteractionUser.fromJson(rawUser.cast<String, dynamic>())
+          : throw const FormatException('Invalid saved user');
+      final accounts = _decodeAccounts(rawAccounts);
+      if (accounts == null) throw const FormatException('Invalid accounts');
+      return _PersistedAuthSession(
+        token: token,
+        user: user,
+        accounts: accounts,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeSessionEnvelope([_PersistedAuthSession? value]) {
+    final session =
+        value ??
+        _PersistedAuthSession(token: _token, user: _user, accounts: _accounts);
+    return _sessionStorage.write(
+      _sessionKey,
+      jsonEncode({
+        'version': 2,
+        'token': session.token,
+        'user': session.user?.toJson(),
+        'accounts': session.accounts.map((item) => item.toJson()).toList(),
+      }),
+    );
+  }
+
+  Future<void> _removeLegacySessionValues() async {
+    await _sessionStorage.delete(_tokenKey);
+    await _sessionStorage.delete(_userKey);
+    await _sessionStorage.delete(_accountsKey);
+    await _storage.remove(_tokenKey);
+    await _storage.remove(_userKey);
+    await _storage.remove(_accountsKey);
   }
 
   void _scheduleAppInstallReport() {
@@ -295,4 +414,16 @@ class InteractionAuthProvider extends ChangeNotifier {
     _isLoading = value;
     notifyListeners();
   }
+}
+
+class _PersistedAuthSession {
+  const _PersistedAuthSession({
+    required this.token,
+    required this.user,
+    required this.accounts,
+  });
+
+  final String token;
+  final InteractionUser? user;
+  final List<InteractionAccountSession> accounts;
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -320,6 +321,93 @@ void main() {
       expect(await database.get(guestOnly, ownerUserId: 'user-b'), isNull);
     });
 
+    test('rolls back guest adoption when the session becomes stale', () async {
+      final identities = [
+        ContentIdentity.manga('guest-race-a'),
+        ContentIdentity.manga('guest-race-b'),
+      ];
+      for (var index = 0; index < identities.length; index++) {
+        await database.saveLocal(
+          ownerUserId: ProgressOwner.guest,
+          identity: identities[index],
+          subItemId: '第${index + 1}话',
+          payload: {'pageIndex': index},
+          metadata: const {},
+          deviceId: 'guest-device',
+          clientUpdatedAtMs: 400 + index,
+        );
+      }
+      var activeChecks = 0;
+
+      final adopted = await database.adoptGuestProgress(
+        'old-user',
+        isSessionActive: () {
+          activeChecks += 1;
+          return activeChecks < 5;
+        },
+      );
+
+      expect(adopted, isFalse);
+      expect(activeChecks, 5);
+      for (final identity in identities) {
+        expect(
+          await database.get(identity, ownerUserId: ProgressOwner.guest),
+          isNotNull,
+        );
+        expect(await database.get(identity, ownerUserId: 'old-user'), isNull);
+      }
+    });
+
+    test('invalidates an in-flight guest adoption on logout', () async {
+      final adoptionDatabase = _BlockingAdoptionDatabase();
+      final api = _CountingApi();
+      final service = ProgressSyncService(database: adoptionDatabase, api: api);
+
+      service.bindSession(token: 'old-token', userId: 'old-user');
+      await adoptionDatabase.started.future;
+      service.clearSession();
+      adoptionDatabase.release.complete();
+      await adoptionDatabase.finished.future;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(adoptionDatabase.wasActiveWhenReleased, isFalse);
+      expect(api.pullAttempts, 0);
+      expect(api.pushAttempts, 0);
+      expect(service.activeUserId, isNull);
+    });
+
+    test(
+      'invalidates the old guest adoption after an account switch',
+      () async {
+        final adoptionDatabase = _SwitchingAdoptionDatabase();
+        final api = _CountingApi();
+        final service = ProgressSyncService(
+          database: adoptionDatabase,
+          api: api,
+        );
+
+        service.bindSession(token: 'old-token', userId: 'old-user');
+        await adoptionDatabase.firstStarted.future;
+        service.bindSession(token: 'new-token', userId: 'new-user');
+        await adoptionDatabase.secondStarted.future;
+
+        expect(adoptionDatabase.firstSessionActive?.call(), isFalse);
+        expect(adoptionDatabase.secondSessionActive?.call(), isTrue);
+
+        service.clearSession();
+        adoptionDatabase.releaseFirst.complete();
+        adoptionDatabase.releaseSecond.complete();
+        await Future.wait([
+          adoptionDatabase.firstFinished.future,
+          adoptionDatabase.secondFinished.future,
+        ]);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(api.pullAttempts, 0);
+        expect(api.pushAttempts, 0);
+      },
+    );
+
     test(
       'keeps dirty rows after an offline failure and retries them',
       () async {
@@ -443,5 +531,85 @@ class _RetryApi implements ProgressSyncApi {
     pushAttempts += 1;
     if (pushAttempts == 1) throw StateError('offline');
     return const ProgressSyncPage(cursor: 'c-1', items: [], hasMore: false);
+  }
+}
+
+class _BlockingAdoptionDatabase extends ProgressDatabase {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> release = Completer<void>();
+  final Completer<void> finished = Completer<void>();
+  bool? wasActiveWhenReleased;
+
+  @override
+  Future<bool> adoptGuestProgress(
+    String userId, {
+    bool Function()? isSessionActive,
+  }) async {
+    started.complete();
+    await release.future;
+    wasActiveWhenReleased = isSessionActive?.call();
+    finished.complete();
+    return false;
+  }
+}
+
+class _SwitchingAdoptionDatabase extends ProgressDatabase {
+  final Completer<void> firstStarted = Completer<void>();
+  final Completer<void> secondStarted = Completer<void>();
+  final Completer<void> releaseFirst = Completer<void>();
+  final Completer<void> releaseSecond = Completer<void>();
+  final Completer<void> firstFinished = Completer<void>();
+  final Completer<void> secondFinished = Completer<void>();
+  bool Function()? firstSessionActive;
+  bool Function()? secondSessionActive;
+  int _calls = 0;
+
+  @override
+  Future<bool> adoptGuestProgress(
+    String userId, {
+    bool Function()? isSessionActive,
+  }) async {
+    _calls += 1;
+    if (_calls == 1) {
+      firstSessionActive = isSessionActive;
+      firstStarted.complete();
+      await releaseFirst.future;
+      firstFinished.complete();
+      return false;
+    }
+    if (_calls == 2) {
+      secondSessionActive = isSessionActive;
+      secondStarted.complete();
+      await releaseSecond.future;
+      secondFinished.complete();
+      return false;
+    }
+    throw StateError('Unexpected adoption call $_calls');
+  }
+}
+
+class _CountingApi implements ProgressSyncApi {
+  int pullAttempts = 0;
+  int pushAttempts = 0;
+
+  @override
+  Future<ProgressSyncPage> pull({
+    required String token,
+    required String cursor,
+    required int limit,
+  }) async {
+    pullAttempts += 1;
+    return ProgressSyncPage(cursor: cursor, items: const [], hasMore: false);
+  }
+
+  @override
+  Future<ProgressSyncPage> push({
+    required String token,
+    required String deviceId,
+    required String cursor,
+    required List<ContentProgressRecord> items,
+  }) async {
+    pushAttempts += 1;
+    return ProgressSyncPage(cursor: cursor, items: const [], hasMore: false);
   }
 }

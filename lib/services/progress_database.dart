@@ -441,27 +441,49 @@ class ProgressDatabase {
     );
   }
 
-  Future<bool> adoptGuestProgress(String userId) async {
+  Future<bool> adoptGuestProgress(
+    String userId, {
+    bool Function()? isSessionActive,
+  }) async {
     if (userId.isEmpty || userId == ProgressOwner.guest) return false;
     await init();
-    return _db.transaction((transaction) async {
-      final rows = await transaction.query(
-        'content_progress',
-        where: 'owner_user_id = ?',
-        whereArgs: [ProgressOwner.guest],
-        orderBy: 'client_updated_at_ms ASC',
-      );
-      if (rows.isEmpty) return false;
-      for (final row in rows) {
-        await _upsert(transaction, _fromRow(row).copyWith(ownerUserId: userId));
+    void ensureSessionActive() {
+      if (isSessionActive?.call() == false) {
+        throw const _GuestProgressAdoptionCancelled();
       }
-      await transaction.delete(
-        'content_progress',
-        where: 'owner_user_id = ?',
-        whereArgs: [ProgressOwner.guest],
-      );
-      return true;
-    });
+    }
+
+    try {
+      ensureSessionActive();
+      return await _db.transaction((transaction) async {
+        ensureSessionActive();
+        final rows = await transaction.query(
+          'content_progress',
+          where: 'owner_user_id = ?',
+          whereArgs: [ProgressOwner.guest],
+          orderBy: 'client_updated_at_ms ASC',
+        );
+        ensureSessionActive();
+        if (rows.isEmpty) return false;
+        for (final row in rows) {
+          ensureSessionActive();
+          await _upsert(
+            transaction,
+            _fromRow(row).copyWith(ownerUserId: userId),
+          );
+          ensureSessionActive();
+        }
+        await transaction.delete(
+          'content_progress',
+          where: 'owner_user_id = ?',
+          whereArgs: [ProgressOwner.guest],
+        );
+        ensureSessionActive();
+        return true;
+      });
+    } on _GuestProgressAdoptionCancelled {
+      return false;
+    }
   }
 
   Future<List<ContentProgressRecord>> claimDirty(
@@ -797,7 +819,7 @@ class ProgressDatabase {
         'download_items',
         {'status': 'queued', 'error_message': '', 'updated_at_ms': now},
         where:
-            "item_type = 'anime' AND (status = 'downloading' OR (status = 'saved' AND local_path = ''))",
+            "status = 'downloading' OR (status = 'saved' AND local_path = '')",
       );
     });
     return listDownloadItems();
@@ -1173,4 +1195,8 @@ class ProgressDatabase {
       return const {};
     }
   }
+}
+
+class _GuestProgressAdoptionCancelled implements Exception {
+  const _GuestProgressAdoptionCancelled();
 }

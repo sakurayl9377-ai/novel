@@ -38,6 +38,7 @@ abstract class _ChatRoomConnectionState extends State<ChatRoomScreen> {
   int _entranceSerial = 0;
   ChatRoomInfo? _roomSnapshot;
   bool _isLoadingRoomSnapshot = false;
+  int _roomMembershipRevision = 0;
   bool _isLoadingOlderMessages = false;
   bool _hasMoreHistoryMessages = true;
   int _oldestMessageId = 0;
@@ -54,10 +55,12 @@ abstract class _ChatRoomConnectionState extends State<ChatRoomScreen> {
   void initState() {
     super.initState();
     _controller.addListener(_handleInputChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      unawaited(_loadRoomSnapshot(showError: false));
-      unawaited(_connect(announceEntrance: true));
+      await _loadRoomSnapshot(showError: false);
+      if (mounted && _isJoinedRoom) {
+        unawaited(_connect(announceEntrance: true));
+      }
     });
   }
 
@@ -86,6 +89,7 @@ abstract class _ChatRoomConnectionState extends State<ChatRoomScreen> {
     bool announceEntrance = false,
     bool silent = false,
   }) async {
+    if (!_isJoinedRoom) return;
     final auth = context.read<InteractionAuthProvider>();
     if (!auth.isLoggedIn) {
       await Navigator.push(
@@ -133,6 +137,11 @@ abstract class _ChatRoomConnectionState extends State<ChatRoomScreen> {
         },
         onDone: () {
           if (!mounted || serial != _connectionSerial) return;
+          if (channel.closeCode == WebSocketStatus.policyViolation) {
+            _disconnectChat();
+            unawaited(_loadRoomSnapshot(showError: false));
+            return;
+          }
           _scheduleReconnect(serial);
         },
       );
@@ -163,13 +172,27 @@ abstract class _ChatRoomConnectionState extends State<ChatRoomScreen> {
   }
 
   void _scheduleReconnect(int serial) {
-    if (!mounted || serial != _connectionSerial) return;
+    if (!mounted || !_isJoinedRoom || serial != _connectionSerial) return;
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(const Duration(seconds: 2), () {
-      if (!mounted || serial != _connectionSerial) return;
+      if (!mounted || !_isJoinedRoom || serial != _connectionSerial) return;
       unawaited(_connect(silent: true));
     });
+  }
+
+  void _disconnectChat() {
+    _connectionSerial++;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    final subscription = _subscription;
+    _subscription = null;
+    if (subscription != null) unawaited(subscription.cancel());
+    final channel = _channel;
+    _channel = null;
+    if (channel != null) unawaited(channel.sink.close());
   }
 
   void _handleMessage(dynamic raw) {

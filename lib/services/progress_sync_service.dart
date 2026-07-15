@@ -159,6 +159,7 @@ class ProgressSyncService {
 
   String _activeToken = '';
   String _activeUserId = '';
+  int _sessionGeneration = 0;
   DateTime? _lastAttemptAt;
   Future<void> _syncChain = Future<void>.value();
   Timer? _localMutationTimer;
@@ -169,13 +170,18 @@ class ProgressSyncService {
 
   void bindSession({required String token, required String userId}) {
     final ownerChanged = _activeUserId != userId;
+    _sessionGeneration += 1;
+    final generation = _sessionGeneration;
     _activeToken = token;
     _activeUserId = userId;
     if (ownerChanged) revision.value += 1;
-    unawaited(_adoptGuestAndSync(token: token, userId: userId));
+    unawaited(
+      _adoptGuestAndSync(token: token, userId: userId, generation: generation),
+    );
   }
 
   void clearSession() {
+    _sessionGeneration += 1;
     _activeToken = '';
     _activeUserId = '';
     _localMutationTimer?.cancel();
@@ -193,10 +199,19 @@ class ProgressSyncService {
   Future<void> _adoptGuestAndSync({
     required String token,
     required String userId,
+    required int generation,
   }) async {
-    final adopted = await _database.adoptGuestProgress(userId);
+    bool isSessionActive() =>
+        generation == _sessionGeneration &&
+        _activeToken == token &&
+        _activeUserId == userId;
+
+    final adopted = await _database.adoptGuestProgress(
+      userId,
+      isSessionActive: isSessionActive,
+    );
+    if (!isSessionActive()) return;
     if (adopted) revision.value += 1;
-    if (_activeToken != token || _activeUserId != userId) return;
     await syncInBackground(force: true);
   }
 
