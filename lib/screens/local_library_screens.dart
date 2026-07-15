@@ -4,6 +4,7 @@ import '../config/theme.dart';
 import '../models/anime.dart';
 import '../models/anime_watch_history.dart';
 import '../models/local_library.dart';
+import '../models/manga.dart';
 import '../models/manga_read_history.dart';
 import '../services/storage_service.dart';
 import '../services/download_manager_service.dart';
@@ -11,6 +12,7 @@ import 'anime_detail_screen.dart';
 import 'anime_player_screen.dart';
 import 'anime_screen.dart';
 import 'manga_detail_screen.dart';
+import 'manga_reader_screen.dart';
 import 'manga_screen.dart';
 
 class FavoritesScreen extends StatefulWidget {
@@ -299,6 +301,7 @@ class DownloadsScreen extends StatefulWidget {
 
 class _DownloadsScreenState extends State<DownloadsScreen> {
   final DownloadManagerService _manager = DownloadManagerService.instance;
+  final StorageService _storageService = StorageService();
 
   @override
   void initState() {
@@ -320,7 +323,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('清空下载记录'),
-        content: const Text('会删除下载记录和已缓存的离线视频文件，确定继续吗？'),
+        content: const Text('会删除下载记录和所有离线文件，确定继续吗？'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -385,11 +388,70 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
       );
       return;
     }
+    if (!item.isPlayable) {
+      if (item.status == 'paused' ||
+          item.status == 'failed' ||
+          item.status == 'partial') {
+        await _manager.resume(item.id);
+        if (mounted) {
+          _showMessage(item.status == 'failed' ? '已重新开始下载' : '已继续下载');
+        }
+      } else {
+        _showMessage(_statusLabel(item));
+      }
+      return;
+    }
+    if (!await _manager.validatePlayable(item)) {
+      await _manager.resume(item.id);
+      if (mounted) _showMessage('离线漫画文件不完整，已重新加入下载队列');
+      return;
+    }
+    final pages = await _manager.loadMangaPagePaths(item);
+    if (pages.isEmpty || !mounted) {
+      await _manager.resume(item.id);
+      if (mounted) _showMessage('离线漫画文件不可用，已重新加入下载队列');
+      return;
+    }
+    final chapter = MangaChapter(
+      title: item.chapterTitle,
+      url: item.chapterUrl,
+    );
+    MangaReadHistory? existingHistory;
+    try {
+      final histories = await _storageService.getMangaReadHistory();
+      for (final history in histories) {
+        if (history.mangaId == item.itemId) {
+          existingHistory = history;
+          break;
+        }
+      }
+    } catch (_) {
+      // Offline reading must still open if history metadata is unavailable.
+    }
+    if (!mounted) return;
+    final manga = Manga(
+      id: item.itemId,
+      title: item.title,
+      coverUrl: item.coverUrl,
+      author: item.subtitle,
+      chapters: [chapter],
+    );
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            MangaDetailScreen(mangaId: item.itemId, title: item.title),
+        settings: const RouteSettings(name: MangaReaderScreen.routeName),
+        builder: (_) => MangaReaderScreen(
+          manga: manga,
+          chapter: chapter,
+          chapterIndex: 0,
+          chapterImageLoader: (_) async => pages,
+          canLoadChapterOverride: (_) => true,
+          warmVisiblePage: false,
+          historyChapterIndexOverride: item.chapterIndex,
+          historyChaptersOverride: existingHistory?.chapters.isNotEmpty == true
+              ? existingHistory!.chapters
+              : [chapter],
+        ),
       ),
     );
   }
@@ -456,8 +518,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (item.type == LibraryItemType.anime &&
-                          item.status != 'done')
+                      if (item.status != 'done')
                         IconButton(
                           tooltip:
                               item.status == 'downloading' ||
@@ -510,8 +571,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
         return '已暂停';
       case 'failed':
         return '下载失败';
+      case 'partial':
+        return '下载未完成';
       case 'done':
-        return '已完成，可离线播放';
+        return '已完成，可离线打开';
       default:
         return item.status.isEmpty ? '等待下载' : item.status;
     }

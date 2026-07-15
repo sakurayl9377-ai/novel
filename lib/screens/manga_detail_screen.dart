@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
@@ -11,6 +10,7 @@ import '../design/widgets/immersive_detail.dart';
 import '../models/local_library.dart';
 import '../models/manga.dart';
 import '../models/manga_read_history.dart';
+import '../services/download_manager_service.dart';
 import '../services/manga_service.dart';
 import '../services/storage_service.dart';
 import '../utils/auth_gate.dart';
@@ -234,74 +234,21 @@ class _MangaDetailScreenState extends State<MangaDetailScreen> {
     if (chapter == null) return;
 
     setState(() => _isDownloadingChapter = true);
-    _showMessage('正在缓存 ${chapter.title}');
-    var cachedCount = 0;
-    var totalCount = 0;
+    _showMessage('已加入下载队列：${chapter.title}');
     try {
-      final images = await _service.fetchChapterImages(chapter);
-      totalCount = images.length;
-      for (final imageUrl in images) {
-        if (!mounted) break;
-        await _cacheMangaImage(imageUrl, chapter.url);
-        cachedCount++;
-      }
-      final now = DateTime.now().millisecondsSinceEpoch;
       final chapterIndex = manga.chapters.indexWhere(
         (item) => item.url == chapter.url,
       );
-      await _storageService.saveDownloadItem(
-        DownloadItem(
-          id: 'manga_${manga.id}_${chapter.url.hashCode.abs()}',
-          type: LibraryItemType.manga,
-          itemId: manga.id,
-          title: manga.title,
-          coverUrl: manga.coverUrl,
-          subtitle: manga.author,
-          chapterTitle: chapter.title,
-          chapterUrl: chapter.url,
-          chapterIndex: chapterIndex < 0 ? 0 : chapterIndex,
-          totalCount: totalCount,
-          cachedCount: cachedCount,
-          status: cachedCount >= totalCount ? 'done' : 'partial',
-          createdAtMs: now,
-          updatedAtMs: now,
-        ),
+      await DownloadManagerService.instance.enqueueMangaChapter(
+        manga: manga,
+        chapter: chapter,
+        chapterIndex: chapterIndex < 0 ? 0 : chapterIndex,
       );
-      if (mounted) _showMessage('已缓存 ${chapter.title}');
+      if (mounted) _showMessage('正在下载 ${chapter.title}，可在“我的下载”中管理');
     } catch (_) {
       if (mounted) _showMessage('下载失败，请稍后重试');
     } finally {
       if (mounted) setState(() => _isDownloadingChapter = false);
-    }
-  }
-
-  Future<void> _cacheMangaImage(String imageUrl, String referer) async {
-    final provider = ExtendedNetworkImageProvider(
-      imageUrl,
-      headers: mangaImageHeaders(referer: referer),
-      cache: true,
-      retries: 2,
-      timeLimit: const Duration(seconds: 15),
-      cacheMaxAge: const Duration(days: 14),
-      imageCacheName: 'manga_reader_images',
-    );
-    final stream = provider.resolve(createLocalImageConfiguration(context));
-    final completer = Completer<void>();
-    late ImageStreamListener listener;
-    listener = ImageStreamListener(
-      (imageInfo, synchronousCall) {
-        imageInfo.image.dispose();
-        if (!completer.isCompleted) completer.complete();
-      },
-      onError: (_, _) {
-        if (!completer.isCompleted) completer.complete();
-      },
-    );
-    stream.addListener(listener);
-    try {
-      await completer.future.timeout(const Duration(seconds: 18));
-    } finally {
-      stream.removeListener(listener);
     }
   }
 

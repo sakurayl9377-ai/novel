@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -251,24 +252,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         subtitle: '清除已缓存章节内容',
         onTap: _confirmClearCache,
       ),
-      _buildMenuItem(
-        icon: Icons.system_update_alt_outlined,
-        title: _isDownloadingUpdate ? '正在下载更新' : '检查更新',
-        subtitle: _updateSubtitle,
-        trailing: _isCheckingUpdate || _isDownloadingUpdate
-            ? SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.2,
-                  value: _downloadProgress,
-                ),
-              )
-            : null,
-        onTap: _isCheckingUpdate || _isDownloadingUpdate
-            ? null
-            : _checkForUpdate,
-      ),
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+        _buildMenuItem(
+          icon: Icons.system_update_alt_outlined,
+          title: _isDownloadingUpdate ? '正在下载更新' : '检查更新',
+          subtitle: _updateSubtitle,
+          trailing: _isCheckingUpdate || _isDownloadingUpdate
+              ? SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    value: _downloadProgress,
+                  ),
+                )
+              : null,
+          onTap: _isCheckingUpdate || _isDownloadingUpdate
+              ? null
+              : _checkForUpdate,
+        ),
       _buildMenuItem(
         icon: Icons.history_edu_outlined,
         title: '更新日志',
@@ -523,7 +525,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _checkForUpdate() async {
-    if (_isCheckingUpdate || _isDownloadingUpdate) return;
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        _isCheckingUpdate ||
+        _isDownloadingUpdate) {
+      return;
+    }
     setState(() => _isCheckingUpdate = true);
 
     AppUpdateCheckResult result;
@@ -1294,6 +1301,8 @@ class _MangaHistoryScreenState extends State<MangaHistoryScreen> {
           initialScrollProgress: history.progress,
           initialPageIndex: history.pageIndex,
           initialPageOffsetRatio: history.pageOffsetRatio,
+          historyChapterIndexOverride:
+              history.sparseCatalogChapterIndexOverride,
         ),
       ),
     );

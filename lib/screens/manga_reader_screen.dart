@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:extended_image/extended_image.dart';
@@ -32,6 +33,8 @@ class MangaReaderScreen extends StatefulWidget {
     this.chapterImageLoader,
     this.canLoadChapterOverride,
     this.warmVisiblePage = true,
+    this.historyChapterIndexOverride,
+    this.historyChaptersOverride,
     this.mangaPageBuilder,
   });
 
@@ -45,6 +48,8 @@ class MangaReaderScreen extends StatefulWidget {
   final Future<List<String>> Function(MangaChapter chapter)? chapterImageLoader;
   final bool Function(int chapterIndex)? canLoadChapterOverride;
   final bool warmVisiblePage;
+  final int? historyChapterIndexOverride;
+  final List<MangaChapter>? historyChaptersOverride;
   final Widget Function(
     BuildContext context,
     int chapterIndex,
@@ -87,6 +92,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   static const double _defaultPageAspectRatio = 0.68;
   static const String _imageCacheName = 'manga_reader_images';
   static const Duration _imageCacheMaxAge = Duration(days: 14);
+  static const int _prefetchRadius = 2;
+  static const int _maxTrackedPrefetchPages = _prefetchRadius * 2 + 1;
+  static const int _maxPendingImagePrefetches = 4;
+  static const int _maxDecodeWidth = 2048;
 
   List<MangaChapter> get _chapters => widget.manga.chapters;
 
@@ -134,6 +143,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   @override
   void dispose() {
     _chapterLoadGeneration++;
+    _evictTrackedPrefetches();
     _saveTimer?.cancel();
     _aspectRatioSaveTimer?.cancel();
     unawaited(_saveAspectRatioCache());
@@ -176,6 +186,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     _aspectRatioSaveTimer?.cancel();
     if (_pageAspectRatios.isNotEmpty) await _saveAspectRatioCache();
     if (!_isCurrentChapterLoad(loadGeneration)) return;
+    _evictTrackedPrefetches();
     if (!hadVisibleChapter) {
       setState(() {
         _currentChapter = chapter;
@@ -373,16 +384,53 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     return ((position.pixels / maxOffset) * 100).clamp(0.0, 100.0).round();
   }
 
-  Future<void> _warmPageImage(String url, String referer) async {
-    final provider = ExtendedNetworkImageProvider(
-      url,
-      headers: mangaImageHeaders(referer: referer),
-      cache: true,
-      retries: 3,
-      timeLimit: const Duration(seconds: 15),
+  int _targetDecodeWidth() {
+    final logicalWidth = _viewportWidth > 0 ? _viewportWidth : 390.0;
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    final pixelRatio = views.isEmpty ? 1.0 : views.first.devicePixelRatio;
+    return (logicalWidth * pixelRatio).ceil().clamp(1, _maxDecodeWidth).toInt();
+  }
+
+  ImageProvider _pageImageProvider(String source, String referer) {
+    return _mangaPageImageProvider(
+      source,
+      referer: referer,
+      cacheWidth: _targetDecodeWidth(),
+      cacheName: _imageCacheName,
       cacheMaxAge: _imageCacheMaxAge,
-      imageCacheName: _imageCacheName,
     );
+  }
+
+  void _evictTrackedPrefetches() {
+    if (_prefetchedPages.isEmpty || _images.isEmpty) {
+      _prefetchedPages.clear();
+      return;
+    }
+    final indexes = _prefetchedPages.toList(growable: false);
+    _prefetchedPages.clear();
+    for (final index in indexes) {
+      if (index < 0 || index >= _images.length) continue;
+      unawaited(
+        _pageImageProvider(_images[index], _currentChapter.url).evict(),
+      );
+    }
+  }
+
+  void _evictDistantPrefetches(Set<int> retainedIndexes) {
+    final evicted = _prefetchedPages
+        .where((index) => !retainedIndexes.contains(index))
+        .toList(growable: false);
+    _prefetchedPages.removeAll(evicted);
+    for (final index in evicted) {
+      if (index < 0 || index >= _images.length) continue;
+      unawaited(
+        _pageImageProvider(_images[index], _currentChapter.url).evict(),
+      );
+    }
+  }
+
+  Future<void> _warmPageImage(String url, String referer) async {
+    final provider = _pageImageProvider(url, referer);
     final stream = provider.resolve(createLocalImageConfiguration(context));
     final completer = Completer<void>();
     late ImageStreamListener listener;
@@ -411,7 +459,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     if (images.isEmpty) return;
     final anchor = initialPageIndex.clamp(0, images.length - 1).toInt();
     final indexes = <int>[];
-    for (final delta in const [0, 1, -1, 2, -2]) {
+    for (final delta in const [0, 1, -1]) {
       final index = anchor + delta;
       if (index >= 0 && index < images.length && !indexes.contains(index)) {
         indexes.add(index);
@@ -454,6 +502,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     if (!_isCurrentChapterLoad(generation) || referer != _currentChapter.url) {
       return Future<void>.value();
     }
+    if (_imagePrefetchScheduler.pendingCount >= _maxPendingImagePrefetches &&
+        priority < 1000) {
+      return Future<void>.value();
+    }
     if (!_prefetchedPages.add(index)) return Future<void>.value();
     return _imagePrefetchScheduler.schedule(
       () => _loadPageImage(index, url, referer, generation),
@@ -468,25 +520,19 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
     int chapterLoadGeneration,
   ) async {
     if (!_isCurrentChapterLoad(chapterLoadGeneration) ||
-        referer != _currentChapter.url) {
+        referer != _currentChapter.url ||
+        !_prefetchedPages.contains(index)) {
       return;
     }
-    final provider = ExtendedNetworkImageProvider(
-      url,
-      headers: mangaImageHeaders(referer: referer),
-      cache: true,
-      retries: 3,
-      timeLimit: const Duration(seconds: 15),
-      cacheMaxAge: _imageCacheMaxAge,
-      imageCacheName: _imageCacheName,
-    );
+    final provider = _pageImageProvider(url, referer);
     final stream = provider.resolve(createLocalImageConfiguration(context));
     final completer = Completer<void>();
     late ImageStreamListener listener;
     listener = ImageStreamListener(
       (imageInfo, synchronousCall) {
         if (!_isCurrentChapterLoad(chapterLoadGeneration) ||
-            referer != _currentChapter.url) {
+            referer != _currentChapter.url ||
+            !_prefetchedPages.contains(index)) {
           if (!completer.isCompleted) completer.complete();
           return;
         }
@@ -514,14 +560,20 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       // Keep the default page ratio if a single page is slow or broken.
     } finally {
       stream.removeListener(listener);
+      if (!_prefetchedPages.contains(index)) {
+        await provider.evict();
+      }
     }
   }
 
   void _prefetchNearScrollOffset() {
     if (_images.isEmpty) return;
-    final offset = _scrollController.hasClients
-        ? _scrollController.position.pixels
-        : 0.0;
+    final position = _scrollController.hasClients
+        ? _scrollController.position
+        : null;
+    final offset = position == null
+        ? 0.0
+        : position.pixels + position.viewportDimension * 0.5;
     var pageStart = 0.0;
     var currentIndex = 0;
     for (var i = 0; i < _images.length; i++) {
@@ -532,14 +584,25 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
       }
       pageStart += pageHeight;
     }
-    final end = (currentIndex + 10).clamp(0, _images.length).toInt();
-    for (var i = currentIndex; i < end; i++) {
+    final retainedIndexes = <int>{
+      for (
+        var index = currentIndex - _prefetchRadius;
+        index <= currentIndex + _prefetchRadius;
+        index++
+      )
+        if (index >= 0 && index < _images.length) index,
+    };
+    _evictDistantPrefetches(retainedIndexes);
+    assert(_prefetchedPages.length <= _maxTrackedPrefetchPages);
+    for (final delta in const [0, 1, -1, 2, -2]) {
+      final index = currentIndex + delta;
+      if (!retainedIndexes.contains(index)) continue;
       unawaited(
         _preloadPageImage(
-          i,
-          _images[i],
+          index,
+          _images[index],
           _currentChapter.url,
-          priority: 50 - (i - currentIndex),
+          priority: 50 - delta.abs(),
         ),
       );
     }
@@ -669,11 +732,11 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
         coverUrl: widget.manga.coverUrl,
         chapterTitle: _currentChapter.title,
         chapterUrl: _currentChapter.url,
-        chapterIndex: _currentIndex,
+        chapterIndex: widget.historyChapterIndexOverride ?? _currentIndex,
         scrollOffset: position.pixels,
         contentExtent: position.maxScrollExtent,
         updatedAtMs: DateTime.now().millisecondsSinceEpoch,
-        chapters: widget.manga.chapters,
+        chapters: widget.historyChaptersOverride ?? widget.manga.chapters,
         pageIndex: location.pageIndex,
         pageOffsetRatio: location.pageOffsetRatio,
         pageCount: _images.length,
@@ -1047,7 +1110,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
             key: ValueKey('manga-chapter-${_currentChapter.url}'),
             controller: _scrollController,
             padding: EdgeInsets.zero,
-            scrollCacheExtent: const ScrollCacheExtent.viewport(3),
+            scrollCacheExtent: const ScrollCacheExtent.viewport(1),
             itemCount: _images.length + 1,
             itemBuilder: (context, index) {
               if (index == _images.length) {
@@ -1070,6 +1133,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
                 url: _images[index],
                 referer: _currentChapter.url,
                 index: index,
+                cacheWidth: _targetDecodeWidth(),
                 aspectRatio:
                     _pageAspectRatios[index] ?? _defaultPageAspectRatio,
                 onAspectRatioChanged: (ratio) {
@@ -1087,12 +1151,54 @@ class _MangaReaderScreenState extends State<MangaReaderScreen> {
   }
 }
 
+ImageProvider _mangaPageImageProvider(
+  String source, {
+  required String referer,
+  required int cacheWidth,
+  required String cacheName,
+  required Duration cacheMaxAge,
+}) {
+  final localPath = _localMangaImagePath(source);
+  final ImageProvider provider = localPath == null
+      ? ExtendedNetworkImageProvider(
+          source,
+          headers: mangaImageHeaders(referer: referer),
+          cache: true,
+          retries: 3,
+          timeLimit: const Duration(seconds: 15),
+          cacheMaxAge: cacheMaxAge,
+          imageCacheName: cacheName,
+        )
+      : ExtendedFileImageProvider(File(localPath));
+  return ExtendedResizeImage.resizeIfNeeded(
+    provider: provider,
+    cacheWidth: cacheWidth,
+  );
+}
+
+String? _localMangaImagePath(String source) {
+  final uri = Uri.tryParse(source);
+  if (uri?.scheme == 'file') {
+    try {
+      return uri!.toFilePath(windows: Platform.isWindows);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (uri?.scheme == 'http' || uri?.scheme == 'https') return null;
+  if (source.startsWith('/') || RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(source)) {
+    return source;
+  }
+  return null;
+}
+
 class _MangaPageImage extends StatefulWidget {
   const _MangaPageImage({
     super.key,
     required this.url,
     required this.referer,
     required this.index,
+    required this.cacheWidth,
     required this.aspectRatio,
     required this.onAspectRatioChanged,
     required this.onHeightChanged,
@@ -1101,6 +1207,7 @@ class _MangaPageImage extends StatefulWidget {
   final String url;
   final String referer;
   final int index;
+  final int cacheWidth;
   final double aspectRatio;
   final ValueChanged<double> onAspectRatioChanged;
   final ValueChanged<double> onHeightChanged;
@@ -1128,19 +1235,21 @@ class _MangaPageImageState extends State<_MangaPageImage> {
           height: pageHeight,
           child: ColoredBox(
             color: Colors.white,
-            child: ExtendedImage.network(
-              widget.url,
-              cache: true,
-              retries: 3,
-              timeLimit: const Duration(seconds: 15),
-              cacheMaxAge: _MangaReaderScreenState._imageCacheMaxAge,
-              imageCacheName: _MangaReaderScreenState._imageCacheName,
+            child: ExtendedImage(
+              image: _mangaPageImageProvider(
+                widget.url,
+                referer: widget.referer,
+                cacheWidth: widget.cacheWidth,
+                cacheName: _MangaReaderScreenState._imageCacheName,
+                cacheMaxAge: _MangaReaderScreenState._imageCacheMaxAge,
+              ),
+              enableLoadState: true,
               width: double.infinity,
               height: pageHeight,
               fit: BoxFit.contain,
               alignment: Alignment.topCenter,
-              headers: mangaImageHeaders(referer: widget.referer),
               clearMemoryCacheIfFailed: true,
+              clearMemoryCacheWhenDispose: true,
               filterQuality: FilterQuality.low,
               loadStateChanged: _handleLoadState,
             ),

@@ -59,6 +59,20 @@ class MangaReadHistory {
   MangaChapter get chapter =>
       MangaChapter(title: chapterTitle, url: chapterUrl);
 
+  /// A downloaded chapter may be the only catalog entry we know while its
+  /// absolute chapter index is greater than zero. The reader uses index zero
+  /// for that one-entry catalog, so history writes must retain the absolute
+  /// index separately until a complete catalog is available again.
+  int? get sparseCatalogChapterIndexOverride {
+    if (chapterIndex <= 0) return null;
+    final catalog = chapters.isEmpty ? [chapter] : chapters;
+    if (catalog.length > chapterIndex) return null;
+    final localIndex = catalog.indexWhere(
+      (candidate) => candidate.url == chapterUrl,
+    );
+    return localIndex >= 0 ? chapterIndex : null;
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'mangaId': mangaId,

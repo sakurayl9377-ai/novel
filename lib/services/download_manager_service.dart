@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -9,7 +10,11 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/anime.dart';
 import '../models/local_library.dart';
+import '../models/manga.dart';
 import 'app_telemetry_service.dart';
+import 'download_stream_utils.dart';
+import 'manga_offline_manifest.dart';
+import 'manga_service.dart';
 import 'offline_hls_parser.dart';
 import 'storage_service.dart';
 
@@ -21,8 +26,11 @@ class DownloadManagerService extends ChangeNotifier {
   static const int _maxConcurrentTasks = 2;
   static const int _hlsParallelSegments = 4;
   static const int _progressPersistIntervalMs = 1500;
+  static const String _mangaManifestFileName = 'chapter.json';
+  static const int _maxTextDownloadBytes = 4 * 1024 * 1024;
 
   final StorageService _storage = StorageService();
+  final MangaService _mangaService = MangaService();
   final Map<String, http.Client> _activeClients = {};
   final Set<String> _runningIds = {};
   final Map<String, int> _taskGenerations = {};
@@ -46,9 +54,7 @@ class DownloadManagerService extends ChangeNotifier {
     var changed = false;
     _items = [
       for (final item in stored)
-        if (item.type == LibraryItemType.anime &&
-            item.status == 'done' &&
-            !await validatePlayable(item))
+        if (item.status == 'done' && !await validatePlayable(item))
           item.copyWith(
             status: 'failed',
             errorMessage: '本地文件已丢失，请重新下载',
@@ -131,6 +137,60 @@ class DownloadManagerService extends ChangeNotifier {
     return item;
   }
 
+  Future<DownloadItem> enqueueMangaChapter({
+    required Manga manga,
+    required MangaChapter chapter,
+    required int chapterIndex,
+  }) async {
+    await init();
+    final existing = _items.where(
+      (item) =>
+          item.type == LibraryItemType.manga &&
+          item.itemId == manga.id &&
+          item.chapterUrl == chapter.url,
+    );
+    if (existing.isNotEmpty) {
+      final item = existing.first;
+      if (item.status == 'done' && await validatePlayable(item)) return item;
+      if (item.status != 'queued' && item.status != 'downloading') {
+        await resume(item.id);
+      }
+      return _find(item.id) ?? item;
+    }
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final digest = sha1.convert(utf8.encode(chapter.url)).toString();
+    final item = DownloadItem(
+      id: 'manga_${manga.id}_${digest.substring(0, 16)}',
+      type: LibraryItemType.manga,
+      itemId: manga.id,
+      title: manga.title,
+      coverUrl: manga.coverUrl,
+      subtitle: manga.author,
+      sourceName: 'manga_baozi',
+      chapterTitle: chapter.title,
+      chapterUrl: chapter.url,
+      chapterIndex: chapterIndex,
+      status: 'queued',
+      createdAtMs: now,
+      updatedAtMs: now,
+    );
+    _items = [item, ..._items];
+    await _storage.saveDownloadItem(item);
+    notifyListeners();
+    AppTelemetryService.instance.trackEvent(
+      'download_enqueue',
+      screen: 'manga_detail',
+      metadata: {
+        'contentType': 'manga',
+        'contentId': manga.id,
+        'chapterIndex': chapterIndex,
+      },
+    );
+    _schedule();
+    return item;
+  }
+
   Future<void> pause(String id) async {
     final item = _find(id);
     if (item == null || item.status == 'done') return;
@@ -148,19 +208,23 @@ class DownloadManagerService extends ChangeNotifier {
   Future<void> resume(String id) async {
     final item = _find(id);
     if (item == null) return;
+    var resetProgress = false;
+    final refreshMangaSources =
+        item.type == LibraryItemType.manga && item.status == 'failed';
     if (item.status == 'done') {
       if (await validatePlayable(item)) return;
       await _deleteItemDirectory(id);
+      resetProgress = true;
     }
     await _replace(
       item.copyWith(
         status: 'queued',
         errorMessage: '',
-        localPath: '',
-        downloadedBytes: 0,
-        totalBytes: 0,
-        cachedCount: 0,
-        totalCount: 0,
+        localPath: resetProgress || refreshMangaSources ? '' : item.localPath,
+        downloadedBytes: resetProgress ? 0 : item.downloadedBytes,
+        totalBytes: resetProgress ? 0 : item.totalBytes,
+        cachedCount: resetProgress ? 0 : item.cachedCount,
+        totalCount: resetProgress ? 0 : item.totalCount,
         updatedAtMs: DateTime.now().millisecondsSinceEpoch,
       ),
     );
@@ -215,11 +279,29 @@ class DownloadManagerService extends ChangeNotifier {
       final resolvedFile = await localFile.resolveSymbolicLinks();
       if (!_isWithinDirectory(resolvedRoot, resolvedFile)) return false;
       if (await localFile.length() <= 0) return false;
+      if (item.type == LibraryItemType.manga) {
+        return (await loadMangaPagePaths(item)).isNotEmpty;
+      }
       if (!localFile.path.toLowerCase().endsWith('.m3u8')) return true;
       return _validateLocalHlsPlaylist(localFile, resolvedRoot, <String>{});
     } catch (_) {
       return false;
     }
+  }
+
+  Future<List<String>> loadMangaPagePaths(DownloadItem item) async {
+    if (item.type != LibraryItemType.manga || item.localPath.isEmpty) {
+      return const [];
+    }
+    final root = _rootDirectory;
+    if (root == null) return const [];
+    final itemRoot = Directory('${root.path}/${_safeDirectoryName(item.id)}');
+    return validateMangaOfflineArchive(
+      manifestFile: File(item.localPath),
+      allowedRoot: itemRoot,
+      expectedChapterUrl: item.chapterUrl,
+      expectedPageCount: item.totalCount,
+    );
   }
 
   void _schedule() {
@@ -230,7 +312,6 @@ class DownloadManagerService extends ChangeNotifier {
         final item = _items.cast<DownloadItem?>().firstWhere(
           (entry) =>
               entry != null &&
-              entry.type == LibraryItemType.anime &&
               entry.status == 'queued' &&
               !_runningIds.contains(entry.id),
           orElse: () => null,
@@ -270,11 +351,27 @@ class DownloadManagerService extends ChangeNotifier {
     final client = http.Client();
     _activeClients[current.id] = client;
     try {
-      final uri = Uri.parse(current.episodeUrl);
       final directory = await _itemDirectory(current.id);
-      final result = _looksLikeHls(uri)
-          ? await _downloadHls(current, uri, directory, client, generation)
-          : await _downloadProbed(current, uri, directory, client, generation);
+      final _DownloadResult result;
+      if (current.type == LibraryItemType.manga) {
+        result = await _downloadMangaChapter(
+          current,
+          directory,
+          client,
+          generation,
+        );
+      } else {
+        final uri = Uri.parse(current.episodeUrl);
+        result = _looksLikeHls(uri)
+            ? await _downloadHls(current, uri, directory, client, generation)
+            : await _downloadProbed(
+                current,
+                uri,
+                directory,
+                client,
+                generation,
+              );
+      }
       final latest = _find(current.id);
       if (!_isTaskCurrent(current.id, generation) || latest == null) return;
       final completed = latest.copyWith(
@@ -334,6 +431,231 @@ class DownloadManagerService extends ChangeNotifier {
     }
   }
 
+  Future<_DownloadResult> _downloadMangaChapter(
+    DownloadItem item,
+    Directory directory,
+    http.Client client,
+    int generation,
+  ) async {
+    if (item.chapterUrl.isEmpty) {
+      throw const FormatException('漫画章节地址无效');
+    }
+    final manifestFile = File('${directory.path}/$_mangaManifestFileName');
+    final storedManifest = await readMangaOfflineManifest(manifestFile);
+    final chapter = MangaChapter(
+      title: item.chapterTitle,
+      url: item.chapterUrl,
+    );
+    final sources = await _mangaService.fetchChapterImages(chapter);
+    if (sources.isEmpty) {
+      throw const FormatException('漫画章节没有可下载的图片');
+    }
+    for (final source in sources) {
+      _validateRemoteUri(Uri.parse(source));
+    }
+    final relativeFiles = [
+      for (var index = 0; index < sources.length; index++)
+        _mangaPageRelativePath(index, Uri.parse(sources[index])),
+    ];
+    final sourceDigests = sources
+        .map(mangaOfflineSourceDigest)
+        .toList(growable: false);
+    await discardMismatchedMangaOfflinePages(
+      downloadDirectory: directory,
+      previousManifest: storedManifest,
+      chapterUrl: item.chapterUrl,
+      refreshedSources: sources,
+      refreshedFiles: relativeFiles,
+    );
+    final manifest = MangaOfflineManifest(
+      chapterUrl: item.chapterUrl,
+      sources: sources,
+      sourceDigests: sourceDigests,
+      files: relativeFiles,
+    );
+    await writeMangaOfflineManifest(manifestFile, manifest);
+
+    var downloadedBytes = 0;
+    var completed = 0;
+    final completedIndexes = <int>{};
+    for (var index = 0; index < relativeFiles.length; index++) {
+      final file = File.fromUri(directory.uri.resolve(relativeFiles[index]));
+      if (await isLikelyMangaImageFile(file)) {
+        downloadedBytes += await file.length();
+        completed++;
+        completedIndexes.add(index);
+      } else if (await file.exists()) {
+        await file.delete();
+      }
+    }
+    await _updateProgress(
+      item.id,
+      downloadedBytes: downloadedBytes,
+      totalBytes: 0,
+      cachedCount: completed,
+      totalCount: sources.length,
+      forcePersist: true,
+    );
+
+    for (var index = 0; index < sources.length; index++) {
+      _ensureRunning(item.id, generation);
+      if (completedIndexes.contains(index)) continue;
+      final output = File.fromUri(directory.uri.resolve(relativeFiles[index]));
+      final size = await _downloadMangaPage(
+        Uri.parse(sources[index]),
+        item.chapterUrl,
+        output,
+        client,
+        item.id,
+        generation,
+      );
+      downloadedBytes += size;
+      completed++;
+      await _updateProgress(
+        item.id,
+        downloadedBytes: downloadedBytes,
+        totalBytes: 0,
+        cachedCount: completed,
+        totalCount: sources.length,
+      );
+    }
+
+    _ensureRunning(item.id, generation);
+    final pages = await validateMangaOfflineArchive(
+      manifestFile: manifestFile,
+      allowedRoot: directory,
+      expectedChapterUrl: item.chapterUrl,
+      expectedPageCount: sources.length,
+    );
+    if (pages.length != sources.length) {
+      throw const FileSystemException('漫画离线文件校验失败');
+    }
+    return _DownloadResult(
+      localPath: manifestFile.path,
+      downloadedBytes: downloadedBytes,
+      totalBytes: downloadedBytes,
+      cachedCount: sources.length,
+      totalCount: sources.length,
+    );
+  }
+
+  Future<int> _downloadMangaPage(
+    Uri uri,
+    String referer,
+    File output,
+    http.Client client,
+    String itemId,
+    int generation,
+  ) async {
+    _ensureRunning(itemId, generation);
+    _validateRemoteUri(uri);
+    await output.parent.create(recursive: true);
+    final partial = File('${output.path}.part');
+    final existingBytes = await partial.exists() ? await partial.length() : 0;
+    final request = http.Request('GET', uri)
+      ..headers.addAll(_headers(uri, referer: referer));
+    if (existingBytes > 0) request.headers['Range'] = 'bytes=$existingBytes-';
+    final response = await client
+        .send(request)
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+      final totalMatch = RegExp(
+        r'bytes \*/(\d+)',
+      ).firstMatch(response.headers['content-range'] ?? '');
+      final total = int.tryParse(totalMatch?.group(1) ?? '');
+      await withDownloadIdleTimeout(response.stream).drain<void>();
+      if (total == existingBytes && await isLikelyMangaImageFile(partial)) {
+        _ensureRunning(itemId, generation);
+        if (await output.exists()) await output.delete();
+        await partial.rename(output.path);
+        return output.length();
+      }
+      if (existingBytes > 0) {
+        if (await partial.exists()) await partial.delete();
+        return _downloadMangaPage(
+          uri,
+          referer,
+          output,
+          client,
+          itemId,
+          generation,
+        );
+      }
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException('HTTP ${response.statusCode}', uri: uri);
+    }
+    final range = validateDownloadResponseRange(
+      statusCode: response.statusCode,
+      existingBytes: existingBytes,
+      contentRange: response.headers['content-range'],
+      contentLength: response.contentLength,
+    );
+    final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+    if (contentType.startsWith('text/') ||
+        contentType.contains('json') ||
+        contentType.contains('xml')) {
+      throw HttpException('漫画图片响应格式无效', uri: uri);
+    }
+
+    final resumed = range.append;
+    if (!resumed && await partial.exists()) await partial.delete();
+    final sink = partial.openWrite(
+      mode: resumed ? FileMode.append : FileMode.write,
+    );
+    var receivedBodyBytes = 0;
+    try {
+      await for (final chunk in withDownloadIdleTimeout(response.stream)) {
+        _ensureRunning(itemId, generation);
+        sink.add(chunk);
+        receivedBodyBytes += chunk.length;
+      }
+    } finally {
+      await sink.flush();
+      await sink.close();
+    }
+    _ensureRunning(itemId, generation);
+    final finalLength = await partial.length();
+    if ((range.expectedBodyBytes != null &&
+            receivedBodyBytes != range.expectedBodyBytes) ||
+        (range.totalBytes != null && finalLength != range.totalBytes)) {
+      if (resumed) {
+        final handle = await partial.open(mode: FileMode.append);
+        try {
+          await handle.truncate(existingBytes);
+        } finally {
+          await handle.close();
+        }
+      } else if (await partial.exists()) {
+        await partial.delete();
+      }
+      throw HttpException('漫画图片响应长度不完整', uri: uri);
+    }
+    if (!await isLikelyMangaImageFile(partial)) {
+      if (await partial.exists()) await partial.delete();
+      throw HttpException('漫画图片文件不完整', uri: uri);
+    }
+    if (await output.exists()) await output.delete();
+    await partial.rename(output.path);
+    return output.length();
+  }
+
+  String _mangaPageRelativePath(int index, Uri uri) {
+    final rawExtension = _safeExtension(uri.path, fallback: '.jpg');
+    final extension =
+        const {
+          '.jpg',
+          '.jpeg',
+          '.png',
+          '.webp',
+          '.gif',
+          '.avif',
+        }.contains(rawExtension)
+        ? rawExtension
+        : '.jpg';
+    return 'pages/page_${index.toString().padLeft(6, '0')}$extension';
+  }
+
   Future<_DownloadResult> _downloadProbed(
     DownloadItem item,
     Uri uri,
@@ -356,8 +678,8 @@ class DownloadManagerService extends ChangeNotifier {
         r'bytes \*/(\d+)',
       ).firstMatch(response.headers['content-range'] ?? '');
       final total = int.tryParse(totalMatch?.group(1) ?? '');
+      await withDownloadIdleTimeout(response.stream).drain<void>();
       if (total == existingBytes) {
-        await response.stream.drain<void>();
         _ensureRunning(item.id, generation);
         final output = File('${directory.path}/video$extension');
         if (await output.exists()) await output.delete();
@@ -370,13 +692,16 @@ class DownloadManagerService extends ChangeNotifier {
           totalCount: 1,
         );
       }
+      if (await partial.exists()) await partial.delete();
+      return _downloadProbed(item, uri, directory, client, generation);
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('HTTP ${response.statusCode}', uri: uri);
     }
     final contentType = response.headers['content-type']?.toLowerCase() ?? '';
     if (contentType.contains('mpegurl') || contentType.contains('m3u8')) {
-      final manifest = await response.stream.bytesToString();
+      final bytes = await _readBoundedDownloadBody(response, uri);
+      final manifest = utf8.decode(bytes, allowMalformed: true);
       if (await partial.exists()) await partial.delete();
       return _downloadHlsManifest(
         item,
@@ -408,18 +733,25 @@ class DownloadManagerService extends ChangeNotifier {
     final extension = _safeExtension(uri.path, fallback: '.mp4');
     final partial = File('${directory.path}/video$extension.part');
     final output = File('${directory.path}/video$extension');
-    final resumed =
-        response.statusCode == HttpStatus.partialContent && existingBytes > 0;
+    final range = validateDownloadResponseRange(
+      statusCode: response.statusCode,
+      existingBytes: existingBytes,
+      contentRange: response.headers['content-range'],
+      contentLength: response.contentLength,
+    );
+    final resumed = range.append;
     if (!resumed && await partial.exists()) await partial.delete();
     var downloaded = resumed ? existingBytes : 0;
+    var receivedBodyBytes = 0;
     final sink = partial.openWrite(
       mode: resumed ? FileMode.append : FileMode.write,
     );
     try {
-      await for (final chunk in response.stream) {
+      await for (final chunk in withDownloadIdleTimeout(response.stream)) {
         _ensureRunning(item.id, generation);
         sink.add(chunk);
         downloaded += chunk.length;
+        receivedBodyBytes += chunk.length;
         await _updateProgress(
           item.id,
           downloadedBytes: downloaded,
@@ -431,6 +763,22 @@ class DownloadManagerService extends ChangeNotifier {
       await sink.close();
     }
     _ensureRunning(item.id, generation);
+    final finalLength = await partial.length();
+    if ((range.expectedBodyBytes != null &&
+            receivedBodyBytes != range.expectedBodyBytes) ||
+        (range.totalBytes != null && finalLength != range.totalBytes)) {
+      if (resumed) {
+        final handle = await partial.open(mode: FileMode.append);
+        try {
+          await handle.truncate(existingBytes);
+        } finally {
+          await handle.close();
+        }
+      } else if (await partial.exists()) {
+        await partial.delete();
+      }
+      throw HttpException('下载响应长度不完整', uri: uri);
+    }
     if (await output.exists()) await output.delete();
     await partial.rename(output.path);
     final totalBytes = _responseTotalBytes(response, downloaded, existingBytes);
@@ -618,22 +966,23 @@ class DownloadManagerService extends ChangeNotifier {
     final response = await client
         .send(request)
         .timeout(const Duration(seconds: 20));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(
-        '分片下载失败：HTTP ${response.statusCode}',
-        uri: resource.uri,
+    validateHlsResourceResponseStatus(
+      requestedRange: resource.range != null,
+      statusCode: response.statusCode,
+    );
+    if (resource.range != null) {
+      validateExplicitByteRangeResponse(
+        requestedRange: resource.range!,
+        contentRange: response.headers['content-range'],
+        contentLength: response.contentLength,
       );
-    }
-    if (resource.range != null &&
-        response.statusCode != HttpStatus.partialContent) {
-      throw HttpException('分片服务器不支持 Range 请求', uri: resource.uri);
     }
     final partial = File('${file.path}.part');
     if (await partial.exists()) await partial.delete();
     var downloaded = 0;
     final sink = partial.openWrite();
     try {
-      await for (final chunk in response.stream) {
+      await for (final chunk in withDownloadIdleTimeout(response.stream)) {
         _ensureRunning(itemId, generation);
         sink.add(chunk);
         downloaded += chunk.length;
@@ -662,13 +1011,33 @@ class DownloadManagerService extends ChangeNotifier {
   }
 
   Future<String> _loadText(Uri uri, http.Client client) async {
+    final request = http.Request('GET', uri)..headers.addAll(_headers(uri));
     final response = await client
-        .get(uri, headers: _headers(uri))
+        .send(request)
         .timeout(const Duration(seconds: 20));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('HTTP ${response.statusCode}', uri: uri);
     }
-    return utf8.decode(response.bodyBytes, allowMalformed: true);
+    final bytes = await _readBoundedDownloadBody(response, uri);
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+
+  Future<List<int>> _readBoundedDownloadBody(
+    http.StreamedResponse response,
+    Uri uri,
+  ) async {
+    final declaredLength = response.contentLength;
+    if (declaredLength != null && declaredLength > _maxTextDownloadBytes) {
+      throw HttpException('下载文本响应过大', uri: uri);
+    }
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in withDownloadIdleTimeout(response.stream)) {
+      if (bytes.length + chunk.length > _maxTextDownloadBytes) {
+        throw HttpException('下载文本响应过大', uri: uri);
+      }
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
   }
 
   Future<void> _updateProgress(
@@ -805,13 +1174,17 @@ class DownloadManagerService extends ChangeNotifier {
     if (await directory.exists()) await directory.delete(recursive: true);
   }
 
-  Map<String, String> _headers(Uri uri) {
+  Map<String, String> _headers(Uri uri, {String referer = ''}) {
     final origin = uri.host.isEmpty ? '' : '${uri.scheme}://${uri.host}/';
     return {
       'User-Agent':
           'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-      'Referer': origin.isNotEmpty ? origin : 'https://www.yinhuadm.xyz/',
+      'Referer': referer.isNotEmpty
+          ? referer
+          : origin.isNotEmpty
+          ? origin
+          : 'https://www.yinhuadm.xyz/',
     };
   }
 

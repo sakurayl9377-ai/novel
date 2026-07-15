@@ -19,6 +19,9 @@ class MangaScreen extends StatefulWidget {
 }
 
 class _MangaScreenState extends State<MangaScreen> {
+  static const int _maxPrecachedCovers = 8;
+  static const int _maxCoverDecodeWidth = 1024;
+
   final MangaService _service = MangaService();
   final TextEditingController _searchController = TextEditingController();
   final BoundedTaskScheduler _imagePrefetchScheduler = BoundedTaskScheduler(
@@ -112,9 +115,9 @@ class _MangaScreenState extends State<MangaScreen> {
 
   void _precacheHomeImages(MangaHomeData data) {
     final urls = <String>{
-      for (final item in data.featured) item.imageUrl,
-      for (final section in data.sections.take(4))
-        for (final item in section.items.take(6)) item.imageUrl,
+      for (final item in data.featured.take(4)) item.imageUrl,
+      for (final section in data.sections.take(1))
+        for (final item in section.items.take(4)) item.imageUrl,
     };
     _precacheImageUrls(urls);
   }
@@ -124,10 +127,20 @@ class _MangaScreenState extends State<MangaScreen> {
   }
 
   void _precacheImageUrls(Iterable<String> urls) {
-    final uniqueUrls = urls.where((url) => url.isNotEmpty).take(32).toList();
+    final uniqueUrls = urls
+        .where((url) => url.isNotEmpty)
+        .take(_maxPrecachedCovers)
+        .toList();
     if (uniqueUrls.isEmpty) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      final cacheWidth =
+          (MediaQuery.sizeOf(context).width /
+                  3 *
+                  MediaQuery.devicePixelRatioOf(context))
+              .ceil()
+              .clamp(1, _maxCoverDecodeWidth)
+              .toInt();
       for (var index = 0; index < uniqueUrls.length; index++) {
         final url = uniqueUrls[index];
         unawaited(
@@ -135,10 +148,14 @@ class _MangaScreenState extends State<MangaScreen> {
               .schedule(() {
                 if (!mounted) return Future<void>.value();
                 return precacheImage(
-                  CachedNetworkImageProvider(
-                    url,
-                    cacheManager: AppImageCacheService.manager,
-                    headers: mangaImageHeaders(imageUrl: url),
+                  ResizeImage.resizeIfNeeded(
+                    cacheWidth,
+                    null,
+                    CachedNetworkImageProvider(
+                      url,
+                      cacheManager: AppImageCacheService.manager,
+                      headers: mangaImageHeaders(imageUrl: url),
+                    ),
                   ),
                   context,
                 );
@@ -263,7 +280,7 @@ class _MangaScreenState extends State<MangaScreen> {
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      scrollCacheExtent: const ScrollCacheExtent.pixels(900),
+      scrollCacheExtent: const ScrollCacheExtent.pixels(480),
       padding: const EdgeInsets.only(bottom: 20),
       children: [
         _buildCategories(isNight),
@@ -391,7 +408,7 @@ class _MangaScreenState extends State<MangaScreen> {
           child: ListView.separated(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             scrollDirection: Axis.horizontal,
-            scrollCacheExtent: const ScrollCacheExtent.pixels(720),
+            scrollCacheExtent: const ScrollCacheExtent.pixels(320),
             itemCount: _homeData.featured.length,
             separatorBuilder: (context, index) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
@@ -752,19 +769,41 @@ class MangaCover extends StatelessWidget {
       );
     }
 
-    return CachedNetworkImage(
-      imageUrl: imageUrl,
-      cacheManager: AppImageCacheService.manager,
-      fit: fit,
-      httpHeaders: mangaImageHeaders(imageUrl: imageUrl),
-      errorWidget: (context, url, error) => const ColoredBox(
-        color: AppTheme.dividerColor,
-        child: Center(child: Icon(Icons.broken_image_outlined)),
-      ),
-      placeholder: (context, url) {
-        return const ColoredBox(
-          color: AppTheme.dividerColor,
-          child: SizedBox.expand(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final logicalWidth = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width / 3;
+        final logicalHeight = constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : logicalWidth * 1.5;
+        final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+        final cacheWidth = (logicalWidth * pixelRatio)
+            .ceil()
+            .clamp(1, 1440)
+            .toInt();
+        final cacheHeight = (logicalHeight * pixelRatio)
+            .ceil()
+            .clamp(1, 2160)
+            .toInt();
+        return CachedNetworkImage(
+          imageUrl: imageUrl,
+          cacheManager: AppImageCacheService.manager,
+          fit: fit,
+          memCacheWidth: cacheWidth,
+          memCacheHeight: cacheHeight,
+          maxWidthDiskCache: 1440,
+          httpHeaders: mangaImageHeaders(imageUrl: imageUrl),
+          errorWidget: (context, url, error) => const ColoredBox(
+            color: AppTheme.dividerColor,
+            child: Center(child: Icon(Icons.broken_image_outlined)),
+          ),
+          placeholder: (context, url) {
+            return const ColoredBox(
+              color: AppTheme.dividerColor,
+              child: SizedBox.expand(),
+            );
+          },
         );
       },
     );
