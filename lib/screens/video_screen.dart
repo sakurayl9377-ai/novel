@@ -8,7 +8,9 @@ import '../widgets/wuhandky_cover_image.dart';
 import 'video_detail_screen.dart';
 
 class VideoScreen extends StatefulWidget {
-  const VideoScreen({super.key});
+  const VideoScreen({super.key, this.service});
+
+  final WuhandkyService? service;
 
   @override
   State<VideoScreen> createState() => _VideoScreenState();
@@ -24,13 +26,14 @@ class _VideoScreenState extends State<VideoScreen>
     ('综艺', '/zongyi/'),
   ];
 
-  final WuhandkyService _service = WuhandkyService();
+  late final WuhandkyService _service;
   final TextEditingController _searchController = TextEditingController();
   List<WuhandkyVideoItem> _items = const [];
   int _categoryIndex = 0;
   bool _loading = true;
   bool _searching = false;
   String _error = '';
+  int _requestGeneration = 0;
 
   @override
   bool get wantKeepAlive => true;
@@ -38,6 +41,7 @@ class _VideoScreenState extends State<VideoScreen>
   @override
   void initState() {
     super.initState();
+    _service = widget.service ?? WuhandkyService();
     unawaited(_load());
   }
 
@@ -49,6 +53,8 @@ class _VideoScreenState extends State<VideoScreen>
 
   Future<void> _load({bool refresh = false}) async {
     if (!mounted) return;
+    final requestGeneration = ++_requestGeneration;
+    final categoryPath = _categories[_categoryIndex].$2;
     setState(() {
       _loading = true;
       _searching = false;
@@ -56,16 +62,16 @@ class _VideoScreenState extends State<VideoScreen>
       if (refresh) _items = const [];
     });
     try {
-      final items = await _service.fetchCategory(
-        _categories[_categoryIndex].$2,
-      );
-      if (!mounted) return;
+      final items = await _service.fetchCategory(categoryPath);
+      if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() => _items = items);
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() => _error = _friendlyError(error));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && requestGeneration == _requestGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -75,6 +81,7 @@ class _VideoScreenState extends State<VideoScreen>
       await _load();
       return;
     }
+    final requestGeneration = ++_requestGeneration;
     FocusScope.of(context).unfocus();
     setState(() {
       _loading = true;
@@ -84,13 +91,15 @@ class _VideoScreenState extends State<VideoScreen>
     });
     try {
       final items = await _service.search(query);
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() => _items = items);
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() => _error = _friendlyError(error));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && requestGeneration == _requestGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
