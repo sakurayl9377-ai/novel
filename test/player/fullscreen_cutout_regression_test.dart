@@ -2,17 +2,20 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+String _readNormalized(String path) =>
+    File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
 void main() {
   test('Android fullscreen can draw through display cutouts', () {
-    final activity = File(
+    final activity = _readNormalized(
       'android/app/src/main/kotlin/com/novel/novel_app/MainActivity.kt',
-    ).readAsStringSync();
-    final lightTheme = File(
+    );
+    final lightTheme = _readNormalized(
       'android/app/src/main/res/values/styles.xml',
-    ).readAsStringSync();
-    final darkTheme = File(
+    );
+    final darkTheme = _readNormalized(
       'android/app/src/main/res/values-night/styles.xml',
-    ).readAsStringSync();
+    );
 
     expect(activity, contains('LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES'));
     expect(activity, contains('LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS'));
@@ -39,9 +42,9 @@ void main() {
   });
 
   test('video stays complete while controls fill the physical viewport', () {
-    final player = File(
+    final player = _readNormalized(
       'lib/screens/anime_player_screen.dart',
-    ).readAsStringSync();
+    );
 
     expect(player, contains('fit: BoxFit.contain'));
     expect(player, contains('Positioned.fill(child: controlsBuilder())'));
@@ -52,9 +55,9 @@ void main() {
   });
 
   test('inline player restores a clear standalone black title app bar', () {
-    final player = File(
+    final player = _readNormalized(
       'lib/screens/anime_player_screen.dart',
-    ).readAsStringSync();
+    );
 
     expect(
       player,

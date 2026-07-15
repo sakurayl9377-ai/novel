@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -302,6 +303,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   Future<void> _checkStartupUpdate() async {
     if (_didCheckStartupUpdate) return;
     _didCheckStartupUpdate = true;
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
 
     AppUpdateCheckResult result;
     try {

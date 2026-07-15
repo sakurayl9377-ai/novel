@@ -12,6 +12,29 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+val releaseSigningPropertyNames = listOf(
+    "keyAlias",
+    "keyPassword",
+    "storeFile",
+    "storePassword",
+)
+val releaseSigningConfigured = keystorePropertiesFile.exists() &&
+    releaseSigningPropertyNames.all { !keystoreProperties.getProperty(it).isNullOrBlank() }
+
+gradle.taskGraph.whenReady {
+    val releaseArtifactTask = Regex(
+        "^(assemble|package|bundle).*release$",
+        RegexOption.IGNORE_CASE,
+    )
+    val releaseBuildRequested = allTasks.any { task ->
+        task.project == project && releaseArtifactTask.matches(task.name)
+    }
+    if (releaseBuildRequested && !releaseSigningConfigured) {
+        throw GradleException(
+            "Release signing is not configured. Add all required values to android/key.properties.",
+        )
+    }
+}
 
 android {
     namespace = "com.novel.novel_app"
@@ -40,11 +63,13 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
-            storeFile = file(keystoreProperties["storeFile"] as String)
-            storePassword = keystoreProperties["storePassword"] as String
+        if (releaseSigningConfigured) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
         }
     }
 
@@ -55,7 +80,9 @@ android {
             }
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             ndk {
                 abiFilters += setOf("arm64-v8a", "armeabi-v7a")
             }

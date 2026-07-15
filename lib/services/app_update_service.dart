@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/services.dart';
@@ -57,7 +58,10 @@ class AppUpdateService {
   }) : _temporaryDirectoryProvider =
            temporaryDirectoryProvider ?? getTemporaryDirectory;
 
-  static const String updateJsonUrl = 'https://49.232.137.85/app3/version.json';
+  static const String updateJsonUrl =
+      'https://novel.kxhub.xyz/app3/version.json';
+  static const Duration _responseIdleTimeout = Duration(seconds: 30);
+  static const int _maxUpdateMetadataBytes = 64 * 1024;
   static const MethodChannel _channel = MethodChannel(
     'com.novel.novel_app/app_update',
   );
@@ -86,7 +90,10 @@ class AppUpdateService {
       throw Exception('Invalid update config');
     }
     final update = AppUpdateInfo.fromJson(decoded.cast<String, dynamic>());
-    if (update.apkUrl.isEmpty || update.versionCode <= 0) {
+    if (_trustedApkUri(update.apkUrl) == null ||
+        !_isSha256(update.sha256) ||
+        update.versionName.isEmpty ||
+        update.versionCode <= 0) {
       throw Exception('Invalid update config');
     }
 
@@ -102,6 +109,10 @@ class AppUpdateService {
     AppUpdateInfo update, {
     void Function(int received, int total)? onProgress,
   }) async {
+    final apkUri = _trustedApkUri(update.apkUrl);
+    if (apkUri == null || !_isSha256(update.sha256)) {
+      throw Exception('Invalid update config');
+    }
     final file = await _apkFileFor(update);
     if (await _isValidApk(file, update)) {
       final length = await file.length();
@@ -125,7 +136,7 @@ class AppUpdateService {
         resumeFrom = await partialFile.length();
       }
 
-      final request = http.Request('GET', Uri.parse(update.apkUrl));
+      final request = http.Request('GET', apkUri)..followRedirects = false;
       request.headers.addAll({
         'User-Agent':
             'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
@@ -139,10 +150,16 @@ class AppUpdateService {
           .timeout(const Duration(seconds: 20));
       if (response.statusCode == 416 &&
           await _isValidApk(partialFile, update)) {
+        await response.stream.timeout(_responseIdleTimeout).drain<void>();
         await _replaceFile(partialFile, file);
         final length = await file.length();
         onProgress?.call(length, length);
         return file;
+      }
+      if (response.statusCode == 416 && resumeFrom > 0) {
+        await response.stream.timeout(_responseIdleTimeout).drain<void>();
+        if (await partialFile.exists()) await partialFile.delete();
+        return downloadApk(update, onProgress: onProgress);
       }
 
       if (response.statusCode != 200 && response.statusCode != 206) {
@@ -171,7 +188,9 @@ class AppUpdateService {
         onProgress?.call(received, total);
       }
       try {
-        await for (final chunk in response.stream) {
+        await for (final chunk in response.stream.timeout(
+          _responseIdleTimeout,
+        )) {
           received += chunk.length;
           sink.add(chunk);
           onProgress?.call(received, total);
@@ -204,10 +223,37 @@ class AppUpdateService {
     });
   }
 
-  Future<http.Response> _get(Uri uri) {
-    final client = httpClient;
-    if (client != null) return client.get(uri);
-    return http.get(uri);
+  Future<http.Response> _get(Uri uri) async {
+    final client = httpClient ?? http.Client();
+    final closeClient = httpClient == null;
+    try {
+      final request = http.Request('GET', uri)..followRedirects = false;
+      final streamed = await client
+          .send(request)
+          .timeout(const Duration(seconds: 15));
+      final declaredLength = streamed.contentLength;
+      if (declaredLength != null && declaredLength > _maxUpdateMetadataBytes) {
+        throw Exception('Update config is too large');
+      }
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in streamed.stream.timeout(_responseIdleTimeout)) {
+        if (bytes.length + chunk.length > _maxUpdateMetadataBytes) {
+          throw Exception('Update config is too large');
+        }
+        bytes.add(chunk);
+      }
+      return http.Response.bytes(
+        bytes.takeBytes(),
+        streamed.statusCode,
+        headers: streamed.headers,
+        isRedirect: streamed.isRedirect,
+        persistentConnection: streamed.persistentConnection,
+        reasonPhrase: streamed.reasonPhrase,
+        request: request,
+      );
+    } finally {
+      if (closeClient) client.close();
+    }
   }
 
   String _decodeBody(http.Response response) {
@@ -241,6 +287,20 @@ class AppUpdateService {
     }
     await source.rename(destination.path);
   }
+
+  Uri? _trustedApkUri(String value) {
+    final uri = Uri.tryParse(value);
+    final metadataUri = Uri.parse(updateJsonUrl);
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.toLowerCase() != metadataUri.host.toLowerCase() ||
+        !uri.path.toLowerCase().endsWith('.apk')) {
+      return null;
+    }
+    return uri;
+  }
+
+  bool _isSha256(String value) => RegExp(r'^[0-9a-f]{64}$').hasMatch(value);
 }
 
 String _asString(dynamic value) => value?.toString().trim() ?? '';

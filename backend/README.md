@@ -155,11 +155,11 @@ location /novel-ws/ {
 
 ## 发版不覆盖旧包
 
-Flutter 新版打包后先归档：
+Flutter 新版先用受控脚本做干净构建、签名/版本、ABI 和体积校验，再归档：
 
 ```powershell
-flutter build apk --release
-.\tool\archive_release.ps1
+.\tool\build_android_release.ps1
+.\tool\archive_release.ps1 -Notes @("本次更新说明")
 ```
 
 脚本会保留：
@@ -167,16 +167,22 @@ flutter build apk --release
 ```text
 build\release-archive\app-release-<version>+<code>.apk
 build\release-archive\version-<version>+<code>.json
+build\release-archive\app-release.apk
+build\release-archive\version.json
 ```
 
 上传服务器时再把这次归档包复制成线上固定文件名：
 
 ```text
-/var/www/yunpan/app3/app-release.apk
-/var/www/yunpan/app3/version.json
+/var/www/novel-download/app3/app-release-<version>+<code>.apk
+/var/www/novel-download/app3/version.json
 ```
 
-替换前先备份服务器旧文件，不要删除旧归档包。
+Always upload and verify the versioned APK first, then replace `version.json`
+last. Versioned APK names are immutable so an edge cache can never pair an old
+APK with a new manifest checksum.
+
+升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。
 
 ## 后端自动部署
 
