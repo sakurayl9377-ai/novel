@@ -53,6 +53,10 @@ export function clearRateLimitsForTests() {
   consumeCount = 0;
 }
 
+export function rateLimitBucketCountForTests() {
+  return buckets.size;
+}
+
 function pruneExpiredBuckets(now) {
   for (const [key, bucket] of buckets) {
     if (bucket.resetAt <= now) buckets.delete(key);

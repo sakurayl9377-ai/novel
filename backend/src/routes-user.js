@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -17,17 +17,30 @@ import { commentJson, danmakuJson } from "./routes-content.js";
 import { findUserByBearer } from "./auth.js";
 import { all, db, one, run } from "./db.js";
 import { levelFromPoints } from "./growth.js";
-import { publicUser } from "./security.js";
+import { privateUser, publicUser } from "./security.js";
 import { activeChatUserIds, chatJson } from "./websocket.js";
 import { dailyRewardCaps, grantReward, publicRewardRules } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import {
+  deleteRetiredManagedUploadKeys,
+  isManagedUploadRetired,
+  markManagedUploadUrlsRetired,
+  referencedUploadUrls,
+  retireManagedUploadKey,
+  retireManagedUploadUrls,
+  scheduleManagedUploadRetirement,
+  scheduleRetiredUploadDeleteRetry,
+} from "./upload-lifecycle.js";
+import {
   inspectUserUploadUsage,
+  pruneOrphanedUserUploads,
   validateUploadBytes,
   withUploadLock,
+  writeUploadAtomically,
 } from "./upload-security.js";
 import {
   badRequest,
+  forbidden,
   optionalInt,
   optionalString,
   pageParams,
@@ -413,68 +426,115 @@ export async function userRoutes(app) {
         throw badRequest("level_required_profile_skin");
       }
 
-      run(
-        `UPDATE users
-         SET nickname = ?,
-             avatar_url = ?,
-             gender = ?,
-             bio = ?,
-             signature = ?,
-             space_title = ?,
-             profile_banner_url = ?,
-             dynamic_avatar_url = ?,
-             profile_theme = ?,
-             privacy_mode = ?,
-             updated_at = datetime('now')
-         WHERE id = ?`,
-        [
-          nickname,
-          avatarUrl,
-          gender,
-          bio,
-          signature,
-          spaceTitle,
-          profileBannerUrl,
-          dynamicAvatarUrl,
-          profileTheme,
-          privacyMode,
-          request.user.id,
-        ],
-      );
-
-      const photoWall = Array.isArray(body.photoWall) ? body.photoWall : null;
-      if (photoWall) {
+      let photoWall = null;
+      if (Array.isArray(body.photoWall)) {
         const maxPhotos = photoWallLimit(level);
-        if (photoWall.length > maxPhotos) {
+        if (body.photoWall.length > maxPhotos) {
           throw badRequest("photo_wall_limit");
         }
-        run("DELETE FROM profile_photos WHERE user_id = ?", [request.user.id]);
-        for (const [index, raw] of photoWall.entries()) {
+        photoWall = body.photoWall.flatMap((raw, index) => {
           const item = raw && typeof raw === "object" ? raw : {};
           const imageUrl = optionalString(item.imageUrl, 800);
-          if (!imageUrl) continue;
-          run(
-            `INSERT INTO profile_photos
-             (user_id, image_url, caption, sort_order)
-             VALUES (?, ?, ?, ?)`,
-            [
-              request.user.id,
-              imageUrl,
-              optionalString(item.caption, 80),
-              index,
-            ],
-          );
-        }
-      }
-
-      if (avatarUrl && signature && bio) {
-        grantReward(request.user.id, "profile_complete", {
-          type: "profile",
-          id: String(request.user.id),
+          if (!imageUrl) return [];
+          return [{
+            imageUrl,
+            caption: optionalString(item.caption, 80),
+            sortOrder: index,
+          }];
         });
       }
 
-      return profilePayload(request.user.id, request.user.id);
+      const replacementUrls = [
+        avatarUrl,
+        profileBannerUrl,
+        dynamicAvatarUrl,
+        ...(photoWall || []).map((item) => item.imageUrl),
+      ];
+
+      return withUploadLock(request.user.id, async () => {
+        const previousUrls = currentProfileResourceUrls(request.user.id);
+        let retiredPreviousKeys = [];
+        let transactionStarted = false;
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          transactionStarted = true;
+          run(
+            `UPDATE users
+             SET nickname = ?,
+                 avatar_url = ?,
+                 gender = ?,
+                 bio = ?,
+                 signature = ?,
+                 space_title = ?,
+                 profile_banner_url = ?,
+                 dynamic_avatar_url = ?,
+                 profile_theme = ?,
+                 privacy_mode = ?,
+                 updated_at = datetime('now')
+             WHERE id = ?`,
+            [
+              nickname,
+              avatarUrl,
+              gender,
+              bio,
+              signature,
+              spaceTitle,
+              profileBannerUrl,
+              dynamicAvatarUrl,
+              profileTheme,
+              privacyMode,
+              request.user.id,
+            ],
+          );
+
+          if (photoWall) {
+            run("DELETE FROM profile_photos WHERE user_id = ?", [request.user.id]);
+            for (const item of photoWall) {
+              run(
+                `INSERT INTO profile_photos
+                 (user_id, image_url, caption, sort_order)
+                 VALUES (?, ?, ?, ?)`,
+                [
+                  request.user.id,
+                  item.imageUrl,
+                  item.caption,
+                  item.sortOrder,
+                ],
+              );
+            }
+          }
+
+          if (avatarUrl && signature && bio) {
+            grantReward(request.user.id, "profile_complete", {
+              type: "profile",
+              id: String(request.user.id),
+            });
+          }
+          retiredPreviousKeys = markManagedUploadUrlsRetired({
+            userId: request.user.id,
+            urls: previousUrls,
+          });
+          db.exec("COMMIT");
+          transactionStarted = false;
+        } catch (error) {
+          if (transactionStarted) {
+            try {
+              db.exec("ROLLBACK");
+            } catch {
+              // Preserve the original profile update error.
+            }
+          }
+          await cleanupProfileUploadUrls(request, replacementUrls, {
+            phase: "profile_update_rollback",
+          });
+          throw error;
+        }
+
+        await deleteRetiredProfileUploadKeys(request, retiredPreviousKeys, {
+          phase: "profile_resource_replaced",
+        });
+        return profilePayload(request.user.id, request.user.id);
+      });
     },
   );
 
@@ -552,6 +612,13 @@ export async function userRoutes(app) {
          WHERE room_id = ? AND user_id = ? AND role != 'manager'`,
         [roomId, request.user.id],
       );
+      if (!chatRoomIsJoined(roomId, request.user.id)) {
+        request.server.disconnectChatRoomUser?.(
+          roomId,
+          request.user.id,
+          "chat_room_left",
+        );
+      }
       return {
         ok: true,
         item: chatRoomPayload(roomId, request.user, { includeMembers: true }),
@@ -564,6 +631,17 @@ export async function userRoutes(app) {
     { preHandler: app.authRequired },
     async (request) => {
       const roomId = normalizeChatRoomId(request.params.roomId);
+      const room = one(
+        "SELECT id, min_level FROM chat_rooms WHERE id = ? AND status = 'active'",
+        [roomId],
+      );
+      if (!room) throw badRequest("chat room not found");
+      if (levelFromPoints(request.user.points || 0) < (room.min_level || 1)) {
+        throw forbidden("chat_room_level_required");
+      }
+      if (!chatRoomIsJoined(roomId, request.user.id)) {
+        throw forbidden("chat_room_join_required");
+      }
       const keyword = optionalString(request.query?.q, 120);
       const { page, pageSize } = pageParams(request.query || {}, {
         defaultPageSize: 30,
@@ -744,15 +822,36 @@ export async function userRoutes(app) {
       if (!target) throw badRequest("user not found");
       if (target.privacy_mode) throw badRequest("profile_private");
 
-      run(
-        `INSERT OR IGNORE INTO user_follows (follower_id, following_id)
-         VALUES (?, ?)`,
-        [request.user.id, targetId],
-      );
-      grantReward(request.user.id, "follow_user", {
-        type: "user",
-        id: String(targetId),
-      });
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const inserted = run(
+          `INSERT OR IGNORE INTO user_follows (follower_id, following_id)
+           VALUES (?, ?)`,
+          [request.user.id, targetId],
+        );
+        if ((inserted.changes ?? 0) > 0) {
+          const claimed = run(
+            `INSERT OR IGNORE INTO user_follow_reward_claims
+               (follower_id, following_id)
+             VALUES (?, ?)`,
+            [request.user.id, targetId],
+          );
+          if ((claimed.changes ?? 0) > 0) {
+            grantReward(request.user.id, "follow_user", {
+              type: "user",
+              id: String(targetId),
+            });
+          }
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          // Preserve the original transaction error.
+        }
+        throw error;
+      }
       return profilePayload(targetId, request.user.id);
     },
   );
@@ -788,30 +887,50 @@ export async function userRoutes(app) {
     { preHandler: app.authRequired },
     async (request) => {
       const itemId = String(request.params.id || "").trim();
-      const item = one("SELECT * FROM shop_items WHERE id = ?", [itemId]);
-      if (!item || item.status !== "active") throw badRequest("item not found");
-      const user = one("SELECT * FROM users WHERE id = ?", [request.user.id]);
-      if (!user) throw badRequest("user not found");
-      if ((user.level || 0) < item.min_level) {
-        throw badRequest("level_required");
+      let item;
+      let alreadyOwned = false;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        item = one("SELECT * FROM shop_items WHERE id = ?", [itemId]);
+        if (!item || item.status !== "active") {
+          throw badRequest("item not found");
+        }
+        const user = one("SELECT * FROM users WHERE id = ?", [request.user.id]);
+        if (!user) throw badRequest("user not found");
+        if ((user.level || 0) < item.min_level) {
+          throw badRequest("level_required");
+        }
+
+        const inventoryInsert = run(
+          `INSERT OR IGNORE INTO user_inventory (user_id, item_id)
+           VALUES (?, ?)`,
+          [request.user.id, item.id],
+        );
+        alreadyOwned = (inventoryInsert.changes ?? 0) === 0;
+        if (!alreadyOwned) {
+          const debit = run(
+            `UPDATE users
+             SET sakura_coins = sakura_coins - ?,
+                 updated_at = datetime('now')
+             WHERE id = ? AND sakura_coins >= ?`,
+            [item.price_coins, request.user.id, item.price_coins],
+          );
+          if ((debit.changes ?? 0) !== 1) {
+            throw badRequest("coins_not_enough");
+          }
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        try {
+          db.exec("ROLLBACK");
+        } catch {
+          // Preserve the original transaction error.
+        }
+        throw error;
       }
-      if ((user.sakura_coins || 0) < item.price_coins) {
-        throw badRequest("coins_not_enough");
-      }
-      run(
-        `UPDATE users
-         SET sakura_coins = sakura_coins - ?,
-             updated_at = datetime('now')
-         WHERE id = ?`,
-        [item.price_coins, request.user.id],
-      );
-      run(
-        `INSERT OR IGNORE INTO user_inventory (user_id, item_id)
-         VALUES (?, ?)`,
-        [request.user.id, item.id],
-      );
       return {
         ok: true,
+        alreadyOwned,
         item: shopItemJson(item),
         ...(await profilePayload(request.user.id, request.user.id)),
       };
@@ -964,7 +1083,8 @@ function userFollowListPayload(userId, currentUserId, kind, query) {
 async function profilePayload(userId, currentUserId) {
   const user = one("SELECT * FROM users WHERE id = ?", [userId]);
   if (!user) throw badRequest("user not found");
-  if (user.privacy_mode && currentUserId !== userId) {
+  const isSelf = currentUserId === userId;
+  if (user.privacy_mode && !isSelf) {
     throw badRequest("profile_private");
   }
   const stats = {
@@ -1001,14 +1121,16 @@ async function profilePayload(userId, currentUserId) {
     sortOrder: row.sort_order || 0,
     createdAt: row.created_at,
   }));
-  const inventory = all(
-    `SELECT i.acquired_at, s.*
-     FROM user_inventory i
-     JOIN shop_items s ON s.id = i.item_id
-     WHERE i.user_id = ?
-     ORDER BY i.acquired_at DESC`,
-    [userId],
-  ).map((row) => ({ ...shopItemJson(row), acquiredAt: row.acquired_at }));
+  const inventory = isSelf
+    ? all(
+        `SELECT i.acquired_at, s.*
+         FROM user_inventory i
+         JOIN shop_items s ON s.id = i.item_id
+         WHERE i.user_id = ?
+         ORDER BY i.acquired_at DESC`,
+        [userId],
+      ).map((row) => ({ ...shopItemJson(row), acquiredAt: row.acquired_at }))
+    : [];
   const equipment = all(
     `SELECT e.slot, e.updated_at, s.*
      FROM user_equipment e
@@ -1021,46 +1143,52 @@ async function profilePayload(userId, currentUserId) {
     updatedAt: row.updated_at,
     item: shopItemJson(row),
   }));
-  const recentRewards = all(
-    `SELECT action, points_delta, coins_delta, description, created_at
-     FROM user_reward_events
-     WHERE user_id = ?
-     ORDER BY id DESC
-     LIMIT 10`,
-    [userId],
-  ).map((row) => ({
-    action: row.action,
-    points: row.points_delta,
-    coins: row.coins_delta,
-    description: row.description,
-    createdAt: row.created_at,
-  }));
-  const todayRewardRows = all(
-    `SELECT
-       action,
-       COUNT(*) AS count,
-       COALESCE(SUM(points_delta), 0) AS points,
-       COALESCE(SUM(coins_delta), 0) AS coins
-     FROM user_reward_events
-     WHERE user_id = ?
-       AND date(created_at) = date('now')
-     GROUP BY action`,
-    [userId],
-  );
+  const recentRewards = isSelf
+    ? all(
+        `SELECT action, points_delta, coins_delta, description, created_at
+         FROM user_reward_events
+         WHERE user_id = ?
+         ORDER BY id DESC
+         LIMIT 10`,
+        [userId],
+      ).map((row) => ({
+        action: row.action,
+        points: row.points_delta,
+        coins: row.coins_delta,
+        description: row.description,
+        createdAt: row.created_at,
+      }))
+    : [];
+  const todayRewardRows = isSelf
+    ? all(
+        `SELECT
+           action,
+           COUNT(*) AS count,
+           COALESCE(SUM(points_delta), 0) AS points,
+           COALESCE(SUM(coins_delta), 0) AS coins
+         FROM user_reward_events
+         WHERE user_id = ?
+           AND date(created_at) = date('now')
+         GROUP BY action`,
+        [userId],
+      )
+    : [];
   const todayRewardByAction = new Map(
     todayRewardRows.map((row) => [row.action, row]),
   );
-  const lifetimeRewardRows = all(
-    `SELECT
-       action,
-       COUNT(*) AS count,
-       COALESCE(SUM(points_delta), 0) AS points,
-       COALESCE(SUM(coins_delta), 0) AS coins
-     FROM user_reward_events
-     WHERE user_id = ?
-     GROUP BY action`,
-    [userId],
-  );
+  const lifetimeRewardRows = isSelf
+    ? all(
+        `SELECT
+           action,
+           COUNT(*) AS count,
+           COALESCE(SUM(points_delta), 0) AS points,
+           COALESCE(SUM(coins_delta), 0) AS coins
+         FROM user_reward_events
+         WHERE user_id = ?
+         GROUP BY action`,
+        [userId],
+      )
+    : [];
   const lifetimeRewardByAction = new Map(
     lifetimeRewardRows.map((row) => [row.action, row]),
   );
@@ -1073,24 +1201,31 @@ async function profilePayload(userId, currentUserId) {
         ),
       )
     : false;
-  const todayGrowth = one(
-    `SELECT
-       COALESCE(SUM(points_delta), 0) AS points,
-       COALESCE(SUM(coins_delta), 0) AS coins
-     FROM user_reward_events
-     WHERE user_id = ?
-       AND date(created_at) = date('now')`,
-    [userId],
-  );
-  const signInStreakDays = countSignInStreakDays(userId);
-  return {
-    user: publicUser(user, {
+  const todayGrowth = isSelf
+    ? one(
+        `SELECT
+           COALESCE(SUM(points_delta), 0) AS points,
+           COALESCE(SUM(coins_delta), 0) AS coins
+         FROM user_reward_events
+         WHERE user_id = ?
+           AND date(created_at) = date('now')`,
+        [userId],
+      )
+    : null;
+  const signInStreakDays = isSelf ? countSignInStreakDays(userId) : 0;
+  const payload = {
+    user: (isSelf ? privateUser : publicUser)(user, {
       dailyGrowth: { ...(todayGrowth || {}), signInStreakDays },
     }),
     stats,
     photos,
-    inventory,
     equipment,
+    followedByMe,
+  };
+  if (!isSelf) return payload;
+  return {
+    ...payload,
+    inventory,
     recentRewards,
     dailyRewards: publicRewardRules().actions.map((rule) => {
       const row = rule.once
@@ -1114,7 +1249,6 @@ async function profilePayload(userId, currentUserId) {
         dailyRewardCaps.coins - (todayGrowth?.coins || 0),
       ),
     },
-    followedByMe,
   };
 }
 
@@ -1714,8 +1848,94 @@ async function serveProfileImage(folder, rawFile, reply) {
     throw badRequest("file is invalid");
   }
   const filePath = path.join(config.rootDir, "data", "uploads", folder, file);
-  await stat(filePath);
-  return reply.type(contentTypeForUpload(file)).send(createReadStream(filePath));
+  if (isManagedUploadRetired(folder, file)) {
+    const retired = new Error("file not found");
+    retired.statusCode = 404;
+    throw retired;
+  }
+  try {
+    await stat(filePath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    const notFound = new Error("file not found");
+    notFound.statusCode = 404;
+    throw notFound;
+  }
+  return reply
+    .header("Cache-Control", "no-store")
+    .header("X-Content-Type-Options", "nosniff")
+    .type(contentTypeForUpload(file))
+    .send(createReadStream(filePath));
+}
+
+function currentProfileResourceUrls(userId) {
+  const user = one(
+    `SELECT avatar_url, profile_banner_url, dynamic_avatar_url
+     FROM users
+     WHERE id = ?`,
+    [userId],
+  );
+  if (!user) throw badRequest("user not found");
+  return [
+    user.avatar_url,
+    user.profile_banner_url,
+    user.dynamic_avatar_url,
+    ...all(
+      `SELECT image_url
+       FROM profile_photos
+       WHERE user_id = ?`,
+      [userId],
+    ).map((row) => row.image_url),
+  ].filter(Boolean);
+}
+
+async function cleanupProfileUploadUrls(request, urls, { phase }) {
+  try {
+    const result = retireManagedUploadUrls({
+      userId: request.user.id,
+      urls,
+    });
+    if (result.failedCount > 0) {
+      warnUploadLifecycleFailure(request, phase, {
+        code: "upload_delete_deferred",
+      });
+      scheduleRetiredUploadDeleteRetry(request.log);
+    }
+  } catch (error) {
+    warnUploadLifecycleFailure(request, phase, error);
+    scheduleManagedUploadRetirement({
+      userId: request.user.id,
+      urls,
+      logger: request.log,
+    });
+  }
+}
+
+async function deleteRetiredProfileUploadKeys(request, keys, { phase }) {
+  try {
+    const result = deleteRetiredManagedUploadKeys(keys);
+    if (result.failedCount > 0) {
+      warnUploadLifecycleFailure(request, phase, {
+        code: "upload_delete_deferred",
+      });
+      scheduleRetiredUploadDeleteRetry(request.log);
+    }
+  } catch (error) {
+    warnUploadLifecycleFailure(request, phase, error);
+    scheduleRetiredUploadDeleteRetry(request.log);
+  }
+}
+
+function warnUploadLifecycleFailure(request, phase, error) {
+  request.log?.warn?.(
+    {
+      uploadLifecycle: {
+        phase,
+        errorCode: error?.code || "upload_cleanup_failed",
+      },
+    },
+    "profile upload lifecycle cleanup failed",
+  );
 }
 
 async function handleProfileImageUpload(request, forcedKind) {
@@ -1741,6 +1961,20 @@ async function handleProfileImageUpload(request, forcedKind) {
   }
 
   const fileName = await withUploadLock(request.user.id, async () => {
+    try {
+      await pruneOrphanedUserUploads({
+        rootDir: config.rootDir,
+        apiPrefix: config.apiPrefix,
+        folders: profileImageFolders,
+        userId: request.user.id,
+        referencedUrls: referencedUploadUrls(),
+        retireManagedFile: ({ key }) => retireManagedUploadKey({ key }),
+        graceMs: config.uploadOrphanGraceMs,
+      });
+    } catch (error) {
+      warnUploadLifecycleFailure(request, "stale_orphan_prune", error);
+    }
+
     const usage = await inspectUserUploadUsage({
       rootDir: config.rootDir,
       folders: profileImageFolders,
@@ -1760,9 +1994,12 @@ async function handleProfileImageUpload(request, forcedKind) {
       "uploads",
       uploadKind.folder,
     );
-    await mkdir(uploadDir, { recursive: true });
     const generated = `${request.user.id}-${Date.now()}-${randomUUID()}.${extension}`;
-    await writeFile(path.join(uploadDir, generated), bytes, { flag: "wx" });
+    await writeUploadAtomically({
+      directory: uploadDir,
+      fileName: generated,
+      bytes,
+    });
     return generated;
   });
 

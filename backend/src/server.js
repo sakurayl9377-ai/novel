@@ -10,6 +10,7 @@ import { seedChatBotRooms } from './chat-bot.js';
 import { config } from './config.js';
 import { startDbzySyncScheduler, stopDbzySyncScheduler } from './dbzy-sync-scheduler.js';
 import { closeDb, migrate, seedAdmin } from './db.js';
+import { secureLoggerOptions } from './log-security.js';
 import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
@@ -24,6 +25,10 @@ import { speechRoutes } from './routes-speech.js';
 import { suibianRoutes } from './routes-suibian.js';
 import { telemetryRoutes } from './routes-telemetry.js';
 import { userRoutes } from './routes-user.js';
+import {
+  startUploadOrphanSweeper,
+  stopUploadOrphanSweeper,
+} from './upload-lifecycle.js';
 import { registerWebSockets } from './websocket.js';
 
 export async function buildServer() {
@@ -32,13 +37,15 @@ export async function buildServer() {
   seedChatBotRooms();
 
   const app = Fastify({
-    logger: true,
+    logger: secureLoggerOptions(),
     trustProxy: config.trustedProxies,
   });
 
+  startUploadOrphanSweeper(app.log);
   startDbzySyncScheduler(app.log);
 
   app.addHook('onClose', async () => {
+    await stopUploadOrphanSweeper();
     stopDbzySyncScheduler();
     closeDb();
   });
@@ -54,7 +61,14 @@ export async function buildServer() {
   await app.register(cors, {
     origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(','),
   });
-  await app.register(websocket);
+  await app.register(websocket, {
+    options: {
+      maxPayload: Math.max(
+        1024,
+        Math.min(1024 * 1024, Number(config.websocketMaxPayloadBytes) || 65536),
+      ),
+    },
+  });
 
   app.get('/health', async () => ({
     ok: true,
@@ -108,7 +122,7 @@ export async function buildServer() {
 
   app.setErrorHandler((error, _request, reply) => {
     const status = error.statusCode || 500;
-    if (status >= 500) app.log.error(error);
+    if (status >= 500) app.log.error({ err: error }, 'request failed');
     reply.code(status).send({
       error: error.publicCode || (status >= 500 ? 'internal_error' : error.message),
     });

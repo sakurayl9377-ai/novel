@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 import { db, run } from './db.js';
 import { recordBehaviorFromTelemetry } from './growth-operations.js';
+import { consumeRateLimit } from './rate-limit.js';
 import { recordObservedTraffic } from './routes-admin-content.js';
 import {
   badRequest,
@@ -10,9 +11,10 @@ import {
   requiredString,
 } from './validators.js';
 
-const ingestWindows = new Map();
 const maxEventsPerBatch = 50;
 const maxErrorsPerBatch = 20;
+const maxTelemetryBatchesPerInstallMinute = 20;
+const maxTelemetryBatchesPerIpMinute = 300;
 
 export async function telemetryRoutes(app) {
   app.post(
@@ -197,23 +199,25 @@ function insertError({ raw, userId, installId, sessionId, runtime }) {
 }
 
 function checkRateLimit(ip, installId) {
-  const now = Date.now();
-  const key = `${String(ip || '').slice(0, 80)}:${installId}`;
-  const current = ingestWindows.get(key);
-  if (!current || now - current.startedAt >= 60000) {
-    ingestWindows.set(key, { startedAt: now, count: 1 });
-  } else {
-    current.count += 1;
-    if (current.count > 20) {
-      const error = new Error('telemetry_rate_limited');
-      error.statusCode = 429;
-      throw error;
-    }
-  }
-  if (ingestWindows.size > 2000) {
-    for (const [entryKey, value] of ingestWindows) {
-      if (now - value.startedAt >= 60000) ingestWindows.delete(entryKey);
-    }
+  const normalizedIp = String(ip || 'unknown').slice(0, 80);
+  const rules = [
+    {
+      scope: 'telemetry_ingest_ip',
+      key: normalizedIp,
+      limit: maxTelemetryBatchesPerIpMinute,
+    },
+    {
+      scope: 'telemetry_ingest_install',
+      key: `${normalizedIp}:${installId}`,
+      limit: maxTelemetryBatchesPerInstallMinute,
+    },
+  ];
+  for (const rule of rules) {
+    const result = consumeRateLimit({ ...rule, windowMs: 60000 });
+    if (!result.limited) continue;
+    const error = new Error('telemetry_rate_limited');
+    error.statusCode = 429;
+    throw error;
   }
 }
 

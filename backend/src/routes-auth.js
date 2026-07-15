@@ -11,7 +11,7 @@ import {
   hashPassword,
   minutesFromNow,
   normalizeEmail,
-  publicUser,
+  privateUser,
   safeEqual,
   sixDigitCode,
 } from './security.js';
@@ -279,7 +279,7 @@ export async function authRoutes(app) {
   });
 
   app.get('/auth/me', { preHandler: app.authRequired }, async (request) => ({
-    user: publicUser(request.user),
+    user: privateUser(request.user),
   }));
 
   app.post('/auth/logout', { preHandler: app.authRequired }, async (request) => {
@@ -301,7 +301,9 @@ function consumeImageCaptcha({ captchaId, captchaCode, ip }) {
   const row = one(
     `SELECT *
      FROM image_captchas
-     WHERE id = ? AND used_at IS NULL AND expires_at > datetime('now')`,
+     WHERE id = ?
+       AND used_at IS NULL
+       AND datetime(expires_at) > datetime('now')`,
     [captchaId],
   );
   if (!row || row.ip !== ip) throw badRequest('captcha invalid');
@@ -331,7 +333,7 @@ function consumeEmailCode({ email, purpose, code }) {
      WHERE email = ?
        AND purpose = ?
        AND verified_at IS NULL
-       AND expires_at > datetime('now')
+       AND datetime(expires_at) > datetime('now')
      ORDER BY id DESC
      LIMIT 1`,
     [email, purpose],

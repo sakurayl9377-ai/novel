@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { one } from "./db.js";
 import { decryptSettingSecret } from "./settings-secrets.js";
 import { defaultAsrHostUrl, iflytekSpeechDefaults } from "./speech-defaults.js";
+import { isManagedUploadRetired } from "./upload-lifecycle.js";
 
 const pcmChunkBytes = 1280;
 
@@ -168,6 +169,9 @@ function secretSetting(key) {
 export async function loadAudioBytes(mediaUrl, { userId = 0 } = {}) {
   const localPath = localUploadPath(mediaUrl, userId);
   if (localPath) {
+    if (isManagedUploadRetired("chat-audio", path.basename(localPath))) {
+      throw new Error("speech_audio_file_not_found");
+    }
     try {
       const info = await stat(localPath);
       if (!info.isFile() || info.size <= 0) {

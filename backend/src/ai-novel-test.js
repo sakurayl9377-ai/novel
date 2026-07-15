@@ -8,6 +8,8 @@ process.env.TOKEN_SECRET = "ai-novel-test-secret";
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "admin123456";
 process.env.SMTP_HOST = "";
+process.env.DBZY_SYNC_ENABLED = "false";
+process.env.DBZY_CACHE_FILE = path.join(tempDir, "dbzy-cache.json");
 
 const { buildServer } = await import("./server.js");
 const { config } = await import("./config.js");

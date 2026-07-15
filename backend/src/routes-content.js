@@ -170,8 +170,24 @@ export async function contentRoutes(app) {
     const rating = parseRating(body.rating);
 
     if (parentId) {
-      const parent = one("SELECT id FROM comments WHERE id = ?", [parentId]);
+      const parent = one(
+        `SELECT id, parent_id, target_type, target_id, chapter_id, episode_id
+         FROM comments
+         WHERE id = ? AND status = 'visible'`,
+        [parentId],
+      );
       if (!parent) throw badRequest("parent comment not found");
+      if (parent.parent_id != null) {
+        throw badRequest("nested_comment_reply_not_allowed");
+      }
+      if (
+        parent.target_type !== targetType ||
+        parent.target_id !== targetId ||
+        parent.chapter_id !== chapterId ||
+        parent.episode_id !== episodeId
+      ) {
+        throw badRequest("parent_comment_target_mismatch");
+      }
     }
 
     const result = run(
@@ -309,7 +325,6 @@ export async function contentRoutes(app) {
       videoId,
       animeId,
       episodeId,
-      createAlias: true,
     });
     upsertDanmakuMeta({
       canonicalVideoId,
@@ -682,32 +697,20 @@ export function resolveDanmakuVideoId({
   videoId,
   animeId = "",
   episodeId = "",
-  sourceName = "",
-  createAlias = false,
 }) {
   const alias = one(
     `SELECT canonical_video_id
      FROM danmaku_video_aliases
-     WHERE alias_video_id = ?`,
+     WHERE alias_video_id = ?
+       AND TRIM(source_name) != ''`,
     [videoId],
   );
   if (alias?.canonical_video_id) return alias.canonical_video_id;
-
-  const canonical = canonicalDanmakuVideoId({
+  return canonicalDanmakuVideoId({
     animeId,
     episodeId,
     fallback: videoId,
   });
-  if (createAlias && canonical !== videoId) {
-    upsertDanmakuAlias({
-      aliasVideoId: videoId,
-      canonicalVideoId: canonical,
-      animeId,
-      episodeId,
-      sourceName,
-    });
-  }
-  return canonical;
 }
 
 export function upsertDanmakuAlias({

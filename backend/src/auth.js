@@ -2,7 +2,7 @@ import { one, run } from './db.js';
 import { refreshExpiredBan } from './chat-moderation.js';
 import {
   hashToken,
-  publicUser,
+  privateUser,
   randomToken,
   tokenExpiry,
   verifyPassword,
@@ -34,7 +34,7 @@ export function findUserByToken(token) {
      JOIN users u ON u.id = t.user_id
      WHERE t.token_hash = ?
        AND t.revoked_at IS NULL
-       AND t.expires_at > datetime('now')
+       AND datetime(t.expires_at) > datetime('now')
        AND u.status != 'deleted'`,
     [tokenHash],
   );
@@ -61,6 +61,9 @@ export async function adminRequired(request, reply) {
   if (!user) {
     return reply.code(401).send({ error: 'unauthorized' });
   }
+  if (user.status !== 'active') {
+    return reply.code(403).send({ error: `account_${user.status}` });
+  }
   if (user.role !== 'admin') {
     return reply.code(403).send({ error: 'admin_required' });
   }
@@ -81,5 +84,5 @@ export function loginWithPassword(email, password, ip = '') {
 }
 
 export function serializeAuth(user, token) {
-  return { token, user: publicUser(user) };
+  return { token, user: privateUser(user) };
 }

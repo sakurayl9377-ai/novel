@@ -16,3 +16,10 @@ test('selects only a reliable catalog cover match', () => {
   assert.equal(match?.coverUrl, 'https://img.example/cover.jpg');
   assert.equal(selectBestCoverMatch('完全不同', '', [match]), null);
 });
+
+test('accepts persisted covers only from the active catalog provider', () => {
+  const supported = videoCoverResolverInternals.isSupportedCachedCover;
+  assert.equal(supported({ provider: 'dbzy', coverUrl: 'https://img.example/cover.jpg' }), true);
+  assert.equal(supported({ provider: 'removed-provider', coverUrl: 'https://img.example/cover.jpg' }), false);
+  assert.equal(supported({ provider: 'dbzy', coverUrl: 'not-a-url' }), false);
+});

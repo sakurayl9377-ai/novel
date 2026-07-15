@@ -64,7 +64,7 @@ export function ingestContentBehavior({
   if (!catalog) throw badRequest("content does not exist in catalog");
   const installId = normalizedIdentifier(body.installId, "installId", 120);
   const sessionId = optionalText(body.sessionId, 120);
-  const userId = Number(request?.user?.id || body.userId || 0) || null;
+  const userId = Number(request?.user?.id || 0) || null;
   const actorKey = userId
     ? `user:${userId}`
     : `install:${sha256(installId).slice(0, 32)}`;

@@ -7,12 +7,33 @@ import {
   encryptSettingSecret,
   isEncryptedSettingSecret,
 } from "./settings-secrets.js";
+import {
+  managedUploadFolders,
+  managedUploadKeyFromAnyUrl,
+} from "./upload-security.js";
 
 fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
 
 export const db = new DatabaseSync(config.dbPath);
+registerManagedUploadDatabaseFunctions(db);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
+db.exec("PRAGMA busy_timeout = 5000");
+
+const managedUploadUrlColumns = [
+  ["users", "avatar_url"],
+  ["users", "profile_banner_url"],
+  ["users", "dynamic_avatar_url"],
+  ["profile_photos", "image_url"],
+  ["chat_messages", "media_url"],
+  ["chat_rooms", "avatar_url"],
+  ["content_catalog", "cover_url"],
+  ["home_placements", "custom_image_url"],
+  ["campaigns", "banner_url"],
+  ["ai_novels", "cover_url"],
+  ["shop_items", "asset_value"],
+  ["app_settings", "value"],
+];
 
 export function migrate() {
   db.exec(`
@@ -286,6 +307,22 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_reward_events_user
       ON user_reward_events(user_id, action, created_at);
 
+    CREATE TABLE IF NOT EXISTS user_follow_reward_claims (
+      follower_id INTEGER NOT NULL,
+      following_id INTEGER NOT NULL,
+      claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (follower_id, following_id),
+      FOREIGN KEY (follower_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    INSERT OR IGNORE INTO user_follow_reward_claims (follower_id, following_id)
+    SELECT follower.id, target.id
+    FROM user_reward_events reward
+    JOIN users follower ON follower.id = reward.user_id
+    JOIN users target ON CAST(target.id AS TEXT) = reward.related_id
+    WHERE reward.action = 'follow_user';
+
     CREATE TABLE IF NOT EXISTS horse_race_rounds (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       status TEXT NOT NULL DEFAULT 'betting',
@@ -359,6 +396,22 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_profile_photos_user
       ON profile_photos(user_id, sort_order, created_at);
+
+    CREATE TABLE IF NOT EXISTS managed_upload_retirements (
+      storage_key TEXT PRIMARY KEY,
+      folder TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      owner_user_id INTEGER NOT NULL,
+      retired_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_attempt_at TEXT NOT NULL DEFAULT '',
+      deleted_at TEXT NOT NULL DEFAULT '',
+      last_delete_error TEXT NOT NULL DEFAULT '',
+      delete_attempts INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (folder, file_name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_managed_upload_retirements_time
+      ON managed_upload_retirements(retired_at);
 
     CREATE TABLE IF NOT EXISTS shop_items (
       id TEXT PRIMARY KEY,
@@ -1240,6 +1293,8 @@ export function migrate() {
   addMissingColumn("content_source_health", "observed_latency_total_ms", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("content_source_health", "last_observed_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("content_source_health", "last_observation_error", "TEXT NOT NULL DEFAULT ''");
+  migrateManagedUploadRetirementSchema();
+  ensureManagedUploadRetirementTriggers();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_active
       ON auth_tokens(user_id, revoked_at, expires_at);
@@ -1265,6 +1320,12 @@ export function migrate() {
       WHERE round_key <> '';
     CREATE INDEX IF NOT EXISTS idx_horse_race_bets_user
       ON horse_race_bets(user_id, round_id);
+  `);
+  // DBZY is the only managed video catalog in this repository. Remove stale
+  // administration rows left by integrations that now live elsewhere.
+  db.exec(`
+    DELETE FROM video_content_overrides WHERE source_key <> 'dbzy';
+    DELETE FROM video_category_policies WHERE source_key <> 'dbzy';
   `);
   seedChatRooms();
   db.prepare(
@@ -1301,6 +1362,96 @@ function addMissingColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (columns.some((item) => item.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+export function ensureManagedUploadRetirementTriggers(
+  targets = managedUploadUrlColumns,
+) {
+  for (const [table, column] of targets) {
+    if (!/^[a-z][a-z0-9_]*$/i.test(table) || !/^[a-z][a-z0-9_]*$/i.test(column)) {
+      throw new Error("managed upload trigger target is invalid");
+    }
+    const retiredPredicate = `
+      managed_upload_key(NEW.${column}) <> ''
+      AND EXISTS (
+        SELECT 1
+        FROM managed_upload_retirements retirement
+        WHERE retirement.storage_key = managed_upload_key(NEW.${column})
+      )`;
+    db.exec(`
+      DROP TRIGGER IF EXISTS trg_retired_upload_${table}_${column}_insert;
+      DROP TRIGGER IF EXISTS trg_retired_upload_${table}_${column}_update;
+      DROP TRIGGER IF EXISTS trg_active_upload_${table}_${column}_retirement;
+      CREATE INDEX IF NOT EXISTS idx_managed_upload_ref_${table}_${column}
+        ON ${table}(managed_upload_key(${column}))
+        WHERE managed_upload_key(${column}) <> '';
+    `);
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_retired_upload_${table}_${column}_insert
+      BEFORE INSERT ON ${table}
+      WHEN ${retiredPredicate}
+      BEGIN
+        SELECT RAISE(ABORT, 'managed_upload_retired');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_retired_upload_${table}_${column}_update
+      BEFORE UPDATE OF ${column} ON ${table}
+      WHEN ${retiredPredicate}
+      BEGIN
+        SELECT RAISE(ABORT, 'managed_upload_retired');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_active_upload_${table}_${column}_retirement
+      BEFORE INSERT ON managed_upload_retirements
+      WHEN EXISTS (
+        SELECT 1
+        FROM ${table}
+        WHERE managed_upload_key(${column}) = NEW.storage_key
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'managed_upload_still_referenced');
+      END;
+    `);
+  }
+}
+
+function migrateManagedUploadRetirementSchema() {
+  addMissingColumn(
+    "managed_upload_retirements",
+    "storage_key",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn(
+    "managed_upload_retirements",
+    "last_attempt_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn(
+    "managed_upload_retirements",
+    "deleted_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  run(
+    `UPDATE managed_upload_retirements
+     SET storage_key = lower(folder || '/' || file_name)
+     WHERE storage_key = ''`,
+  );
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_upload_retirements_key
+      ON managed_upload_retirements(storage_key);
+  `);
+}
+
+export function registerManagedUploadDatabaseFunctions(connection) {
+  connection.function(
+    "managed_upload_key",
+    { deterministic: true },
+    (url) => managedUploadKeyFromAnyUrl({
+      url,
+      apiPrefix: config.apiPrefix,
+      folders: managedUploadFolders,
+    }) || "",
+  );
 }
 
 function seedShopItems() {

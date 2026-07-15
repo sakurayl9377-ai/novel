@@ -52,11 +52,24 @@ export function registerWebSockets(app, config) {
     });
   });
 
+  app.decorate(
+    "disconnectChatRoomUser",
+    (roomId, userId, reason = "chat_room_membership_revoked") => {
+      let disconnected = 0;
+      for (const socket of chatRooms.get(roomId) || []) {
+        const session = socket.__novelChatSession;
+        if (Number(session?.userId || 0) !== Number(userId)) continue;
+        disconnected += 1;
+        closeSocket(socket, 1008, reason);
+      }
+      return disconnected;
+    },
+  );
+
   app.get(config.wsChatPath, { websocket: true }, (socket, request) => {
     const query = new URL(request.url, "http://local").searchParams;
-    const user = refreshExpiredBan(
-      findUserByToken(websocketToken(request, query)),
-    );
+    const token = websocketToken(request, query, config);
+    const user = refreshExpiredBan(findUserByToken(token));
     if (!user || user.status !== "active") {
       socket.close(1008, "unauthorized");
       return;
@@ -71,6 +84,11 @@ export function registerWebSockets(app, config) {
       socket.close(1008, "room_level_required");
       return;
     }
+    if (!isChatRoomMember(roomId, user.id)) {
+      socket.close(1008, "chat_room_join_required");
+      return;
+    }
+    socket.__novelChatSession = { roomId, userId: user.id, token };
     const announceEntrance = query.get("entrance") === "1";
     join(chatRooms, roomId, socket);
     markChatOnline(chatPresence, roomId, user.id);
@@ -91,7 +109,7 @@ export function registerWebSockets(app, config) {
       },
     });
     if (announceEntrance && levelFromPoints(user.points || 0) >= 7) {
-      broadcast(chatRooms.get(roomId), {
+      broadcastChat(chatRooms.get(roomId), {
         type: "entrance",
         roomId,
         effect: "lv7",
@@ -116,25 +134,15 @@ export function registerWebSockets(app, config) {
       .map(chatJson);
     send(socket, { type: "history", items: history });
 
-    socket.on("message", (raw) => {
-      let payload;
-      try {
-        payload = JSON.parse(raw.toString());
-      } catch {
-        send(socket, { type: "error", error: "invalid_json" });
+    onSocketMessage(socket, request, config, (payload) => {
+      const currentUser = currentChatSocketUser(socket);
+      if (!currentUser) {
+        closeSocket(socket, 1008, "chat_authorization_revoked");
         return;
       }
       if (payload.type === "ping") {
-        markChatRead(roomId, user.id);
+        markChatRead(roomId, currentUser.id);
         send(socket, { type: "pong", ts: Date.now() });
-        return;
-      }
-      const currentUser = refreshExpiredBan(
-        one("SELECT * FROM users WHERE id = ?", [user.id]),
-      );
-      if (!currentUser || currentUser.status !== "active") {
-        send(socket, { type: "error", error: "account_banned" });
-        socket.close(1008, "account_banned");
         return;
       }
       const type = normalizeMessageType(payload.type);
@@ -215,7 +223,7 @@ export function registerWebSockets(app, config) {
         type: "chat",
         id: String(result.lastInsertRowid),
       });
-      broadcast(chatRooms.get(roomId), {
+      broadcastChat(chatRooms.get(roomId), {
         type: "message",
         item: chatJson(row),
       });
@@ -227,7 +235,7 @@ export function registerWebSockets(app, config) {
         (shouldBotAnswer(content, mentions, botUser) ||
           hasPendingChatBotContentSuggestion(botSessionKey))
       ) {
-        void replyAsChatBot({
+        return replyAsChatBot({
           sockets: chatRooms.get(roomId),
           roomId,
           roomName: room.name || roomId,
@@ -251,7 +259,7 @@ export function registerWebSockets(app, config) {
   app.get(config.wsGamePath, { websocket: true }, (socket, request) => {
     const query = new URL(request.url, "http://local").searchParams;
     const user = refreshExpiredBan(
-      findUserByToken(websocketToken(request, query)),
+      findUserByToken(websocketToken(request, query, config)),
     );
     if (!user || user.status !== "active") {
       socket.close(1008, "unauthorized");
@@ -262,14 +270,7 @@ export function registerWebSockets(app, config) {
     send(socket, { type: "ready", user: publicGameUser(user) });
     send(socket, { type: "horse_race_state", item: horseRaceStateJson(user.id) });
 
-    socket.on("message", (raw) => {
-      let payload;
-      try {
-        payload = JSON.parse(raw.toString());
-      } catch {
-        send(socket, { type: "error", error: "invalid_json" });
-        return;
-      }
+    onSocketMessage(socket, request, config, (payload) => {
       if (payload.type === "ping") {
         send(socket, { type: "pong", ts: Date.now() });
         send(socket, { type: "horse_race_state", item: horseRaceStateJson(user.id) });
@@ -291,7 +292,11 @@ export function registerWebSockets(app, config) {
         });
         broadcast(gameSockets, { type: "game_chat", item });
       } catch (error) {
-        send(socket, { type: "error", error: error.message || "chat_failed" });
+        if (Number(error?.statusCode) >= 400 && Number(error?.statusCode) < 500) {
+          send(socket, { type: "error", error: error.message || "chat_failed" });
+          return;
+        }
+        throw error;
       }
     });
 
@@ -310,14 +315,7 @@ export function registerWebSockets(app, config) {
     join(danmakuRooms, videoId, socket);
     send(socket, { type: "ready", videoId });
 
-    socket.on("message", (raw) => {
-      let payload;
-      try {
-        payload = JSON.parse(raw.toString());
-      } catch {
-        send(socket, { type: "error", error: "invalid_json" });
-        return;
-      }
+    onSocketMessage(socket, request, config, (payload) => {
       if (payload.type !== "ping") return;
       send(socket, { type: "pong", ts: Date.now() });
     });
@@ -419,16 +417,142 @@ function broadcast(sockets, payload) {
   for (const socket of sockets) send(socket, payload);
 }
 
-function websocketToken(request, query) {
+function broadcastChat(sockets, payload) {
+  if (!sockets) return;
+  for (const socket of sockets) {
+    if (!currentChatSocketUser(socket)) {
+      closeSocket(socket, 1008, "chat_authorization_revoked");
+      continue;
+    }
+    send(socket, payload);
+  }
+}
+
+function currentChatSocketUser(socket) {
+  if (socket.__novelClosing) return null;
+  const session = socket.__novelChatSession;
+  if (!session?.token || !session.roomId || !session.userId) return null;
+  const user = refreshExpiredBan(findUserByToken(session.token));
+  if (!user || user.status !== "active" || user.id !== session.userId) {
+    return null;
+  }
+  const membership = one(
+    `SELECT room.min_level
+     FROM chat_room_members member
+     JOIN chat_rooms room ON room.id = member.room_id
+     WHERE member.room_id = ?
+       AND member.user_id = ?
+       AND room.status = 'active'`,
+    [session.roomId, user.id],
+  );
+  if (
+    !membership ||
+    levelFromPoints(user.points || 0) < (membership.min_level || 1)
+  ) {
+    return null;
+  }
+  return user;
+}
+
+function websocketToken(request, query, settings = {}) {
   const header = String(request.headers.authorization || "");
   const match = /^Bearer\s+(.+)$/i.exec(header);
-  return match?.[1]?.trim() || query.get("token") || "";
+  if (match?.[1]?.trim()) return match[1].trim();
+  // A malformed Authorization header must never downgrade to the legacy
+  // query-string path. Query tokens are opt-in only for a time-bounded client
+  // migration because reverse proxies commonly retain request URLs.
+  if (header.trim() || settings.allowLegacyWebSocketQueryToken !== true) {
+    return "";
+  }
+  const legacyToken = String(query.get("token") || "").trim();
+  if (legacyToken) {
+    request.log?.warn?.(
+      { authTransport: "legacy_query" },
+      "deprecated websocket query-token authentication used",
+    );
+  }
+  return legacyToken;
+}
+
+function onSocketMessage(socket, request, settings, handler) {
+  const maximumBytes = Math.max(
+    1024,
+    Math.min(1024 * 1024, Number(settings.websocketMaxPayloadBytes) || 65536),
+  );
+  socket.on("message", (raw, isBinary = false) => {
+    if (socket.__novelClosing) return;
+    const decoded = decodeSocketPayload(raw, isBinary, maximumBytes);
+    if (!decoded.ok) {
+      closeSocket(socket, decoded.code, decoded.reason);
+      return;
+    }
+    try {
+      const result = handler(decoded.payload);
+      if (result && typeof result.catch === "function") {
+        result.catch((error) => handleSocketFailure(socket, request, error));
+      }
+    } catch (error) {
+      handleSocketFailure(socket, request, error);
+    }
+  });
+}
+
+function decodeSocketPayload(raw, isBinary, maximumBytes) {
+  if (isBinary) {
+    return { ok: false, code: 1003, reason: "binary_not_supported" };
+  }
+  const bytes = Buffer.isBuffer(raw)
+    ? raw.length
+    : Buffer.byteLength(String(raw || ""), "utf8");
+  if (bytes > maximumBytes) {
+    return { ok: false, code: 1009, reason: "message_too_large" };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(raw.toString());
+  } catch {
+    return { ok: false, code: 1007, reason: "invalid_json" };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, code: 1007, reason: "invalid_payload" };
+  }
+  return { ok: true, payload };
+}
+
+function handleSocketFailure(socket, request, error) {
+  request.log?.error?.(
+    {
+      websocketError: {
+        type: error?.name || "Error",
+        code: error?.code || "websocket_handler_failed",
+      },
+    },
+    "websocket message handler failed",
+  );
+  closeSocket(socket, 1011, "internal_error");
+}
+
+function closeSocket(socket, code, reason) {
+  if (socket.__novelClosing) return;
+  socket.__novelClosing = true;
+  if (socket.readyState === 0 || socket.readyState === 1) {
+    socket.close(code, reason);
+    return;
+  }
+  socket.terminate?.();
 }
 
 function send(socket, payload) {
   if (socket.readyState !== 1) return;
   socket.send(JSON.stringify(payload));
 }
+
+export const websocketSecurityInternals = {
+  closeSocket,
+  decodeSocketPayload,
+  onSocketMessage,
+  websocketToken,
+};
 
 function hasCompleteChatProfile(user) {
   const nickname = String(user.nickname || "").trim();
@@ -569,7 +693,7 @@ async function replyAsChatBot({
        WHERE m.id = ?`,
       [Number(result.lastInsertRowid)],
     );
-    broadcast(sockets, {
+    broadcastChat(sockets, {
       type: "message",
       item: chatJson(row),
     });
@@ -600,7 +724,7 @@ async function replyAsChatBot({
      WHERE m.id = ?`,
     [Number(result.lastInsertRowid)],
   );
-  broadcast(sockets, {
+  broadcastChat(sockets, {
     type: "message",
     item: chatJson(row),
   });

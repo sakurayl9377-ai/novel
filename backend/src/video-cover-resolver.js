@@ -1,6 +1,7 @@
-import { one, run } from './db.js';
+import { ensureManagedUploadRetirementTriggers, one, run } from './db.js';
 import { searchDbzyCache } from './dbzy-source.js';
 
+const COVER_PROVIDER = 'dbzy';
 let tableReady = false;
 
 export async function resolveVideoCover({
@@ -21,8 +22,8 @@ export async function resolveVideoCover({
      FROM video_cover_urls WHERE source_key = ? AND item_key = ?`,
     [normalizedSource, normalizedItemKey],
   );
-  if (isHttpUrl(cached?.coverUrl)) {
-    return { coverUrl: cached.coverUrl, provider: cached.provider || 'cache', matchedTitle: cached.matchedTitle || '', cached: true };
+  if (isSupportedCachedCover(cached)) {
+    return { coverUrl: cached.coverUrl, provider: COVER_PROVIDER, matchedTitle: cached.matchedTitle || '', cached: true };
   }
 
   const result = await findCatalogCover(normalizedTitle, normalizedYear);
@@ -71,7 +72,7 @@ async function findCatalogCover(title, year) {
       if (match) {
         return {
           coverUrl: String(match.coverUrl || match.thumbUrl).trim(),
-          provider: 'dbzy',
+          provider: COVER_PROVIDER,
           matchedTitle: String(match.title || '').trim(),
         };
       }
@@ -95,6 +96,14 @@ function ensureTable() {
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (source_key, item_key)
   )`);
+  ensureManagedUploadRetirementTriggers([
+    ["video_cover_urls", "cover_url"],
+  ]);
+  run(
+    `DELETE FROM video_cover_urls
+     WHERE lower(trim(provider)) <> ?`,
+    [COVER_PROVIDER],
+  );
   tableReady = true;
 }
 
@@ -128,8 +137,18 @@ function isHttpUrl(value) {
   }
 }
 
+function isSupportedCachedCover(row) {
+  return String(row?.provider || '').trim().toLowerCase() === COVER_PROVIDER
+    && isHttpUrl(row?.coverUrl);
+}
+
 function emptyResult() {
   return { coverUrl: '', provider: '', matchedTitle: '', cached: false };
 }
 
-export const videoCoverResolverInternals = { normalizeTitle, stripTitleSuffix, isHttpUrl };
+export const videoCoverResolverInternals = {
+  normalizeTitle,
+  stripTitleSuffix,
+  isHttpUrl,
+  isSupportedCachedCover,
+};

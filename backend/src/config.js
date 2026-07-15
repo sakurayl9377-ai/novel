@@ -63,6 +63,11 @@ export const config = {
     env('WS_DANMAKU_PATH', '/ws/danmaku'),
     '/ws/danmaku',
   ),
+  websocketMaxPayloadBytes: envNumber('WS_MAX_PAYLOAD_BYTES', 64 * 1024),
+  allowLegacyWebSocketQueryToken: envBool(
+    'ALLOW_LEGACY_WS_QUERY_TOKEN',
+    false,
+  ),
   corsOrigin: env('CORS_ORIGIN', '*'),
   trustedProxies: envList('TRUST_PROXY', '127.0.0.1,::1'),
   allowDevAuthCodes: envBool('ALLOW_DEV_AUTH_CODES', false),
@@ -100,6 +105,14 @@ export const config = {
   uploadMaxBytesPerUser: envNumber(
     'UPLOAD_MAX_BYTES_PER_USER',
     100 * 1024 * 1024,
+  ),
+  uploadOrphanGraceMs: envNumber(
+    'UPLOAD_ORPHAN_GRACE_MS',
+    24 * 60 * 60 * 1000,
+  ),
+  uploadOrphanSweepIntervalMs: envNumber(
+    'UPLOAD_ORPHAN_SWEEP_INTERVAL_MS',
+    60 * 60 * 1000,
   ),
   adminUsername: env('ADMIN_USERNAME', 'admin'),
   adminPassword: requiredEnv('ADMIN_PASSWORD'),

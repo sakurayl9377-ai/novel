@@ -21,9 +21,9 @@ jobs:
     environment: production
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -33,7 +33,10 @@ jobs:
         working-directory: backend
         run: |
           npm ci
+          npm test
           npm run security
+          npm run test:ai-novels
+          npm audit --omit=dev --registry=https://registry.npmjs.org
           bash -n scripts/*.sh
           export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/novel-python-cache"
           python3 -m py_compile scripts/*.py

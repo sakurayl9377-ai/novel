@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { migrate } from './db.js';
+import { all, migrate, run } from './db.js';
 import { categoryPolicy, evaluateCategoryPolicy } from './video-category-policy.js';
 
 test('hidden policy is never available', () => {
@@ -28,4 +28,29 @@ test('adult category defaults to age-restricted midnight schedule', () => {
   assert.equal(policy.dailyEnd, '06:00');
   assert.equal(policy.timezone, 'Asia/Hong_Kong');
   assert.equal(policy.ageRestricted, true);
+});
+
+test('migration removes administration rows for unsupported video sources', () => {
+  migrate();
+  run(
+    `INSERT OR REPLACE INTO video_category_policies
+     (source_key, category_id, mode, daily_start, daily_end, timezone, age_restricted)
+     VALUES ('removed-provider', 999, 'always', '00:00', '23:59', 'Asia/Hong_Kong', 0)`,
+  );
+  run(
+    `INSERT OR REPLACE INTO video_content_overrides
+     (source_key, source_item_id, visibility, note)
+     VALUES ('removed-provider', 'legacy-item', 'hidden', '')`,
+  );
+
+  migrate();
+
+  assert.deepEqual(
+    all("SELECT source_key FROM video_category_policies WHERE source_key = 'removed-provider'"),
+    [],
+  );
+  assert.deepEqual(
+    all("SELECT source_key FROM video_content_overrides WHERE source_key = 'removed-provider'"),
+    [],
+  );
 });

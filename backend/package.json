@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "smoke": "node src/smoke-test.js",
-    "test:suibian": "node --test src/suibian-source.test.js src/dbzy-source.test.js src/video-category-policy.test.js src/dbzy-sync-scheduler.test.js",
+    "test": "node --import=./src/test-env.js --test --test-concurrency=1 \"src/*.test.js\"",
+    "test:suibian": "node --import=./src/test-env.js --test --test-concurrency=1 src/suibian-source.test.js src/dbzy-source.test.js src/video-category-policy.test.js src/dbzy-sync-scheduler.test.js src/video-cover-resolver.test.js",
     "test:ai-novels": "node src/ai-novel-test.js",
     "security": "node src/security-test.js"
   },

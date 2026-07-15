@@ -58,9 +58,9 @@ export function safeEqual(a, b) {
 
 export function publicUser(user, options = {}) {
   if (!user) return null;
+  const growth = growthFromUser(user, options.dailyGrowth);
   return {
     id: user.id,
-    email: user.email,
     nickname: user.nickname,
     avatarUrl: user.avatar_url ?? '',
     gender: user.gender ?? 'private',
@@ -73,8 +73,30 @@ export function publicUser(user, options = {}) {
     privacyMode: Boolean(user.privacy_mode),
     role: user.role,
     status: user.status,
-    growth: growthFromUser(user, options.dailyGrowth),
+    growth: {
+      level: growth.level,
+      maxLevel: growth.maxLevel,
+      levelName: growth.levelName,
+      levelEffect: growth.levelEffect,
+      dailyPointCap: growth.dailyPointCap,
+      points: growth.points,
+      currentLevelPoints: growth.currentLevelPoints,
+      nextLevelPoints: growth.nextLevelPoints,
+      progress: growth.progress,
+      effects: growth.effects,
+      privileges: growth.privileges,
+    },
     createdAt: user.created_at,
+  };
+}
+
+export function privateUser(user, options = {}) {
+  const serialized = publicUser(user, options);
+  if (!serialized) return null;
+  return {
+    ...serialized,
+    email: user.email,
+    growth: growthFromUser(user, options.dailyGrowth),
   };
 }
 
