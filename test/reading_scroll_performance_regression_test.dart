@@ -13,7 +13,7 @@ void main() {
 
       expect(
         reader,
-        contains('chapterChanged || (settled && oldPercent != newPercent)'),
+        contains('final shouldRebuild = chapterChanged || settled;'),
       );
       expect(continuous, contains('_liveReportIntervalMs = 80'));
       expect(continuous, contains('_reportLiveReadingPosition()'));

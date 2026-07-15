@@ -294,7 +294,7 @@ class TtsProvider extends ChangeNotifier {
   void dispose() {
     _sleepTimer?.cancel();
     unawaited(_setWakelockEnabled(false));
-    _ttsService.dispose();
+    unawaited(_ttsService.dispose());
     super.dispose();
   }
 }

@@ -32,7 +32,12 @@ class ContinuousChapterView extends StatefulWidget {
   final String initialContent;
   final int initialTextOffset;
   final Future<String> Function(int chapterIndex) loadChapterContent;
-  final Widget Function(Chapter chapter, int chapterIndex, String content)
+  final Widget Function(
+    Chapter chapter,
+    int chapterIndex,
+    String content,
+    Key textKey,
+  )
   sectionBuilder;
   final int? activeChapterIndex;
   final int? activeTextOffset;
@@ -50,11 +55,14 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   static const double _loadAheadExtent = 640;
   static const double _readingAnchorFraction = 0.38;
   static const int _liveReportIntervalMs = 80;
+  static const int _retainedChapterRadius = 2;
+  static const int _maxRetainedChapters = _retainedChapterRadius * 2 + 1;
 
   final ScrollController _scrollController = ScrollController();
   final GlobalKey _viewportKey = GlobalKey();
   final SplayTreeMap<int, String> _contents = SplayTreeMap<int, String>();
   final Map<int, GlobalKey> _sectionKeys = <int, GlobalKey>{};
+  final Map<int, GlobalKey> _textKeys = <int, GlobalKey>{};
   final Set<int> _loadingIndexes = <int>{};
   final Set<int> _failedIndexes = <int>{};
 
@@ -74,6 +82,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
     _contents[initialIndex] = widget.initialContent;
     _sectionKeys[initialIndex] = GlobalKey();
+    _textKeys[initialIndex] = GlobalKey();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -119,8 +128,58 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     return _sectionKeys.putIfAbsent(chapterIndex, GlobalKey.new);
   }
 
+  GlobalKey _textKeyFor(int chapterIndex) {
+    return _textKeys.putIfAbsent(chapterIndex, GlobalKey.new);
+  }
+
   void _preloadNextChapter(int chapterIndex) {
     unawaited(_loadChapter(chapterIndex + 1));
+  }
+
+  bool _isAdjacentToLoadedWindow(int chapterIndex) {
+    if (_contents.isEmpty) return false;
+    return chapterIndex == _contents.firstKey()! - 1 ||
+        chapterIndex == _contents.lastKey()! + 1;
+  }
+
+  Set<int> _indexesToEvict({
+    required int anchorIndex,
+    required int incomingIndex,
+  }) {
+    final retained = <int>{..._contents.keys, incomingIndex};
+    final evicted = retained
+        .where(
+          (index) =>
+              index < anchorIndex - _retainedChapterRadius ||
+              index > anchorIndex + _retainedChapterRadius,
+        )
+        .toSet();
+    retained.removeAll(evicted);
+
+    while (retained.length > _maxRetainedChapters) {
+      final first = retained.reduce((a, b) => a < b ? a : b);
+      final last = retained.reduce((a, b) => a > b ? a : b);
+      final firstDistance = (anchorIndex - first).abs();
+      final lastDistance = (last - anchorIndex).abs();
+      final removeFirst =
+          first != anchorIndex &&
+          (last == anchorIndex ||
+              firstDistance > lastDistance ||
+              (firstDistance == lastDistance && incomingIndex > anchorIndex));
+      final removed = removeFirst ? first : last;
+      retained.remove(removed);
+      evicted.add(removed);
+    }
+    return evicted;
+  }
+
+  void _removeChapterState(Iterable<int> chapterIndexes) {
+    for (final index in chapterIndexes) {
+      _contents.remove(index);
+      _sectionKeys.remove(index);
+      _textKeys.remove(index);
+      _failedIndexes.remove(index);
+    }
   }
 
   Future<void> _loadChapter(int chapterIndex) async {
@@ -135,17 +194,6 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     _failedIndexes.remove(chapterIndex);
     if (mounted) setState(() {});
 
-    final anchorIndex = _anchoredChapterIndex() ?? widget.initialChapterIndex;
-    final beforeTop = _sectionTopFor(anchorIndex);
-    final beforeOffset = _scrollController.hasClients
-        ? _scrollController.offset
-        : 0.0;
-    final revealPreviousEnding =
-        chapterIndex < anchorIndex && _revealPreviousEndingAfterLoad;
-    if (revealPreviousEnding) {
-      _revealPreviousEndingAfterLoad = false;
-    }
-
     try {
       final content = await widget.loadChapterContent(chapterIndex);
       if (!mounted) return;
@@ -154,9 +202,36 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         return;
       }
 
+      // The reader may have moved while an asynchronous request was in
+      // flight.  Discard stale results instead of creating a gap in the
+      // continuous chapter window.
+      if (!_isAdjacentToLoadedWindow(chapterIndex)) return;
+
+      final anchorIndex =
+          _anchoredChapterIndex() ??
+          _safeChapterIndex(widget.initialChapterIndex);
+      if ((chapterIndex - anchorIndex).abs() > _retainedChapterRadius) {
+        return;
+      }
+      final beforeTop = _sectionTopFor(anchorIndex);
+      final beforeOffset = _scrollController.hasClients
+          ? _scrollController.offset
+          : 0.0;
+      final revealPreviousEnding =
+          chapterIndex < anchorIndex && _revealPreviousEndingAfterLoad;
+      if (revealPreviousEnding) {
+        _revealPreviousEndingAfterLoad = false;
+      }
+      final evictedIndexes = _indexesToEvict(
+        anchorIndex: anchorIndex,
+        incomingIndex: chapterIndex,
+      );
+
       setState(() {
         _contents[chapterIndex] = content;
         _keyFor(chapterIndex);
+        _textKeyFor(chapterIndex);
+        _removeChapterState(evictedIndexes);
       });
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -215,11 +290,18 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     final position = _scrollController.position;
     final ratio = (widget.initialTextOffset / content.length).clamp(0.0, 1.0);
     final target =
+        _scrollTargetForTextOffset(
+          initialIndex,
+          content,
+          widget.initialTextOffset,
+          position,
+        ) ??
         (position.pixels +
                 sectionTop +
                 sectionHeight * ratio -
                 position.viewportDimension * _readingAnchorFraction)
-            .clamp(0.0, position.maxScrollExtent);
+            .clamp(0.0, position.maxScrollExtent)
+            .toDouble();
     _scrollController.jumpTo(target);
     _didRestoreInitialPosition = true;
   }
@@ -246,6 +328,12 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     final position = _scrollController.position;
     final ratio = (textOffset / content.length).clamp(0.0, 1.0);
     final target =
+        _scrollTargetForTextOffset(
+          chapterIndex,
+          content,
+          textOffset,
+          position,
+        ) ??
         (position.pixels +
                 sectionTop +
                 sectionHeight * ratio -
@@ -277,6 +365,64 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         ?.findRenderObject();
     if (section is! RenderBox || !section.hasSize) return null;
     return section.size.height;
+  }
+
+  RenderParagraph? _textRenderFor(int chapterIndex) {
+    final render = _textKeys[chapterIndex]?.currentContext?.findRenderObject();
+    return render is RenderParagraph && render.hasSize ? render : null;
+  }
+
+  double? _scrollTargetForTextOffset(
+    int chapterIndex,
+    String content,
+    int textOffset,
+    ScrollPosition position,
+  ) {
+    final viewport = _viewportKey.currentContext?.findRenderObject();
+    final paragraph = _textRenderFor(chapterIndex);
+    if (viewport is! RenderBox || paragraph == null || content.isEmpty) {
+      return null;
+    }
+
+    final safeOffset = textOffset.clamp(0, content.length).toInt();
+    final paragraphTop = paragraph
+        .localToGlobal(Offset.zero, ancestor: viewport)
+        .dy;
+    final caret = paragraph.getOffsetForCaret(
+      TextPosition(offset: safeOffset),
+      Rect.zero,
+    );
+    return (position.pixels +
+            paragraphTop +
+            caret.dy -
+            position.viewportDimension * _readingAnchorFraction)
+        .clamp(0.0, position.maxScrollExtent)
+        .toDouble();
+  }
+
+  int? _textOffsetAtViewportAnchor(
+    int chapterIndex,
+    String content,
+    double anchor,
+  ) {
+    final viewport = _viewportKey.currentContext?.findRenderObject();
+    final paragraph = _textRenderFor(chapterIndex);
+    if (viewport is! RenderBox || paragraph == null || content.isEmpty) {
+      return null;
+    }
+
+    final paragraphTop = paragraph
+        .localToGlobal(Offset.zero, ancestor: viewport)
+        .dy;
+    final maxY = paragraph.size.height > 0.5
+        ? paragraph.size.height - 0.5
+        : 0.0;
+    final localY = (anchor - paragraphTop).clamp(0.0, maxY).toDouble();
+    return paragraph
+        .getPositionForOffset(Offset(0, localY))
+        .offset
+        .clamp(0, content.length)
+        .toInt();
   }
 
   int? _anchoredChapterIndex() {
@@ -318,7 +464,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     final anchor = viewport.size.height * _readingAnchorFraction;
     final ratio = ((anchor - top) / height).clamp(0.0, 1.0);
-    final charPosition = (content.length * ratio).round();
+    final charPosition =
+        _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ??
+        (content.length * ratio).round();
     final changed =
         chapterIndex != _lastReportedChapterIndex ||
         charPosition != _lastReportedCharPosition;
@@ -350,11 +498,19 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   void _loadNearEdges(ScrollMetrics metrics) {
     final loaded = _loadedIndexes;
     if (loaded.isEmpty) return;
-    if (_allowPreviousChapterLoad && metrics.pixels <= _loadAheadExtent) {
-      unawaited(_loadChapter(loaded.first - 1));
+    final anchorIndex =
+        _anchoredChapterIndex() ??
+        _safeChapterIndex(widget.initialChapterIndex);
+    final previousIndex = loaded.first - 1;
+    if (_allowPreviousChapterLoad &&
+        metrics.pixels <= _loadAheadExtent &&
+        previousIndex >= anchorIndex - _retainedChapterRadius) {
+      unawaited(_loadChapter(previousIndex));
     }
-    if (metrics.maxScrollExtent - metrics.pixels <= _loadAheadExtent) {
-      unawaited(_loadChapter(loaded.last + 1));
+    final nextIndex = loaded.last + 1;
+    if (metrics.maxScrollExtent - metrics.pixels <= _loadAheadExtent &&
+        nextIndex <= anchorIndex + _retainedChapterRadius) {
+      unawaited(_loadChapter(nextIndex));
     }
   }
 
@@ -458,6 +614,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
                       widget.chapters[chapterIndex],
                       chapterIndex,
                       _contents[chapterIndex]!,
+                      _textKeyFor(chapterIndex),
                     ),
                   ),
                 _buildEdgeLoader(before: false),

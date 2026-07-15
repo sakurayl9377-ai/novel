@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/tts_settings.dart';
+import 'package:novel_app/services/tts_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('iflytek selection uses the authenticated backend path', () {
     final source = File('lib/services/tts_service.dart').readAsStringSync();
 
@@ -29,6 +34,145 @@ void main() {
     expect(source, contains('await _flutterTts.stop().timeout('));
     expect(source, contains('_isPaused = true;'));
   });
+
+  test('speak followed immediately by stop never starts later', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var nativeSpeakCalls = 0;
+
+    messenger.setMockMethodCallHandler(const MethodChannel('flutter_tts'), (
+      call,
+    ) async {
+      if (call.method == 'speak') nativeSpeakCalls++;
+      return 1;
+    });
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('xyz.luan/audioplayers'),
+      (_) async => null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('xyz.luan/audioplayers.global'),
+      (_) async => null,
+    );
+    addTearDown(() async {
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('flutter_tts'),
+        null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('xyz.luan/audioplayers'),
+        null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('xyz.luan/audioplayers.global'),
+        null,
+      );
+    });
+
+    final service = TtsService();
+    var startCallbacks = 0;
+    var completionCallbacks = 0;
+    service.onStart = () => startCallbacks++;
+    service.onComplete = () => completionCallbacks++;
+    addTearDown(service.dispose);
+
+    final speakResult = service.speak('这段文字不应该在停止后重新朗读');
+    final stopResult = service.stop();
+
+    expect(await speakResult, isFalse);
+    expect(await stopResult, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 220));
+    expect(nativeSpeakCalls, 0);
+    expect(service.isSpeaking, isFalse);
+
+    for (final callback in ['speak.onStart', 'speak.onComplete']) {
+      await messenger.handlePlatformMessage(
+        'flutter_tts',
+        const StandardMethodCodec().encodeMethodCall(MethodCall(callback)),
+        null,
+      );
+    }
+    expect(startCallbacks, 0);
+    expect(completionCallbacks, 0);
+    expect(service.isSpeaking, isFalse);
+  });
+
+  test(
+    'callbacks from a stopped utterance cannot complete its replacement',
+    () async {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final replacementNativeSpeak = Completer<dynamic>();
+      var nativeSpeakCalls = 0;
+
+      messenger.setMockMethodCallHandler(const MethodChannel('flutter_tts'), (
+        call,
+      ) async {
+        if (call.method != 'speak') return 1;
+        nativeSpeakCalls++;
+        return nativeSpeakCalls == 2 ? await replacementNativeSpeak.future : 1;
+      });
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('xyz.luan/audioplayers'),
+        (_) async => null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('xyz.luan/audioplayers.global'),
+        (_) async => null,
+      );
+      addTearDown(() async {
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('flutter_tts'),
+          null,
+        );
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('xyz.luan/audioplayers'),
+          null,
+        );
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('xyz.luan/audioplayers.global'),
+          null,
+        );
+      });
+
+      Future<void> emit(String callback) => messenger.handlePlatformMessage(
+        'flutter_tts',
+        const StandardMethodCodec().encodeMethodCall(MethodCall(callback)),
+        null,
+      );
+
+      final service = TtsService();
+      var startCallbacks = 0;
+      var completionCallbacks = 0;
+      service.onStart = () => startCallbacks++;
+      service.onComplete = () => completionCallbacks++;
+      addTearDown(service.dispose);
+
+      expect(await service.speak('第一段朗读内容'), isTrue);
+      await emit('speak.onStart');
+      expect(startCallbacks, 1);
+      expect(await service.stop(), isTrue);
+
+      final replacement = service.speak('第二段替换后的朗读内容');
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      expect(nativeSpeakCalls, 2);
+
+      await emit('speak.onStart');
+      await emit('speak.onComplete');
+      expect(startCallbacks, 1);
+      expect(completionCallbacks, 0);
+
+      replacementNativeSpeak.complete(1);
+      expect(await replacement, isTrue);
+      expect(startCallbacks, 2);
+      await emit('speak.onStart');
+      await emit('speak.onComplete');
+      await emit('speak.onComplete');
+      expect(startCallbacks, 2);
+      expect(completionCallbacks, 1);
+      expect(service.isSpeaking, isFalse);
+    },
+  );
 
   test('cloud TTS settings retain engine and never persist credentials', () {
     final settings = TtsSettings.fromJson({

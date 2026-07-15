@@ -45,6 +45,9 @@ class TtsService {
   Future<Uint8List>? _prefetchedIflytekAudio;
   int _prefetchedIflytekIndex = -1;
   bool _systemEnginePrepared = false;
+  _SystemUtterancePhase _systemUtterancePhase = _SystemUtterancePhase.idle;
+  int _systemUtteranceToken = 0;
+  int _systemUtteranceChunkIndex = -1;
 
   bool get isSpeaking => _isSpeaking;
   bool get isPaused => _isPaused;
@@ -94,26 +97,9 @@ class TtsService {
       await trySet(() => _flutterTts.setPitch(_pitch));
       await trySet(() => _flutterTts.awaitSpeakCompletion(false));
 
-      _flutterTts.setStartHandler(() {
-        _isSpeaking = true;
-        _isPaused = false;
-        onStart?.call();
-      });
+      _flutterTts.setStartHandler(_handleSystemStart);
 
-      _flutterTts.setCompletionHandler(() {
-        if (_isStopping) return;
-
-        if (_chunkIndex + 1 < _chunks.length) {
-          _chunkIndex++;
-          final token = _speakToken;
-          unawaited(_speakSystemChunk(token));
-          return;
-        }
-
-        _isSpeaking = false;
-        _isPaused = false;
-        onComplete?.call();
-      });
+      _flutterTts.setCompletionHandler(_handleSystemComplete);
 
       _flutterTts.setProgressHandler((
         String text,
@@ -121,9 +107,19 @@ class TtsService {
         int endOffset,
         String word,
       ) {
-        if (_chunkIndex >= _chunks.length) return;
+        if (!_hasCurrentSystemUtterance ||
+            _systemUtterancePhase == _SystemUtterancePhase.submitting) {
+          return;
+        }
 
-        final chunkOffset = _chunks[_chunkIndex].offset;
+        final chunk = _chunks[_chunkIndex];
+        if (text != chunk.text) return;
+        if (_systemUtterancePhase == _SystemUtterancePhase.queued) {
+          _handleSystemStart();
+        }
+        if (_systemUtterancePhase != _SystemUtterancePhase.started) return;
+
+        final chunkOffset = chunk.offset;
         _currentPos = chunkOffset + startOffset;
         onProgress?.call(
           chunkOffset + startOffset,
@@ -133,6 +129,9 @@ class TtsService {
       });
 
       _flutterTts.setErrorHandler((msg) {
+        if (!_hasCurrentSystemUtterance) return;
+        _invalidateSystemUtterance();
+        _chunks = const [];
         _isSpeaking = false;
         _isPaused = false;
         onError?.call();
@@ -146,20 +145,24 @@ class TtsService {
 
   Future<bool> speak(String text) async {
     if (_isStarting) return false;
-    if (!_isInitialized) {
-      await _init().timeout(const Duration(seconds: 3), onTimeout: () {});
-    }
-    if (!_isInitialized) return false;
+    final token = ++_speakToken;
+    _isStarting = true;
     try {
-      _isStarting = true;
+      if (!_isInitialized) {
+        await _init().timeout(const Duration(seconds: 3), onTimeout: () {});
+        if (token != _speakToken) return false;
+      }
+      if (!_isInitialized || token != _speakToken) return false;
+
       _isStopping = true;
-      _speakToken++;
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
       await _stopNative();
+      if (token != _speakToken) return false;
       _isStopping = false;
       await Future<void>.delayed(const Duration(milliseconds: 160));
+      if (token != _speakToken) return false;
 
       final cleanText = _normalizeText(text);
       if (cleanText.isEmpty) {
@@ -177,7 +180,6 @@ class TtsService {
         splitAtSentence: !settings.useIflytek,
       );
       _chunkIndex = 0;
-      final token = _speakToken;
       if (settings.useIflytek) {
         if (authToken.trim().isEmpty) {
           _lastErrorMessage = '使用科大讯飞朗读需要先登录';
@@ -188,23 +190,26 @@ class TtsService {
       }
       return _speakSystemChunk(token);
     } catch (e) {
-      _lastErrorMessage = e.toString();
-      onErrorMessage?.call(_lastErrorMessage);
+      if (token == _speakToken) {
+        _lastErrorMessage = e.toString();
+        onErrorMessage?.call(_lastErrorMessage);
+      }
       return false;
     } finally {
-      _isStopping = false;
+      if (token == _speakToken) _isStopping = false;
       _isStarting = false;
     }
   }
 
   Future<bool> stop() async {
+    final token = ++_speakToken;
     try {
       _isStopping = true;
-      _speakToken++;
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
       await _stopNative();
+      if (token != _speakToken) return true;
       _isSpeaking = false;
       _isPaused = false;
       _currentPos = 0;
@@ -212,7 +217,7 @@ class TtsService {
     } catch (e) {
       return false;
     } finally {
-      _isStopping = false;
+      if (token == _speakToken) _isStopping = false;
     }
   }
 
@@ -231,6 +236,7 @@ class TtsService {
       // restart from the last progress callback.
       if (Platform.isAndroid) {
         _isStopping = true;
+        _invalidateSystemUtterance();
         await _flutterTts.stop().timeout(
           const Duration(seconds: 2),
           onTimeout: () => null,
@@ -253,9 +259,11 @@ class TtsService {
   }
 
   Future<bool> resume() async {
+    final token = ++_speakToken;
     try {
       if (settings.useIflytek) {
         await _audioPlayer.resume();
+        if (token != _speakToken) return false;
         _isPaused = false;
         _isSpeaking = true;
         return true;
@@ -263,13 +271,14 @@ class TtsService {
       if (_currentText.isEmpty) return false;
 
       _isStopping = true;
-      _speakToken++;
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
       await _stopNative();
+      if (token != _speakToken) return false;
       _isStopping = false;
       await Future<void>.delayed(const Duration(milliseconds: 80));
+      if (token != _speakToken) return false;
 
       final resumeOffset = _currentPos.clamp(0, _currentText.length).toInt();
       final resumeText = _currentText.substring(resumeOffset);
@@ -279,13 +288,12 @@ class TtsService {
         splitAtSentence: true,
       );
       _chunkIndex = 0;
-      final token = _speakToken;
       _isPaused = false;
       return await _speakSystemChunk(token);
     } catch (e) {
       return false;
     } finally {
-      _isStopping = false;
+      if (token == _speakToken) _isStopping = false;
     }
   }
 
@@ -315,6 +323,7 @@ class TtsService {
   }
 
   Future<void> _stopNative() async {
+    _invalidateSystemUtterance();
     await _audioPlayer.stop();
     await _flutterTts.stop().timeout(
       const Duration(milliseconds: 800),
@@ -335,18 +344,82 @@ class TtsService {
       return _speakSystemChunk(token);
     }
 
+    final chunkIndex = _chunkIndex;
+    _systemUtteranceToken = token;
+    _systemUtteranceChunkIndex = chunkIndex;
+    _systemUtterancePhase = _SystemUtterancePhase.submitting;
+
     final result = await _flutterTts
         .speak(chunk.text)
         .timeout(const Duration(seconds: 3), onTimeout: () => null);
-    if (token != _speakToken) return false;
+    if (token != _speakToken ||
+        chunkIndex != _chunkIndex ||
+        _systemUtteranceToken != token ||
+        _systemUtteranceChunkIndex != chunkIndex ||
+        _systemUtterancePhase != _SystemUtterancePhase.submitting) {
+      return false;
+    }
 
     _isSpeaking = result == 1;
     if (_isSpeaking) {
-      _isPaused = false;
+      _systemUtterancePhase = _SystemUtterancePhase.queued;
+      // Some Android engines emit onStart before the MethodChannel call
+      // returns, while others omit range callbacks entirely. Treat native
+      // acceptance as the single start edge; a later platform start is then
+      // harmlessly ignored by the phase guard.
+      _handleSystemStart();
       _currentPos = chunk.offset;
       _emitChunkProgress(chunk);
+    } else {
+      _invalidateSystemUtterance();
     }
     return _isSpeaking;
+  }
+
+  bool get _hasCurrentSystemUtterance {
+    return _systemUtterancePhase != _SystemUtterancePhase.idle &&
+        _systemUtteranceToken == _speakToken &&
+        _systemUtteranceChunkIndex == _chunkIndex &&
+        _chunkIndex >= 0 &&
+        _chunkIndex < _chunks.length;
+  }
+
+  void _handleSystemStart() {
+    if (_isStopping ||
+        !_hasCurrentSystemUtterance ||
+        _systemUtterancePhase != _SystemUtterancePhase.queued) {
+      return;
+    }
+    _systemUtterancePhase = _SystemUtterancePhase.started;
+    _isSpeaking = true;
+    _isPaused = false;
+    onStart?.call();
+  }
+
+  void _handleSystemComplete() {
+    if (_isStopping ||
+        !_hasCurrentSystemUtterance ||
+        _systemUtterancePhase != _SystemUtterancePhase.started) {
+      return;
+    }
+    final token = _systemUtteranceToken;
+    _invalidateSystemUtterance();
+    if (_chunkIndex + 1 < _chunks.length) {
+      _chunkIndex++;
+      unawaited(_speakSystemChunk(token));
+      return;
+    }
+
+    _chunks = const [];
+    _isSpeaking = false;
+    _isPaused = false;
+    onComplete?.call();
+  }
+
+  void _invalidateSystemUtterance() {
+    _systemUtterancePhase = _SystemUtterancePhase.idle;
+    _systemUtteranceToken = 0;
+    _systemUtteranceChunkIndex = -1;
   }
 
   Future<void> _prepareSystemTts() async {
@@ -674,12 +747,25 @@ class TtsService {
     return await _flutterTts.getVoices;
   }
 
-  void dispose() {
-    _playerStateSubscription?.cancel();
-    _playerPositionSubscription?.cancel();
-    _playerDurationSubscription?.cancel();
-    _audioPlayer.dispose();
-    _flutterTts.stop();
+  Future<void> dispose() async {
+    _speakToken++;
+    _isStopping = true;
+    _invalidateSystemUtterance();
+    _chunks = const [];
+    _clearIflytekPrefetch();
+    await Future.wait<void>([
+      if (_playerStateSubscription case final subscription?)
+        subscription.cancel(),
+      if (_playerPositionSubscription case final subscription?)
+        subscription.cancel(),
+      if (_playerDurationSubscription case final subscription?)
+        subscription.cancel(),
+    ]);
+    await _audioPlayer.dispose();
+    await _flutterTts.stop();
+    _isSpeaking = false;
+    _isPaused = false;
+    _isInitialized = false;
   }
 }
 
@@ -689,3 +775,5 @@ class _TtsChunk {
   final String text;
   final int offset;
 }
+
+enum _SystemUtterancePhase { idle, submitting, queued, started }

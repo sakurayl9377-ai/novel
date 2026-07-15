@@ -15,6 +15,7 @@ import '../providers/tts_provider.dart';
 import '../services/tts_media_control_service.dart';
 import '../services/app_telemetry_service.dart';
 import '../utils/auth_gate.dart';
+import '../utils/reading_text_range.dart';
 import '../widgets/reading_settings_panel.dart';
 import '../widgets/continuous_chapter_view.dart';
 import '../widgets/page_turn_view.dart';
@@ -472,16 +473,11 @@ class _ReadingScreenState extends State<ReadingScreen>
 
     final safePosition = charPosition.clamp(0, content.length).toInt();
     final chapterChanged = chapterIndex != _currentChapterIndex;
-    final oldPercent = _chapterProgressPercentForPosition(_lastCharPosition);
-    final newPercent = ((safePosition / content.length) * 100)
-        .clamp(0.0, 100.0)
-        .round();
-    // While a finger is moving, the controls are hidden and rebuilding the
-    // entire reader for every percentage change only introduces jank. Keep
-    // the position current in memory, then refresh visible progress when the
-    // gesture settles or the anchored chapter actually changes.
-    final shouldRebuild =
-        chapterChanged || (settled && oldPercent != newPercent);
+    // While a finger is moving, rebuilding the entire reader for every
+    // position change only introduces jank. Keep the
+    // position current in memory, then rebuild once when the gesture settles
+    // so the visible percentage cannot remain stale.
+    final shouldRebuild = chapterChanged || settled;
 
     void applyPosition() {
       _currentChapterIndex = chapterIndex;
@@ -529,6 +525,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     required double lineHeight,
     required bool isNight,
     required TtsProvider ttsProvider,
+    required Key textKey,
   }) {
     final isActiveChapter = chapterIndex == _currentChapterIndex;
     final text = isActiveChapter
@@ -541,9 +538,11 @@ class _ReadingScreenState extends State<ReadingScreen>
             lineHeight: lineHeight,
             isNight: isNight,
             ttsProvider: ttsProvider,
+            key: textKey,
           )
         : Text(
             content,
+            key: textKey,
             softWrap: true,
             overflow: TextOverflow.clip,
             style: TextStyle(
@@ -1045,47 +1044,6 @@ class _ReadingScreenState extends State<ReadingScreen>
     Navigator.pop(context);
   }
 
-  TextRange _sentenceRangeForOffset(int offset) {
-    if (_content.isEmpty || offset < 0) {
-      return TextRange.empty;
-    }
-
-    final safeOffset = offset.clamp(0, _content.length - 1);
-    var start = safeOffset;
-    while (start > 0 && !_isSentenceBoundary(_content[start - 1])) {
-      start--;
-    }
-    while (start < _content.length &&
-        (_content[start].trim().isEmpty ||
-            _isClosingPunctuation(_content[start]))) {
-      start++;
-    }
-
-    var end = safeOffset;
-    while (end < _content.length && !_isSentenceBoundary(_content[end])) {
-      end++;
-    }
-    if (end < _content.length) end++;
-    while (end < _content.length && _isClosingPunctuation(_content[end])) {
-      end++;
-    }
-    while (end > start && _content[end - 1].trim().isEmpty) {
-      end--;
-    }
-
-    return TextRange(start: start, end: end.clamp(start, _content.length));
-  }
-
-  bool _isSentenceBoundary(String char) {
-    const boundaries = '。！？!?；;\n';
-    return boundaries.contains(char);
-  }
-
-  bool _isClosingPunctuation(String char) {
-    const closings = '”’』」》）)]}';
-    return closings.contains(char);
-  }
-
   Widget _buildReaderText({
     required String pageContent,
     required int pageStartOffset,
@@ -1095,6 +1053,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     required double lineHeight,
     required bool isNight,
     required TtsProvider ttsProvider,
+    Key? key,
   }) {
     final baseStyle = TextStyle(
       fontSize: fontSize,
@@ -1106,19 +1065,24 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!ttsProvider.isSpeaking || ttsProvider.currentStartOffset < 0) {
       return Text(
         pageContent,
+        key: key,
         softWrap: true,
         overflow: TextOverflow.clip,
         style: baseStyle,
       );
     }
 
-    final range = _sentenceRangeForOffset(ttsProvider.currentStartOffset);
+    final range = paragraphRangeForOffset(
+      _content,
+      ttsProvider.currentStartOffset,
+    );
     final pageEndOffset = pageStartOffset + pageContent.length;
     if (!range.isValid ||
         range.end <= pageStartOffset ||
         range.start >= pageEndOffset) {
       return Text(
         pageContent,
+        key: key,
         softWrap: true,
         overflow: TextOverflow.clip,
         style: baseStyle,
@@ -1139,6 +1103,7 @@ class _ReadingScreenState extends State<ReadingScreen>
         : AppTheme.primaryColor.withValues(alpha: 0.18);
 
     return RichText(
+      key: key,
       text: TextSpan(
         style: baseStyle,
         children: [
@@ -1165,6 +1130,12 @@ class _ReadingScreenState extends State<ReadingScreen>
     final chapterProgressPercent = _displayChapterProgressPercent(ttsProvider);
     final useContinuousScrolling =
         settings.pageTurnMode == ReadingSettings.defaultPageTurnMode;
+    final activeTtsParagraph = ttsProvider.isSpeaking
+        ? paragraphRangeForOffset(_content, ttsProvider.currentStartOffset)
+        : TextRange.empty;
+    final activeTtsParagraphOffset = activeTtsParagraph.isValid
+        ? activeTtsParagraph.start
+        : null;
 
     return PopScope(
       canPop: _isLeaving,
@@ -1207,11 +1178,16 @@ class _ReadingScreenState extends State<ReadingScreen>
                                 ? _currentChapterIndex
                                 : null,
                             activeTextOffset: ttsProvider.isSpeaking
-                                ? ttsProvider.currentStartOffset
+                                ? activeTtsParagraphOffset
                                 : null,
                             loadChapterContent: _loadContinuousChapterContent,
                             sectionBuilder:
-                                (chapter, chapterIndex, chapterContent) {
+                                (
+                                  chapter,
+                                  chapterIndex,
+                                  chapterContent,
+                                  textKey,
+                                ) {
                                   return _buildContinuousChapterSection(
                                     chapter: chapter,
                                     chapterIndex: chapterIndex,
@@ -1226,6 +1202,7 @@ class _ReadingScreenState extends State<ReadingScreen>
                                     lineHeight: settings.lineHeight,
                                     isNight: isNight,
                                     ttsProvider: ttsProvider,
+                                    textKey: textKey,
                                   );
                                 },
                             onReadingPositionChanged:
@@ -1254,7 +1231,7 @@ class _ReadingScreenState extends State<ReadingScreen>
                             ),
                             content: _content,
                             activeTextOffset: ttsProvider.isSpeaking
-                                ? ttsProvider.currentStartOffset
+                                ? activeTtsParagraphOffset
                                 : null,
                             initialTextOffset: _lastCharPosition,
                             initialScrollPosition: _lastScrollPosition,
