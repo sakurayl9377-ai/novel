@@ -836,10 +836,7 @@ async function renderProxy() {
                 .map(
                   (node) => `<article class="proxy-node-item">
                     <div><strong>${escapeHtml(node.name || "未命名节点")}</strong><small>${escapeHtml(node.type || "代理")} · ${node.delay ? `${node.delay} ms` : "待测速"} · ${node.alive ? "可用" : "状态未知"}</small></div>
-                    <div class="proxy-actions">
-                      <button class="button small" data-action="proxy-test-node" data-node="${escapeAttr(node.name || "")}" ${service.active ? "" : "disabled"}>测速</button>
-                      <button class="button small primary" data-action="proxy-set-node" data-node="${escapeAttr(node.name || "")}" ${manualModeEnabled ? "" : "disabled"}>切换到此节点</button>
-                    </div>
+                    <button class="button small primary" data-action="proxy-set-node" data-node="${escapeAttr(node.name || "")}" ${manualModeEnabled ? "" : "disabled"}>切换到此节点</button>
                   </article>`,
                 )
                 .join("")
@@ -911,17 +908,6 @@ async function handleOperationsAction(action, actionElement) {
       const result = await api("/admin/proxy/nodes/test-all", { method: "POST" });
       await renderProxy();
       renderNotice(`节点测速完成：${result.available || 0}/${result.tested || 0} 个可用${result.failed ? ` · ${result.failed} 个失败` : ""}`, result.failed ? "error" : "");
-    } else if (action === "proxy-test-node") {
-      const node = actionElement.dataset.node || "";
-      actionElement.disabled = true;
-      actionElement.textContent = "测速中...";
-      const result = await api("/admin/proxy/nodes/test", {
-        method: "POST",
-        body: { node },
-      });
-      await renderProxy();
-      const tested = Array.isArray(result.nodes) ? result.nodes[0] : null;
-      renderNotice(tested?.ok ? `${node} · ${tested.delay} ms` : `${node} 测速失败`, tested?.ok ? "" : "error");
     } else if (action === "proxy-update-all-subscriptions") {
       if (!confirm("确认立即更新全部代理订阅并重载 Mihomo？")) return;
       await api("/admin/proxy/subscriptions/update-all", { method: "POST" });

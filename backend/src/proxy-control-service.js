@@ -45,14 +45,6 @@ export function normalizeProxyGroupSelection(group, choice) {
   return { group: safeGroup, choice: safeChoice };
 }
 
-export function normalizeProxyNodeName(value) {
-  const text = String(value || "").trim();
-  if (!text || text.length > 300 || /[\u0000-\u001f\u007f]/.test(text)) {
-    throw new Error("proxy_node_name_invalid");
-  }
-  return text;
-}
-
 export function runProxyControl(payload, { timeoutMs = 90000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("sudo", ["-n", helperPath], {

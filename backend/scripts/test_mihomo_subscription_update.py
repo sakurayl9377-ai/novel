@@ -231,41 +231,29 @@ class SubscriptionUpdateTests(unittest.TestCase):
                 [{"id": "legacy", "name": "默认订阅", "url": "https://subscription.example/list"}],
             )
 
-    def test_tests_nodes_through_mihomo_delay_endpoint(self):
-        runtime = {
-            "US / One": {"alive": True, "history": []},
-            "US-Two": {"alive": True, "history": []},
-        }
-
+    def test_tests_nodes_through_provider_healthcheck(self):
         def fake_controller(method, path, payload=None, timeout=10, attempts=6):
             self.assertEqual(method, "GET")
-            if path == "/proxies":
-                return {"proxies": runtime}
-            self.assertIn("/delay?", path)
-            self.assertIn("url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204", path)
-            self.assertEqual(attempts, 1)
-            return {"delay": 42 if "US%20%2F%20One" in path else 84}
+            if path.endswith("/healthcheck"):
+                self.assertEqual(attempts, 1)
+                return {}
+            self.assertEqual(path, "/providers/proxies/dylian")
+            return {
+                "proxies": [
+                    {"name": "US-One", "type": "ss", "alive": True, "history": [{"delay": 42}]},
+                    {"name": "US-Two", "type": "ss", "alive": False, "history": [{"delay": 0}]},
+                ]
+            }
 
-        nodes = [
-            {"name": "US / One", "type": "ss", "alive": True, "delay": 0},
-            {"name": "US-Two", "type": "ss", "alive": True, "delay": 0},
-        ]
         with mock.patch.object(ADMIN_MODULE, "service_active", return_value=True), mock.patch.object(
             ADMIN_MODULE, "controller_request", side_effect=fake_controller
-        ), mock.patch.object(ADMIN_MODULE, "proxy_nodes", return_value=nodes):
+        ):
             result = ADMIN_MODULE.test_nodes()
 
         self.assertEqual(result["tested"], 2)
-        self.assertEqual(result["available"], 2)
-        self.assertEqual([item["delay"] for item in result["nodes"]], [42, 84])
-
-    def test_rejects_unknown_node_latency_request(self):
-        with mock.patch.object(ADMIN_MODULE, "service_active", return_value=True), mock.patch.object(
-            ADMIN_MODULE, "controller_request", return_value={"proxies": {}}
-        ), mock.patch.object(ADMIN_MODULE, "proxy_nodes", return_value=[]), self.assertRaisesRegex(
-            ADMIN_MODULE.ControlError, "proxy_node_not_found"
-        ):
-            ADMIN_MODULE.test_nodes("missing")
+        self.assertEqual(result["available"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual([item["delay"] for item in result["nodes"]], [42, 0])
 
 
 if __name__ == "__main__":
