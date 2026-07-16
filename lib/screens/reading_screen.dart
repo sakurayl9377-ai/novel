@@ -1634,9 +1634,13 @@ class _ReadingScreenState extends State<ReadingScreen>
               left: 0,
               right: 0,
               bottom: 0,
-              child: Consumer<TtsProvider>(
-                builder: (context, ttsProvider, _) =>
-                    _buildTtsPanel(ttsProvider),
+              child: Builder(
+                builder: (context) {
+                  context.select<TtsProvider, (bool, bool, bool)>(
+                    (tts) => (tts.isSpeaking, tts.isPaused, tts.isStarting),
+                  );
+                  return _buildTtsPanel(context.read<TtsProvider>());
+                },
               ),
             ),
         ],

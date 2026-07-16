@@ -15,7 +15,7 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  testWidgets('paged mode stays single-page while double mode is disabled', (
+  testWidgets('legacy paged preference migrates to continuous strip', (
     tester,
   ) async {
     final testDirectory = Directory.systemTemp.createTempSync(
@@ -64,10 +64,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(PageView), findsOneWidget);
+    expect(find.byType(PageView), findsNothing);
     expect(find.text('page-0'), findsOneWidget);
-    expect(find.text('page-1'), findsNothing);
-    expect(find.text('page-2'), findsNothing);
+    expect(find.byType(ListView), findsOneWidget);
     expect(find.byKey(const Key('reader-shell-content-layer')), findsOneWidget);
   });
 }

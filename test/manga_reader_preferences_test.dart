@@ -15,7 +15,7 @@ void main() {
 
     final restored = MangaReaderPreferences.decode(preferences.encode());
 
-    expect(restored.readingMode, MangaReadingMode.paged);
+    expect(restored.readingMode, MangaReadingMode.longStrip);
     expect(restored.pageDirection, MangaPageDirection.rtl);
     expect(restored.spreadMode, MangaSpreadMode.single);
     expect(restored.imageQuality, MangaImageQuality.high);
@@ -37,7 +37,7 @@ void main() {
       'quality': 'unknown',
     });
 
-    expect(legacy.readingMode, MangaReadingMode.paged);
+    expect(legacy.readingMode, MangaReadingMode.longStrip);
     expect(legacy.pageDirection, MangaPageDirection.rtl);
     expect(legacy.spreadMode, MangaSpreadMode.single);
     expect(legacy.imageQuality, MangaImageQuality.high);

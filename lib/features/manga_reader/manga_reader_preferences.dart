@@ -30,7 +30,9 @@ class MangaReaderPreferences {
     bool? nightMode,
   }) {
     return MangaReaderPreferences(
-      readingMode: readingMode ?? this.readingMode,
+      // Page mode is retired; always migrate legacy preferences to the
+      // stable continuous strip reader.
+      readingMode: MangaReadingMode.longStrip,
       pageDirection: pageDirection ?? this.pageDirection,
       spreadMode: spreadMode ?? this.spreadMode,
       imageQuality: imageQuality ?? this.imageQuality,
@@ -41,7 +43,7 @@ class MangaReaderPreferences {
 
   Map<String, Object> toJson() {
     return <String, Object>{
-      'readingMode': readingMode.code,
+      'readingMode': MangaReadingMode.longStrip.code,
       'pageDirection': pageDirection.code,
       'spreadMode': spreadMode.code,
       'imageQuality': imageQuality.code,
@@ -67,9 +69,7 @@ class MangaReaderPreferences {
 
   factory MangaReaderPreferences.fromJson(Map<String, dynamic> json) {
     return MangaReaderPreferences(
-      readingMode: MangaReadingMode.fromStorage(
-        json['readingMode'] ?? json['mode'] ?? json['readMode'],
-      ),
+      readingMode: MangaReadingMode.longStrip,
       pageDirection: MangaPageDirection.fromStorage(
         json['pageDirection'] ?? json['direction'],
       ),

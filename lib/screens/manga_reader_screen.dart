@@ -1571,13 +1571,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     _pageGeometryVersion.value += 1;
   }
 
-  void _toggleReadingMode() {
-    final nextMode = _preferences.readingMode == MangaReadingMode.longStrip
-        ? MangaReadingMode.paged
-        : MangaReadingMode.longStrip;
-    _applyPreferences(_preferences.copyWith(readingMode: nextMode));
-  }
-
   void _applyPreferences(MangaReaderPreferences next) {
     if (!mounted) return;
     next = next.copyWith(
@@ -1643,34 +1636,11 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
               padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
               shrinkWrap: true,
               children: [
-                _buildPreferenceChoices<MangaReadingMode>(
-                  title: '阅读模式',
-                  values: MangaReadingMode.values,
-                  selected: _preferences.readingMode,
-                  label: (value) =>
-                      value == MangaReadingMode.longStrip ? '条漫' : '页漫',
-                  onSelected: (value) =>
-                      update(_preferences.copyWith(readingMode: value)),
+                const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('阅读模式：条漫'),
+                  subtitle: Text('页漫模式已移除，统一使用连续纵向阅读'),
                 ),
-                if (_preferences.readingMode == MangaReadingMode.paged) ...[
-                  _buildPreferenceChoices<MangaPageDirection>(
-                    title: '翻页方向',
-                    values: MangaPageDirection.values,
-                    selected: _preferences.pageDirection,
-                    label: (value) =>
-                        value == MangaPageDirection.ltr ? '从左到右' : '从右到左',
-                    onSelected: (value) =>
-                        update(_preferences.copyWith(pageDirection: value)),
-                  ),
-                  const ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('双页模式暂时关闭'),
-                    subtitle: Text('当前使用按大面积白色区域识别的页漫切分'),
-                  ),
-                  _buildManualSpreadControls(
-                    onChanged: () => setSheetState(() {}),
-                  ),
-                ],
                 _buildPreferenceChoices<MangaImageQuality>(
                   title: '图片画质',
                   values: MangaImageQuality.values,
@@ -1692,10 +1662,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
                       update(_preferences.copyWith(nightMode: value)),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  '页漫支持双击缩放、双指缩放和放大拖动；缩放时不会误触翻页。',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
               ],
             );
           },
@@ -1704,6 +1670,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     );
   }
 
+  // ignore: unused_element, kept for migration-safe source compatibility
   Widget _buildManualSpreadControls({required VoidCallback onChanged}) {
     final spread = _currentPageSpread();
     if (spread == null) return const SizedBox.shrink();
@@ -1976,16 +1943,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
             ),
           ),
           ReaderChromeAction(
-            icon: _preferences.readingMode == MangaReadingMode.longStrip
-                ? Icons.view_stream_rounded
-                : Icons.auto_stories_rounded,
-            label: _preferences.readingMode == MangaReadingMode.longStrip
-                ? '条漫模式'
-                : '页漫模式',
-            selected: _preferences.readingMode == MangaReadingMode.paged,
-            onPressed: _toggleReadingMode,
-          ),
-          ReaderChromeAction(
             icon: Icons.tune_rounded,
             label: '阅读设置',
             onPressed: () => unawaited(_showReaderSettings()),
@@ -2005,11 +1962,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       valueListenable: _chapterProgress,
       builder: (context, progress, _) => ReaderProgressHud(
         label: '$progress%',
-        leading: Icon(
-          _preferences.readingMode == MangaReadingMode.longStrip
-              ? Icons.view_stream_rounded
-              : Icons.auto_stories_rounded,
-        ),
+        leading: const Icon(Icons.view_stream_rounded),
       ),
     );
   }
@@ -2049,9 +2002,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     return LayoutBuilder(
       builder: (context, constraints) {
         _syncViewportWidth(constraints.maxWidth);
-        if (_preferences.readingMode == MangaReadingMode.paged) {
-          return _buildPagedReader(constraints.maxWidth);
-        }
         return _buildLongStripReader();
       },
     );
@@ -2101,6 +2051,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     );
   }
 
+  // ignore: unused_element, kept for migration-safe source compatibility
   Widget _buildPagedReader(double viewportWidth) {
     return ValueListenableBuilder<int>(
       valueListenable: _pageGeometryVersion,
