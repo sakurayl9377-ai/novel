@@ -20,7 +20,9 @@ import 'swr_cache.dart';
 
 class BookSourceService {
   static final http.Client _sharedHttpClient = http.Client();
-  static const String _homeCachePrefix = 'novel_home_cache_v2_';
+  // v3 invalidates home sections created before Wenku8 stored each real
+  // "more"/ranking URL in the category metadata.
+  static const String _homeCachePrefix = 'novel_home_cache_v3_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
   static final SwrCache<String, NovelHomeData> _homeMemoryCache = SwrCache(
     freshTtl: const Duration(minutes: 5),
