@@ -14,14 +14,22 @@ const allowedTypes = new Map([
   ['image/gif', 'gif'],
 ]);
 
-export async function mirrorVideoCover(rawUrl, { fetchImpl = fetch } = {}) {
+export async function mirrorVideoCover(rawUrl, {
+  fetchImpl = fetch,
+  timeoutMs = 8000,
+  headers = {},
+} = {}) {
   let url = new URL(String(rawUrl || ''));
   for (let redirect = 0; redirect <= 2; redirect += 1) {
     await assertPublicHttpsUrl(url);
     const response = await fetchImpl(url, {
       redirect: 'manual',
-      signal: AbortSignal.timeout(8000),
-      headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif' },
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+        'User-Agent': 'Mozilla/5.0 (compatible; NovelCoverMirror/1.0)',
+        ...headers,
+      },
     });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');

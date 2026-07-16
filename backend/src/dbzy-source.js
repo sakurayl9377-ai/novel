@@ -90,8 +90,13 @@ export function withoutDbzyPlayback(item) {
   };
 }
 
-export async function searchDbzyCache(query, { page = 1, pageSize = 20 } = {}) {
-  await ensureFresh();
+export async function searchDbzyCache(query, {
+  page = 1,
+  pageSize = 20,
+  allowStale = false,
+} = {}) {
+  if (allowStale) await ensureCache();
+  else await ensureFresh();
   const q = cleanText(query).toLocaleLowerCase();
   if (!q) return paginate([], page, pageSize);
   const context = publicFilterContext();

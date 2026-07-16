@@ -2,6 +2,7 @@ import { all, one, run } from "./db.js";
 import { grantReward } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import { resolveVideoCover } from "./video-cover-resolver.js";
+import { ensureWenku8Cover } from "./wenku8-cover-cache.js";
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -39,6 +40,7 @@ export async function contentRoutes(app) {
       itemKey: requiredString(query.itemKey, "itemKey", 500),
       title: requiredString(query.title, "title", 200),
       year: optionalString(query.year, 10),
+      candidateUrl: optionalString(query.candidateUrl, 1000),
     });
     if (result.coverUrl.startsWith('/')) {
       const host = String(request.headers.host || request.hostname || '').replace(/[^a-zA-Z0-9.:[\]-]/g, '');
@@ -63,6 +65,33 @@ export async function contentRoutes(app) {
     return reply.type(mime).header('Cache-Control', 'public, max-age=31536000, immutable').send(
       createReadStream(filePath),
     );
+  });
+
+  app.get('/novel-covers/wenku8/:bookId', async (request, reply) => {
+    const limited = enforceRateLimits(request, reply, [
+      {
+        scope: 'wenku8_cover_ip',
+        key: request.ip || 'unknown',
+        limit: 180,
+        windowMs: 5 * 60 * 1000,
+        error: 'wenku8_cover_rate_limited',
+      },
+    ]);
+    if (limited) return limited;
+
+    try {
+      const filePath = await ensureWenku8Cover(request.params?.bookId);
+      return reply
+        .type('image/jpeg')
+        .header('Cache-Control', 'public, max-age=31536000, immutable')
+        .send(createReadStream(filePath));
+    } catch (error) {
+      if (error?.message === 'wenku8_cover_book_id_invalid') {
+        return reply.code(404).send({ error: 'not_found' });
+      }
+      request.log?.warn?.({ error }, 'wenku8 cover mirror failed');
+      return reply.code(502).send({ error: 'wenku8_cover_unavailable' });
+    }
   });
 
   app.get("/comments", async (request) => {
