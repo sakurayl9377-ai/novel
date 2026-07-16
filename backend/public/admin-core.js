@@ -1378,15 +1378,21 @@ function makeQuery(values) {
 }
 
 async function api(path, options = {}) {
+  const serializedBody = options.body === undefined
+    ? undefined
+    : JSON.stringify(options.body);
+  const headers = {
+    ...(options.auth === false || !state.token
+      ? {}
+      : { Authorization: `Bearer ${state.token}` }),
+  };
+  if (serializedBody !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
   const response = await fetch(`${config.apiPrefix}${path}`, {
     method: options.method || "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.auth === false || !state.token
-        ? {}
-        : { Authorization: `Bearer ${state.token}` }),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    headers,
+    body: serializedBody,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);

@@ -821,8 +821,14 @@ async function renderProxy() {
     </section>
 
     <section class="admin-panel proxy-nodes-panel">
-      <div class="section-title"><span>全部节点</span>${badge(`${data.nodeTotal || nodes.length} 个`, "active")}</div>
-      <p class="muted-note">节点名称带有订阅名称前缀；延迟为 Mihomo 最近一次健康检查结果，0 表示暂未测得。</p>
+      <div class="section-title">
+        <span>全部节点</span>
+        <div class="proxy-actions">
+          ${badge(`${data.nodeTotal || nodes.length} 个`, "active")}
+          <button class="button small" data-action="proxy-test-all-nodes" ${service.active && nodes.length ? "" : "disabled"}>测速全部节点</button>
+        </div>
+      </div>
+      <p class="muted-note">节点名称带有订阅名称前缀；可单独测速或并发测试全部节点，延迟结果由 Mihomo 控制器返回。</p>
       <div class="proxy-node-list">
         ${
           nodes.length
@@ -830,7 +836,10 @@ async function renderProxy() {
                 .map(
                   (node) => `<article class="proxy-node-item">
                     <div><strong>${escapeHtml(node.name || "未命名节点")}</strong><small>${escapeHtml(node.type || "代理")} · ${node.delay ? `${node.delay} ms` : "待测速"} · ${node.alive ? "可用" : "状态未知"}</small></div>
-                    <button class="button small primary" data-action="proxy-set-node" data-node="${escapeAttr(node.name || "")}" ${manualModeEnabled ? "" : "disabled"}>切换到此节点</button>
+                    <div class="proxy-actions">
+                      <button class="button small" data-action="proxy-test-node" data-node="${escapeAttr(node.name || "")}" ${service.active ? "" : "disabled"}>测速</button>
+                      <button class="button small primary" data-action="proxy-set-node" data-node="${escapeAttr(node.name || "")}" ${manualModeEnabled ? "" : "disabled"}>切换到此节点</button>
+                    </div>
                   </article>`,
                 )
                 .join("")
@@ -896,6 +905,23 @@ async function handleOperationsAction(action, actionElement) {
       const checks = Array.isArray(result.checks) ? result.checks : [];
       const exitIp = checks.find((item) => item.name === "ip")?.value || "";
       renderNotice(result.ok ? `代理出口正常${exitIp ? ` · ${exitIp}` : ""}` : "部分代理检测未通过", result.ok ? "" : "error");
+    } else if (action === "proxy-test-all-nodes") {
+      actionElement.disabled = true;
+      actionElement.textContent = "测速中...";
+      const result = await api("/admin/proxy/nodes/test-all", { method: "POST" });
+      await renderProxy();
+      renderNotice(`节点测速完成：${result.available || 0}/${result.tested || 0} 个可用${result.failed ? ` · ${result.failed} 个失败` : ""}`, result.failed ? "error" : "");
+    } else if (action === "proxy-test-node") {
+      const node = actionElement.dataset.node || "";
+      actionElement.disabled = true;
+      actionElement.textContent = "测速中...";
+      const result = await api("/admin/proxy/nodes/test", {
+        method: "POST",
+        body: { node },
+      });
+      await renderProxy();
+      const tested = Array.isArray(result.nodes) ? result.nodes[0] : null;
+      renderNotice(tested?.ok ? `${node} · ${tested.delay} ms` : `${node} 测速失败`, tested?.ok ? "" : "error");
     } else if (action === "proxy-update-all-subscriptions") {
       if (!confirm("确认立即更新全部代理订阅并重载 Mihomo？")) return;
       await api("/admin/proxy/subscriptions/update-all", { method: "POST" });

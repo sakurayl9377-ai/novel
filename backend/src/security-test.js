@@ -39,6 +39,7 @@ const {
 } = await import("./settings-secrets.js");
 const {
   normalizeProxyGroupSelection,
+  normalizeProxyNodeName,
   normalizeProxySubscriptionUrl,
 } = await import("./proxy-control-service.js");
 
@@ -96,6 +97,11 @@ try {
     group: "GLOBAL",
     choice: "US-AUTO",
   });
+  assert.equal(normalizeProxyNodeName("[机场 A] US-01"), "[机场 A] US-01");
+  assert.throws(
+    () => normalizeProxyNodeName("node\nname"),
+    /proxy_node_name_invalid/,
+  );
 
   assert.equal(iflytekTtsConfigured(), false);
   for (const [key, value, isSecret] of [

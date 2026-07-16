@@ -2,6 +2,7 @@
 import json
 import ipaddress
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
 import shutil
@@ -28,6 +29,10 @@ MAX_SUBSCRIPTION_NAME_LENGTH = 80
 SUBSCRIPTION_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MANUAL_GROUP = "NODE-MANUAL"
 MODE_GROUP = "PROXY-MODE"
+LATENCY_TEST_URL = "https://www.gstatic.com/generate_204"
+LATENCY_TEST_TIMEOUT_MS = 8000
+MAX_NODE_TEST_WORKERS = 8
+MAX_NODE_NAME_LENGTH = 300
 
 
 class ControlError(RuntimeError):
@@ -48,7 +53,7 @@ def run(command, timeout=60):
     return result.stdout.strip()
 
 
-def controller_request(method, path, payload=None, timeout=10):
+def controller_request(method, path, payload=None, timeout=10, attempts=6):
     secret = SECRET_PATH.read_text(encoding="utf-8").strip()
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -61,14 +66,15 @@ def controller_request(method, path, payload=None, timeout=10):
         },
     )
     last_error = None
-    for attempt in range(6):
+    safe_attempts = max(1, min(6, int(attempts or 1)))
+    for attempt in range(safe_attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read()
                 return json.loads(raw) if raw else {}
-        except (urllib.error.URLError, json.JSONDecodeError) as error:
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             last_error = error
-            if attempt < 5:
+            if attempt < safe_attempts - 1:
                 time.sleep(0.5)
     raise ControlError("mihomo_controller_unavailable") from last_error
 
@@ -241,6 +247,17 @@ def normalize_subscription_id(value):
     if not SUBSCRIPTION_ID_PATTERN.fullmatch(identifier):
         raise ControlError("proxy_subscription_id_invalid")
     return identifier
+
+
+def normalize_node_name(value):
+    name = str(value or "").strip()
+    if (
+        not name
+        or len(name) > MAX_NODE_NAME_LENGTH
+        or any(ord(char) < 32 or ord(char) == 127 for char in name)
+    ):
+        raise ControlError("proxy_node_name_invalid")
+    return name
 
 
 def read_legacy_subscription():
@@ -435,6 +452,58 @@ def set_group(group, choice):
     return status()
 
 
+def test_node_delay(name):
+    encoded_name = urllib.parse.quote(name, safe="")
+    query = urllib.parse.urlencode(
+        {"timeout": LATENCY_TEST_TIMEOUT_MS, "url": LATENCY_TEST_URL}
+    )
+    try:
+        result = controller_request(
+            "GET",
+            f"/proxies/{encoded_name}/delay?{query}",
+            timeout=(LATENCY_TEST_TIMEOUT_MS / 1000) + 3,
+            attempts=1,
+        )
+        delay = result.get("delay") if isinstance(result, dict) else 0
+        if not isinstance(delay, int) or delay <= 0:
+            raise ControlError("proxy_node_test_failed")
+        return {"name": name, "ok": True, "delay": delay}
+    except Exception:
+        return {"name": name, "ok": False, "delay": 0}
+
+
+def test_nodes(value=None):
+    if not service_active():
+        raise ControlError("mihomo_service_inactive")
+    proxies = controller_request("GET", "/proxies").get("proxies", {})
+    nodes = proxy_nodes(proxies)
+    if value is not None:
+        requested = normalize_node_name(value)
+        nodes = [item for item in nodes if item["name"] == requested]
+        if not nodes:
+            raise ControlError("proxy_node_not_found")
+    if not nodes:
+        return {"tested": 0, "available": 0, "failed": 0, "nodes": []}
+
+    results = []
+    workers = min(MAX_NODE_TEST_WORKERS, len(nodes))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(test_node_delay, item["name"]): item["name"]
+            for item in nodes
+        }
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: item["name"].casefold())
+    available = sum(1 for item in results if item["ok"])
+    return {
+        "tested": len(results),
+        "available": available,
+        "failed": len(results) - available,
+        "nodes": results,
+    }
+
+
 def test_proxy():
     handler = urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL})
     opener = urllib.request.build_opener(handler)
@@ -480,6 +549,10 @@ def main():
         response = set_group(request.get("group"), request.get("choice"))
     elif action == "test":
         response = test_proxy()
+    elif action == "test-nodes":
+        response = test_nodes()
+    elif action == "test-node":
+        response = test_nodes(request.get("node"))
     else:
         raise ControlError("proxy_action_invalid")
     print(json.dumps({"ok": True, "data": response}, ensure_ascii=False))

@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { all, db, one, run } from "./db.js";
 import {
   normalizeProxyGroupSelection,
+  normalizeProxyNodeName,
   normalizeProxySubscriptionId,
   normalizeProxySubscriptionName,
   normalizeProxySubscriptionUrl,
@@ -98,6 +99,22 @@ export async function adminOperationsRoutes(app) {
   );
 
   app.post(
+    "/admin/proxy/nodes/test-all",
+    { preHandler: app.adminRequired },
+    async () => proxyControl({ action: "test-nodes" }),
+  );
+
+  app.post(
+    "/admin/proxy/nodes/test",
+    { preHandler: app.adminRequired },
+    async (request) =>
+      proxyControl({
+        action: "test-node",
+        node: normalizeProxyNodeName(request.body?.node),
+      }),
+  );
+
+  app.post(
     "/admin/proxy/subscriptions",
     { preHandler: app.adminRequired },
     async (request) =>
@@ -178,6 +195,8 @@ async function proxyControl(payload) {
       "proxy_subscription_host_not_public",
       "proxy_subscription_limit_reached",
       "proxy_subscription_not_found",
+      "proxy_node_name_invalid",
+      "proxy_node_not_found",
       "proxy_group_selection_invalid",
       "proxy_service_enabled_invalid",
     ].includes(wrapped.message)
