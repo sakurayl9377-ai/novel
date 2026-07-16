@@ -295,6 +295,8 @@ class BookSourceService {
   }
 
   Future<NovelHomeData> _fetchWenku8Home(BookSource source) async {
+    final backendHome = await _fetchWenku8BackendHome(source);
+    if (!backendHome.isEmpty) return backendHome;
     for (final origin in _wenku8OriginCandidates(source.baseUrl)) {
       try {
         final response = await _get(
@@ -314,6 +316,75 @@ class BookSourceService {
       }
     }
     return const NovelHomeData.empty();
+  }
+
+  Future<NovelHomeData> _fetchWenku8BackendHome(BookSource source) async {
+    try {
+      final response = await _get(
+        Uri.parse('${InteractionAuthService.baseUrl}/wenku8/home'),
+        headers: _headers(InteractionAuthService.baseUrl),
+      ).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return const NovelHomeData.empty();
+      final decoded = jsonDecode(_decodeBody(response));
+      if (decoded is! Map || decoded['sections'] is! List) {
+        return const NovelHomeData.empty();
+      }
+      final sections = <NovelHomeSection>[];
+      for (final rawSection in (decoded['sections'] as List).whereType<Map>()) {
+        final title = _cleanHtmlText(rawSection['title']?.toString() ?? '');
+        final sort = rawSection['sort']?.toString() ?? '';
+        final seen = <String>{};
+        final items = (rawSection['items'] as List? ?? const [])
+            .whereType<Map>()
+            .map((item) {
+              final bookId = item['bookId']?.toString() ?? '';
+              final bookTitle = _cleanHtmlText(
+                item['title']?.toString() ?? '',
+              );
+              if (!RegExp(r'^\d+$').hasMatch(bookId) ||
+                  !_isNovelTitle(bookTitle) ||
+                  !seen.add(bookId)) {
+                return null;
+              }
+              return _wenku8Novel(
+                source,
+                bookId: bookId,
+                title: bookTitle,
+              );
+            })
+            .whereType<Novel>()
+            .toList();
+        if (title.isEmpty || items.isEmpty) continue;
+        sections.add(
+          NovelHomeSection(
+            title: title,
+            items: items,
+            category: NovelCategory(
+              title: title,
+              url: sort.isEmpty
+                  ? '${source.baseUrl}/wap/'
+                  : '${source.baseUrl}/wap/article/toplist.php?sort=$sort',
+              icon: 'menu_book',
+              sourceId: source.id,
+              sourceName: source.name,
+              sourceBaseUrl: source.baseUrl,
+              apiSort: sort.isEmpty
+                  ? 'wenku8-home:$title'
+                  : 'wenku8-toplist:$sort',
+            ),
+          ),
+        );
+      }
+      if (sections.isEmpty) return const NovelHomeData.empty();
+      return NovelHomeData(
+        sourceName: source.name,
+        featured: sections.first.items,
+        sections: sections.skip(1).toList(),
+        categories: const [],
+      );
+    } catch (_) {
+      return const NovelHomeData.empty();
+    }
   }
 
   NovelHomeData _parseWenku8Home(String wml, BookSource source) {

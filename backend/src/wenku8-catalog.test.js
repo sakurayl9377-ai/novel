@@ -6,6 +6,7 @@ import test from 'node:test';
 import { config } from './config.js';
 import {
   fetchWenku8Toplist,
+  parseWenku8Home,
   parseWenku8Toplist,
   resetWenku8CatalogStateForTest,
 } from './wenku8-catalog.js';
@@ -24,6 +25,27 @@ test('Wenku8 toplist parser extracts books and pagination', () => {
       { bookId: '2542', title: '我想成为影之强者' },
     ],
   });
+});
+
+test('Wenku8 home parser keeps public sections and ranking sorts', () => {
+  const sections = parseWenku8Home(`
+    【今日热榜】<a href="/wap/article/toplist.php?sort=dayvisit">更多</a><br/>
+    <a href="/wap/article/articleinfo.php?id=3057">败北女角太多了！</a><br/>
+    【最近更新】<a href="/wap/article/toplist.php?sort=lastupdate">更多</a><br/>
+    <a href="/wap/article/articleinfo.php?id=4312">与睡美人一起入眠。</a><br/>
+  `);
+  assert.deepEqual(sections, [
+    {
+      title: '今日热榜',
+      sort: 'dayvisit',
+      items: [{ bookId: '3057', title: '败北女角太多了！' }],
+    },
+    {
+      title: '最近更新',
+      sort: 'lastupdate',
+      items: [{ bookId: '4312', title: '与睡美人一起入眠。' }],
+    },
+  ]);
 });
 
 test('Wenku8 server account is created once and ranking pages are combined', async () => {

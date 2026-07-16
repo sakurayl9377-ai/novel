@@ -3,7 +3,7 @@ import { grantReward } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import { resolveVideoCover } from "./video-cover-resolver.js";
 import { ensureWenku8Cover } from "./wenku8-cover-cache.js";
-import { fetchWenku8Toplist } from "./wenku8-catalog.js";
+import { fetchWenku8Home, fetchWenku8Toplist } from "./wenku8-catalog.js";
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -117,6 +117,25 @@ export async function contentRoutes(app) {
       }
       request.log?.warn?.({ error }, 'Wenku8 toplist fetch failed');
       return reply.code(503).send({ error: 'wenku8_toplist_unavailable' });
+    }
+  });
+
+  app.get('/wenku8/home', async (request, reply) => {
+    const limited = enforceRateLimits(request, reply, [
+      {
+        scope: 'wenku8_home_ip',
+        key: request.ip || 'unknown',
+        limit: 120,
+        windowMs: 5 * 60 * 1000,
+        error: 'wenku8_home_rate_limited',
+      },
+    ]);
+    if (limited) return limited;
+    try {
+      return await fetchWenku8Home();
+    } catch (error) {
+      request.log?.warn?.({ error }, 'Wenku8 home fetch failed');
+      return reply.code(503).send({ error: 'wenku8_home_unavailable' });
     }
   });
 

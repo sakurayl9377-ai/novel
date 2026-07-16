@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { config } from './config.js';
 
 const allowedSorts = new Set([
@@ -20,6 +20,7 @@ const allowedSorts = new Set([
   'anime',
 ]);
 const cache = new Map();
+const homeCache = { savedAt: 0, value: null };
 let sessionCookie = '';
 let accountPromise;
 let loginPromise;
@@ -62,7 +63,9 @@ function generatedAccount() {
   const username = `NovelReader${stamp}${suffix}`;
   return {
     username,
-    password: `${crypto.randomBytes(18).toString('hex')}A7`,
+    // Wenku8 silently truncates long passwords during registration, which
+    // makes the first session work but later logins fail. Keep it short.
+    password: `${crypto.randomBytes(6).toString('hex')}A7`,
     email: `${username}@example.com`,
   };
 }
@@ -175,9 +178,21 @@ async function login(fetchImpl) {
 
 async function ensureLogin(fetchImpl) {
   if (sessionCookie) return sessionCookie;
-  loginPromise ||= login(fetchImpl).finally(() => {
-    loginPromise = undefined;
-  });
+  loginPromise ||= login(fetchImpl)
+    .catch(async (error) => {
+      const hasConfiguredAccount =
+        String(config.wenku8Username || '').trim() && config.wenku8Password;
+      if (hasConfiguredAccount || !config.wenku8AutoRegister) throw error;
+      // Migrate an auto-generated account created with the old overlong
+      // password format. Retry registration once with a compatible password.
+      sessionCookie = '';
+      accountPromise = undefined;
+      await rm(config.wenku8AccountFile, { force: true });
+      return login(fetchImpl);
+    })
+    .finally(() => {
+      loginPromise = undefined;
+    });
   return loginPromise;
 }
 
@@ -212,6 +227,51 @@ export function parseWenku8Toplist(wml) {
     page: Number(pageMatch?.[1] || 1),
     totalPages: Number(pageMatch?.[2] || 1),
   };
+}
+
+export function parseWenku8Home(wml) {
+  const sections = [];
+  let current;
+  for (const fragment of String(wml || '').split(/<br\s*\/?>/i)) {
+    const text = decodeEntities(fragment.replace(/<[^>]+>/g, '')).trim();
+    const sectionMatch = text.match(/【([^】]+)】/);
+    if (sectionMatch) {
+      current = { title: sectionMatch[1].trim(), sort: '', items: [] };
+      sections.push(current);
+    }
+    if (!current) continue;
+    const sortMatch = fragment.match(/toplist\.php\?sort=([a-z]+)/i);
+    if (sortMatch) current.sort = sortMatch[1].toLowerCase();
+    const parsed = parseWenku8Toplist(fragment);
+    for (const item of parsed.items) {
+      if (!current.items.some((existing) => existing.bookId === item.bookId)) {
+        current.items.push(item);
+      }
+    }
+  }
+  return sections.filter((section) => section.items.length > 0);
+}
+
+export async function fetchWenku8Home({ fetchImpl = fetch } = {}) {
+  if (
+    homeCache.value &&
+    Date.now() - homeCache.savedAt < config.wenku8CacheTtlMs
+  ) {
+    return homeCache.value;
+  }
+  const { text } = await fetchText(
+    `${cleanBaseUrl(config.wenku8BaseUrl)}/wap/`,
+    {
+      headers: { 'User-Agent': 'NovelReaderBackend/1.0' },
+    },
+    fetchImpl,
+  );
+  const sections = parseWenku8Home(text);
+  if (sections.length === 0) throw new Error('wenku8_home_empty');
+  const value = { sourceName: '轻小说文库', sections };
+  homeCache.savedAt = Date.now();
+  homeCache.value = value;
+  return value;
 }
 
 async function fetchToplistPage(sort, page, fetchImpl, retry = true) {
@@ -282,6 +342,8 @@ export async function fetchWenku8Toplist(
 
 export function resetWenku8CatalogStateForTest() {
   cache.clear();
+  homeCache.savedAt = 0;
+  homeCache.value = null;
   sessionCookie = '';
   accountPromise = undefined;
   loginPromise = undefined;
