@@ -7,31 +7,26 @@ import 'package:novel_app/screens/video_screen.dart';
 import 'package:novel_app/services/wuhandky_service.dart';
 
 void main() {
-  testWidgets('an old category request cannot clear or replace a newer load', (
+  testWidgets('movie shortcut opens the movie subcategory page', (
     tester,
   ) async {
-    final recommended = Completer<List<WuhandkyVideoItem>>();
-    final movies = Completer<List<WuhandkyVideoItem>>();
     final service = _ControlledVideoService(
       categories: {
-        '/new.html': recommended.future,
-        '/dianying/': movies.future,
+        '/new.html': Future.value([_item('今日推荐')]),
+        '/dianying/': Future.value([_item('电影内容')]),
       },
     );
 
     await tester.pumpWidget(MaterialApp(home: VideoScreen(service: service)));
-    await tester.tap(find.text('电影'));
     await tester.pump();
-
-    recommended.complete([_item('旧分类结果')]);
     await tester.pump();
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    expect(find.text('旧分类结果'), findsNothing);
-
-    movies.complete([_item('电影新结果')]);
+    expect(find.byType(ChoiceChip), findsNothing);
+    await tester.tap(find.widgetWithText(ActionChip, '电影'));
     await tester.pump();
-    expect(find.text('电影新结果'), findsWidgets);
-    expect(find.text('旧分类结果'), findsNothing);
+    await tester.pump();
+    expect(find.text('动作电影'), findsOneWidget);
+    expect(find.text('科幻电影'), findsOneWidget);
+    expect(find.text('电影内容'), findsWidgets);
   });
 
   testWidgets('an old search response cannot replace a newer search', (

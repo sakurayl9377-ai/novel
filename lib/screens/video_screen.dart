@@ -7,6 +7,55 @@ import '../services/wuhandky_service.dart';
 import '../widgets/wuhandky_cover_image.dart';
 import 'video_detail_screen.dart';
 
+class _VideoCategory {
+  const _VideoCategory(this.title, this.path, this.children);
+
+  final String title;
+  final String path;
+  final List<(String, String)> children;
+}
+
+const _videoCategories = <_VideoCategory>[
+  _VideoCategory('电影', '/dianying/', [
+    ('全部', '/dianying/'),
+    ('动作电影', '/dongzuopian/'),
+    ('喜剧电影', '/xijupian/'),
+    ('爱情电影', '/aiqingpian/'),
+    ('科幻电影', '/kehuanpian/'),
+    ('恐怖电影', '/kongbupian/'),
+    ('战争电影', '/zhanzhengpian/'),
+    ('剧情电影', '/juqingpian/'),
+    ('纪录片', '/jilupian/'),
+    ('动漫电影', '/dongmandianying/'),
+  ]),
+  _VideoCategory('电视剧', '/dianshiju/', [
+    ('全部', '/dianshiju/'),
+    ('国产剧', '/guochanju/'),
+    ('香港剧', '/xianggangju/'),
+    ('韩国剧', '/hanguoju/'),
+    ('欧美剧', '/oumeiju/'),
+    ('台湾剧', '/taiwanju/'),
+    ('日本剧', '/ribenju/'),
+    ('泰国剧', '/taiguoju/'),
+    ('海外剧', '/haiwaiju/'),
+  ]),
+  _VideoCategory('动漫', '/dongman/', [
+    ('全部', '/dongman/'),
+    ('国产动漫', '/guochandongman/'),
+    ('日韩动漫', '/rihandongman/'),
+    ('欧美动漫', '/oumeidongman/'),
+    ('港台动漫', '/gangtaidongman/'),
+    ('海外动漫', '/haiwaidongman/'),
+  ]),
+  _VideoCategory('综艺', '/zongyi/', [
+    ('全部', '/zongyi/'),
+    ('内地综艺', '/neidizongyi/'),
+    ('港台综艺', '/gangtaizongyi/'),
+    ('日韩综艺', '/rihanzongyi/'),
+    ('欧美综艺', '/oumeizongyi/'),
+  ]),
+];
+
 class VideoScreen extends StatefulWidget {
   const VideoScreen({super.key, this.service});
 
@@ -18,19 +67,10 @@ class VideoScreen extends StatefulWidget {
 
 class _VideoScreenState extends State<VideoScreen>
     with AutomaticKeepAliveClientMixin {
-  static const _categories = <(String, String)>[
-    ('推荐', '/new.html'),
-    ('电影', '/dianying/'),
-    ('电视剧', '/dianshiju/'),
-    ('动漫', '/dongman/'),
-    ('综艺', '/zongyi/'),
-  ];
-
   late final WuhandkyService _service;
   final TextEditingController _searchController = TextEditingController();
   List<WuhandkyVideoItem> _items = const [];
   WuhandkyVideoHome? _home;
-  int _categoryIndex = 0;
   bool _loading = true;
   bool _searching = false;
   String _error = '';
@@ -55,7 +95,6 @@ class _VideoScreenState extends State<VideoScreen>
   Future<void> _load({bool refresh = false}) async {
     if (!mounted) return;
     final requestGeneration = ++_requestGeneration;
-    final categoryPath = _categories[_categoryIndex].$2;
     setState(() {
       _loading = true;
       _searching = false;
@@ -63,12 +102,11 @@ class _VideoScreenState extends State<VideoScreen>
       if (refresh) _items = const [];
     });
     try {
-      final home = _categoryIndex == 0 ? await _service.fetchHome() : null;
-      final items =
-          home?.featured ?? await _service.fetchCategory(categoryPath);
+      final home = await _service.fetchHome();
+      final items = home.featured;
       if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() {
-        _home = home ?? _home;
+        _home = home;
         _items = items;
       });
     } catch (error) {
@@ -109,13 +147,6 @@ class _VideoScreenState extends State<VideoScreen>
     }
   }
 
-  void _selectCategory(int index) {
-    if (index == _categoryIndex && !_searching) return;
-    _searchController.clear();
-    setState(() => _categoryIndex = index);
-    unawaited(_load(refresh: true));
-  }
-
   void _open(WuhandkyVideoItem item) {
     Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => VideoDetailScreen(item: item)),
@@ -131,44 +162,26 @@ class _VideoScreenState extends State<VideoScreen>
         title: const Text('影视'),
         centerTitle: false,
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(108),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-                child: SearchBar(
-                  controller: _searchController,
-                  hintText: '搜索电影、电视剧、动漫或综艺',
-                  leading: const Icon(Icons.search_rounded),
-                  trailing: [
-                    if (_searchController.text.isNotEmpty)
-                      IconButton(
-                        onPressed: () {
-                          _searchController.clear();
-                          unawaited(_load(refresh: true));
-                        },
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                  ],
-                  onChanged: (_) => setState(() {}),
-                  onSubmitted: _search,
-                ),
-              ),
-              SizedBox(
-                height: 46,
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _categories.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) => ChoiceChip(
-                    label: Text(_categories[index].$1),
-                    selected: !_searching && _categoryIndex == index,
-                    onSelected: (_) => _selectCategory(index),
+          preferredSize: const Size.fromHeight(62),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+            child: SearchBar(
+              controller: _searchController,
+              hintText: '搜索电影、电视剧、动漫或综艺',
+              leading: const Icon(Icons.search_rounded),
+              trailing: [
+                if (_searchController.text.isNotEmpty)
+                  IconButton(
+                    onPressed: () {
+                      _searchController.clear();
+                      unawaited(_load(refresh: true));
+                    },
+                    icon: const Icon(Icons.close_rounded),
                   ),
-                ),
-              ),
-            ],
+              ],
+              onChanged: (_) => setState(() {}),
+              onSubmitted: _search,
+            ),
           ),
         ),
       ),
@@ -199,16 +212,11 @@ class _VideoScreenState extends State<VideoScreen>
               )
             : _items.isEmpty
             ? const _ScrollableStatus(child: Text('没有找到相关影视'))
-            : !_searching && _categoryIndex == 0 && _home != null
+            : !_searching && _home != null
             ? _VideoHomeView(
                 home: _home!,
                 onOpen: _open,
-                onSelectCategory: (path) {
-                  final index = _categories.indexWhere(
-                    (item) => item.$2 == path,
-                  );
-                  if (index >= 0) _selectCategory(index);
-                },
+                onSelectCategory: _openCategory,
                 resolveCover: (item) => _service.resolveCoverUrl(
                   title: item.title,
                   itemKey: item.detailUrl,
@@ -246,9 +254,25 @@ class _VideoScreenState extends State<VideoScreen>
     }
     return text.isEmpty ? '影视源暂时不可用，请稍后重试' : text;
   }
+
+  void _openCategory(String path) {
+    final category = _videoCategories.firstWhere(
+      (item) => item.path == path,
+      orElse: () => _videoCategories.first,
+    );
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => _VideoCategoryScreen(
+          category: category,
+          service: _service,
+          onOpen: _open,
+        ),
+      ),
+    );
+  }
 }
 
-class _VideoHomeView extends StatelessWidget {
+class _VideoHomeView extends StatefulWidget {
   const _VideoHomeView({
     required this.home,
     required this.onOpen,
@@ -262,17 +286,86 @@ class _VideoHomeView extends StatelessWidget {
   final Future<String?> Function(WuhandkyVideoItem item) resolveCover;
 
   @override
+  State<_VideoHomeView> createState() => _VideoHomeViewState();
+}
+
+class _VideoHomeViewState extends State<_VideoHomeView> {
+  late final PageController _controller;
+  Timer? _timer;
+  int _page = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PageController();
+    if (widget.home.featured.length > 1) {
+      _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (!mounted || !_controller.hasClients) return;
+        final next = (_page + 1) % widget.home.featured.length;
+        _controller.animateToPage(
+          next,
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeOutCubic,
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final featured = home.featured.first;
+    final home = widget.home;
     return CustomScrollView(
       slivers: [
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
           sliver: SliverToBoxAdapter(
-            child: _VideoFeaturedCard(
-              item: featured,
-              onTap: () => onOpen(featured),
-              resolveCover: () => resolveCover(featured),
+            child: SizedBox(
+              height: 190,
+              child: Stack(
+                alignment: Alignment.bottomCenter,
+                children: [
+                  PageView.builder(
+                    controller: _controller,
+                    itemCount: home.featured.length,
+                    onPageChanged: (value) => setState(() => _page = value),
+                    itemBuilder: (context, index) {
+                      final item = home.featured[index];
+                      return _VideoFeaturedCard(
+                        item: item,
+                        onTap: () => widget.onOpen(item),
+                        resolveCover: () => widget.resolveCover(item),
+                      );
+                    },
+                  ),
+                  Positioned(
+                    bottom: 10,
+                    child: Row(
+                      children: List.generate(
+                        home.featured.length,
+                        (index) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: index == _page ? 18 : 6,
+                          height: 6,
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          decoration: BoxDecoration(
+                            color: index == _page
+                                ? Colors.white
+                                : Colors.white54,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -295,7 +388,7 @@ class _VideoHomeView extends StatelessWidget {
                 return ActionChip(
                   avatar: Icon(icons[index % icons.length], size: 20),
                   label: Text(section.title),
-                  onPressed: () => onSelectCategory(section.path),
+                  onPressed: () => widget.onSelectCategory(section.path),
                 );
               },
             ),
@@ -316,7 +409,7 @@ class _VideoHomeView extends StatelessWidget {
                     ),
                   ),
                   TextButton(
-                    onPressed: () => onSelectCategory(section.path),
+                    onPressed: () => widget.onSelectCategory(section.path),
                     child: const Text('更多'),
                   ),
                 ],
@@ -337,8 +430,8 @@ class _VideoHomeView extends StatelessWidget {
                     width: 126,
                     child: _VideoCard(
                       item: item,
-                      onTap: () => onOpen(item),
-                      resolveCover: () => resolveCover(item),
+                      onTap: () => widget.onOpen(item),
+                      resolveCover: () => widget.resolveCover(item),
                     ),
                   );
                 },
@@ -348,6 +441,153 @@ class _VideoHomeView extends StatelessWidget {
         ],
         const SliverToBoxAdapter(child: SizedBox(height: 30)),
       ],
+    );
+  }
+}
+
+class _VideoCategoryScreen extends StatefulWidget {
+  const _VideoCategoryScreen({
+    required this.category,
+    required this.service,
+    required this.onOpen,
+  });
+
+  final _VideoCategory category;
+  final WuhandkyService service;
+  final ValueChanged<WuhandkyVideoItem> onOpen;
+
+  @override
+  State<_VideoCategoryScreen> createState() => _VideoCategoryScreenState();
+}
+
+class _VideoCategoryScreenState extends State<_VideoCategoryScreen> {
+  int _selected = 0;
+  int _generation = 0;
+  bool _loading = true;
+  String _error = '';
+  List<WuhandkyVideoItem> _items = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final generation = ++_generation;
+    setState(() {
+      _loading = true;
+      _error = '';
+    });
+    try {
+      final items = await widget.service.fetchCategory(
+        widget.category.children[_selected].$2,
+      );
+      if (!mounted || generation != _generation) return;
+      setState(() => _items = items);
+    } catch (error) {
+      if (!mounted || generation != _generation) return;
+      setState(() => _error = error.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted && generation == _generation) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.category.title)),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        child: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (
+                      var index = 0;
+                      index < widget.category.children.length;
+                      index++
+                    )
+                      ChoiceChip(
+                        label: Text(widget.category.children[index].$1),
+                        selected: index == _selected,
+                        onSelected: (_) {
+                          if (index == _selected) return;
+                          setState(() {
+                            _selected = index;
+                            _items = const [];
+                          });
+                          unawaited(_load());
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (_loading && _items.isEmpty)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_error.isNotEmpty && _items.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_error, textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        FilledButton.tonal(
+                          onPressed: _load,
+                          child: const Text('重试'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else if (_items.isEmpty)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: Text('暂无内容')),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
+                sliver: SliverGrid.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    childAspectRatio: 0.53,
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 14,
+                  ),
+                  itemCount: _items.length,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    return _VideoCard(
+                      item: item,
+                      onTap: () => widget.onOpen(item),
+                      resolveCover: () => widget.service.resolveCoverUrl(
+                        title: item.title,
+                        itemKey: item.detailUrl,
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
