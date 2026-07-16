@@ -1,260 +1,416 @@
 import 'package:flutter/material.dart';
+
 import '../config/theme.dart';
+import '../features/reader_core/reader_modes.dart';
 import '../models/reading_settings.dart';
 
 class ReadingSettingsPanel extends StatefulWidget {
-  final ReadingSettings settings;
-  final Function(double) onFontSizeChanged;
-  final Function(String) onFontFamilyChanged;
-  final Function(String) onBackgroundChanged;
-  final Function(String) onPageTurnModeChanged;
-
   const ReadingSettingsPanel({
     super.key,
     required this.settings,
-    required this.onFontSizeChanged,
-    required this.onFontFamilyChanged,
-    required this.onBackgroundChanged,
-    required this.onPageTurnModeChanged,
+    required this.onPreviewChanged,
   });
+
+  final ReadingSettings settings;
+  final ValueChanged<ReadingSettings> onPreviewChanged;
 
   @override
   State<ReadingSettingsPanel> createState() => _ReadingSettingsPanelState();
 }
 
 class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
-  late double _fontSize;
+  late ReadingSettings _settings;
 
   @override
   void initState() {
     super.initState();
-    _fontSize = widget.settings.fontSize;
+    _settings = widget.settings.copyWith();
+  }
+
+  void _update(ReadingSettings next) {
+    setState(() => _settings = next);
+    widget.onPreviewChanged(next);
   }
 
   Color _parseColor(String hex) {
-    hex = hex.replaceAll('#', '');
-    if (hex.length == 6) hex = 'FF$hex';
-    return Color(int.parse(hex, radix: 16));
+    final normalized = hex.replaceAll('#', '');
+    return Color(
+      int.parse(
+        normalized.length == 6 ? 'FF$normalized' : normalized,
+        radix: 16,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final isNight = widget.settings.nightMode;
+    final isNight = _settings.nightMode;
+    final surface = isNight ? AppTheme.nightCard : Colors.white;
+    final primaryText = isNight ? AppTheme.nightText : AppTheme.textPrimary;
+    final secondaryText = isNight ? Colors.white70 : AppTheme.textSecondary;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: isNight ? AppTheme.nightCard : Colors.white,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(16),
-          topRight: Radius.circular(16),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.15),
-            blurRadius: 20,
-            offset: const Offset(0, -5),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 拖动条
-            Center(
-              child: Container(
-                width: 36,
+    return SafeArea(
+      top: false,
+      child: FractionallySizedBox(
+        heightFactor: 0.9,
+        child: Material(
+          color: surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              const SizedBox(height: 9),
+              Container(
+                width: 38,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: AppTheme.textHint,
-                  borderRadius: BorderRadius.circular(2),
+                  color: secondaryText.withValues(alpha: 0.32),
+                  borderRadius: BorderRadius.circular(99),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-
-            // 字号调节
-            Text(
-              '字号',
-              style: TextStyle(
-                fontSize: 13,
-                color: isNight ? AppTheme.nightText : AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(
-                  Icons.text_fields,
-                  size: 18,
-                  color: AppTheme.textHint,
-                ),
-                Expanded(
-                  child: Slider(
-                    value: _fontSize,
-                    min: 14,
-                    max: 32,
-                    divisions: 18,
-                    activeColor: AppTheme.primaryColor,
-                    inactiveColor: AppTheme.textHint.withValues(alpha: 0.3),
-                    label: '${_fontSize.toInt()}',
-                    onChanged: (v) {
-                      setState(() => _fontSize = v);
-                      widget.onFontSizeChanged(v);
-                    },
-                  ),
-                ),
-                Container(
-                  constraints: const BoxConstraints(minWidth: 36),
-                  child: Text(
-                    '${_fontSize.toInt()}',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: isNight
-                          ? AppTheme.nightText
-                          : AppTheme.textPrimary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            // 背景色
-            Text(
-              '背景',
-              style: TextStyle(
-                fontSize: 13,
-                color: isNight ? AppTheme.nightText : AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: ReadingSettings.backgroundColors.map((color) {
-                final isSelected = widget.settings.backgroundColor == color;
-                return GestureDetector(
-                  onTap: () => widget.onBackgroundChanged(color),
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: _parseColor(color),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: isSelected
-                            ? AppTheme.primaryColor
-                            : AppTheme.dividerColor,
-                        width: isSelected ? 3 : 1,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 8, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '阅读设置',
+                        style: TextStyle(
+                          color: primaryText,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                      boxShadow: isSelected
-                          ? [
-                              BoxShadow(
-                                color: AppTheme.primaryColor.withValues(
-                                  alpha: 0.3,
+                    ),
+                    IconButton(
+                      tooltip: '完成',
+                      onPressed: () => Navigator.pop(context),
+                      icon: Icon(Icons.close, color: secondaryText),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: secondaryText.withValues(alpha: 0.14)),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
+                  children: [
+                    _SectionTitle('亮度', color: secondaryText),
+                    Row(
+                      children: [
+                        Icon(Icons.brightness_5_outlined, color: secondaryText),
+                        Expanded(
+                          child: Slider(
+                            value: _settings.brightness,
+                            min: 0.05,
+                            max: 1,
+                            divisions: 19,
+                            label: '${(_settings.brightness * 100).round()}%',
+                            onChanged: _settings.useSystemBrightness
+                                ? null
+                                : (value) => _update(
+                                    _settings.copyWith(brightness: value),
+                                  ),
+                          ),
+                        ),
+                        Text(
+                          _settings.useSystemBrightness
+                              ? '系统'
+                              : '${(_settings.brightness * 100).round()}%',
+                          style: TextStyle(color: primaryText, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: Text(
+                        '跟随系统亮度',
+                        style: TextStyle(color: primaryText),
+                      ),
+                      value: _settings.useSystemBrightness,
+                      onChanged: (value) => _update(
+                        _settings.copyWith(useSystemBrightness: value),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _SectionTitle('翻页方式', color: secondaryText),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: NovelPageMode.values
+                          .map((mode) {
+                            return ChoiceChip(
+                              label: Text(mode.label),
+                              selected: _settings.pageMode == mode,
+                              onSelected: (_) =>
+                                  _update(_settings.copyWith(pageMode: mode)),
+                            );
+                          })
+                          .toList(growable: false),
+                    ),
+                    const SizedBox(height: 22),
+                    _SectionTitle('字号', color: secondaryText),
+                    _ValueSlider(
+                      value: _settings.fontSize,
+                      min: 14,
+                      max: 34,
+                      divisions: 20,
+                      leading: const Icon(Icons.text_decrease),
+                      trailing: const Icon(Icons.text_increase),
+                      label: '${_settings.fontSize.round()}',
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(fontSize: value)),
+                    ),
+                    const SizedBox(height: 14),
+                    _SectionTitle('字体', color: secondaryText),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: ReadingSettings.fontFamilies
+                          .map((font) {
+                            return ChoiceChip(
+                              label: Text(
+                                ReadingSettings.fontLabel(font),
+                                style: TextStyle(
+                                  fontFamily: font == ReadingSettings.systemFont
+                                      ? null
+                                      : font,
                                 ),
-                                blurRadius: 6,
                               ),
-                            ]
-                          : null,
+                              selected: _settings.fontFamily == font,
+                              onSelected: (_) =>
+                                  _update(_settings.copyWith(fontFamily: font)),
+                            );
+                          })
+                          .toList(growable: false),
                     ),
-                  ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 12),
-
-            // 翻页模式
-            Text(
-              '翻页',
-              style: TextStyle(
-                fontSize: 13,
-                color: isNight ? AppTheme.nightText : AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: ReadingSettings.pageTurnModes.map((mode) {
-                  final isSelected = widget.settings.pageTurnMode == mode;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(
-                        mode,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: isSelected
-                              ? Colors.white
-                              : (isNight
-                                    ? AppTheme.nightText
-                                    : AppTheme.textPrimary),
-                        ),
-                      ),
-                      selected: isSelected,
-                      selectedColor: AppTheme.primaryColor,
-                      backgroundColor: isNight
-                          ? AppTheme.nightBackground
-                          : Colors.grey.shade100,
-                      onSelected: (_) => widget.onPageTurnModeChanged(mode),
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      visualDensity: VisualDensity.compact,
+                    const SizedBox(height: 22),
+                    _SectionTitle('排版', color: secondaryText),
+                    _ValueSlider(
+                      value: _settings.lineHeight,
+                      min: 1.2,
+                      max: 2.2,
+                      divisions: 10,
+                      label: '行距 ${_settings.lineHeight.toStringAsFixed(1)}',
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(lineHeight: value)),
                     ),
-                  );
-                }).toList(),
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // 字体选择
-            Text(
-              '字体',
-              style: TextStyle(
-                fontSize: 13,
-                color: isNight ? AppTheme.nightText : AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: ReadingSettings.fontFamilies.map((family) {
-                  final isSelected = widget.settings.fontFamily == family;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(
-                        family,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: isSelected
-                              ? Colors.white
-                              : (isNight
-                                    ? AppTheme.nightText
-                                    : AppTheme.textPrimary),
-                        ),
-                      ),
-                      selected: isSelected,
-                      selectedColor: AppTheme.primaryColor,
-                      backgroundColor: isNight
-                          ? AppTheme.nightBackground
-                          : Colors.grey.shade100,
-                      onSelected: (_) => widget.onFontFamilyChanged(family),
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      visualDensity: VisualDensity.compact,
+                    _ValueSlider(
+                      value: _settings.paragraphSpacing,
+                      min: 0,
+                      max: 1.6,
+                      divisions: 16,
+                      label:
+                          '段距 ${_settings.paragraphSpacing.toStringAsFixed(1)}',
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(paragraphSpacing: value)),
                     ),
-                  );
-                }).toList(),
+                    _ValueSlider(
+                      value: _settings.horizontalPadding,
+                      min: 12,
+                      max: 40,
+                      divisions: 14,
+                      label: '页边距 ${_settings.horizontalPadding.round()}',
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(horizontalPadding: value)),
+                    ),
+                    const SizedBox(height: 18),
+                    _SectionTitle('阅读背景', color: secondaryText),
+                    Wrap(
+                      spacing: 14,
+                      runSpacing: 12,
+                      children: ReadingSettings.backgroundColors
+                          .map((color) {
+                            final selected = _settings.backgroundColor == color;
+                            return Semantics(
+                              button: true,
+                              selected: selected,
+                              label: '阅读背景 $color',
+                              child: InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: () => _update(
+                                  _settings.copyWith(
+                                    backgroundColor: color,
+                                    nightMode:
+                                        color == '#1A1A1A' ||
+                                        color == '#2B2B2B',
+                                  ),
+                                ),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 160),
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: _parseColor(color),
+                                    border: Border.all(
+                                      color: selected
+                                          ? AppTheme.primaryColor
+                                          : secondaryText.withValues(
+                                              alpha: 0.24,
+                                            ),
+                                      width: selected ? 3 : 1,
+                                    ),
+                                  ),
+                                  child: selected
+                                      ? Icon(
+                                          Icons.check,
+                                          size: 20,
+                                          color:
+                                              _parseColor(
+                                                    color,
+                                                  ).computeLuminance() >
+                                                  0.5
+                                              ? AppTheme.primaryColor
+                                              : Colors.white,
+                                        )
+                                      : null,
+                                ),
+                              ),
+                            );
+                          })
+                          .toList(growable: false),
+                    ),
+                    const SizedBox(height: 20),
+                    _SectionTitle('操作', color: secondaryText),
+                    _ReaderSwitch(
+                      title: '单手点击区',
+                      subtitle: '扩大右侧下一页区域',
+                      value: _settings.singleHandMode,
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(singleHandMode: value)),
+                    ),
+                    _ReaderSwitch(
+                      title: '音量键翻页',
+                      subtitle: '阅读时拦截音量键，上键上一页、下键下一页',
+                      value: _settings.volumeKeyTurnPage,
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(volumeKeyTurnPage: value)),
+                    ),
+                    _ReaderSwitch(
+                      title: '屏幕常亮',
+                      subtitle: '仅在阅读界面保持屏幕唤醒',
+                      value: _settings.keepScreenOn,
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(keepScreenOn: value)),
+                    ),
+                    const SizedBox(height: 12),
+                    _SectionTitle('自动阅读速度', color: secondaryText),
+                    _ValueSlider(
+                      value: _settings.autoReadSpeed,
+                      min: 0.5,
+                      max: 3,
+                      divisions: 10,
+                      label: '${_settings.autoReadSpeed.toStringAsFixed(1)}×',
+                      onChanged: (value) =>
+                          _update(_settings.copyWith(autoReadSpeed: value)),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.label, {required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _ValueSlider extends StatelessWidget {
+  const _ValueSlider({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.label,
+    required this.onChanged,
+    this.leading,
+    this.trailing,
+  });
+
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final String label;
+  final ValueChanged<double> onChanged;
+  final Widget? leading;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (leading != null) ...[leading!, const SizedBox(width: 6)],
+        Expanded(
+          child: Slider(
+            value: value,
+            min: min,
+            max: max,
+            divisions: divisions,
+            label: label,
+            onChanged: onChanged,
+          ),
+        ),
+        if (trailing != null) ...[const SizedBox(width: 6), trailing!],
+        if (leading == null && trailing == null)
+          SizedBox(
+            width: 82,
+            child: Text(
+              label,
+              textAlign: TextAlign.end,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ReaderSwitch extends StatelessWidget {
+  const _ReaderSwitch({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile.adaptive(
+      contentPadding: EdgeInsets.zero,
+      title: Text(title),
+      subtitle: Text(subtitle),
+      value: value,
+      onChanged: onChanged,
     );
   }
 }

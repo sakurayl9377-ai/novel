@@ -67,3 +67,11 @@ flutter:
     - assets/images/chat_bot/
     - assets/stickers/chat/
     - assets/books/default/
+    - assets/fonts/licenses/
+  fonts:
+    - family: NotoSerifSC
+      fonts:
+        - asset: assets/fonts/NotoSerifSC-Regular.otf
+    - family: LXGWWenKaiScreen
+      fonts:
+        - asset: assets/fonts/LXGWWenKaiGBScreen.ttf
