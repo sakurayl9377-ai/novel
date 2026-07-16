@@ -9,12 +9,7 @@ class MangaPageCrop {
   });
 
   static const full = MangaPageCrop(left: 0, top: 0, right: 1, bottom: 1);
-  static const leftHalf = MangaPageCrop(
-    left: 0,
-    top: 0,
-    right: 0.5,
-    bottom: 1,
-  );
+  static const leftHalf = MangaPageCrop(left: 0, top: 0, right: 0.5, bottom: 1);
   static const rightHalf = MangaPageCrop(
     left: 0.5,
     top: 0,
@@ -66,6 +61,7 @@ class MangaPageSpread {
   const MangaPageSpread(
     this.pageIndexes, {
     this.isWidePage = false,
+    this.isVerticalComposite = false,
     this.crops = const <MangaPageCrop>[],
     this.aspectRatios = const <double>[],
   });
@@ -73,6 +69,7 @@ class MangaPageSpread {
   /// Source page indexes in their visual left-to-right order.
   final List<int> pageIndexes;
   final bool isWidePage;
+  final bool isVerticalComposite;
   final List<MangaPageCrop> crops;
   final List<double> aspectRatios;
 
@@ -137,6 +134,7 @@ class MangaPagePipeline {
     required MangaSpreadMode spreadMode,
     required MangaPageDirection direction,
     required double Function(int pageIndex) aspectRatioAt,
+    double viewportHeight = 0,
     Set<int> splitWidePageIndexes = const <int>{},
     Set<int> forcePairStartIndexes = const <int>{},
     Set<int> forceSinglePageIndexes = const <int>{},
@@ -164,8 +162,50 @@ class MangaPagePipeline {
       }
       final aspectRatio = aspectRatioAt(pageIndex);
       final explicitWideSplit = splitWidePageIndexes.contains(pageIndex);
-      final automaticWideSplit =
-          spreadMode == MangaSpreadMode.double && isWide;
+      if (!doublePages && isWide && !explicitWideSplit) {
+        var runEnd = pageIndex + 1;
+        while (runEnd < pageCount &&
+            aspectRatioAt(runEnd) >= widePageRatio &&
+            !splitWidePageIndexes.contains(runEnd) &&
+            !forceSinglePageIndexes.contains(runEnd)) {
+          runEnd += 1;
+        }
+        if (runEnd - pageIndex >= 2) {
+          final targetHeightRatio = viewportHeight > 0 && viewportWidth > 0
+              ? viewportHeight / viewportWidth
+              : 1 / typicalPageRatio;
+          var chunkStart = pageIndex;
+          while (chunkStart < runEnd) {
+            var chunkEnd = chunkStart;
+            var assembledHeightRatio = 0.0;
+            while (chunkEnd < runEnd) {
+              assembledHeightRatio += 1 / aspectRatioAt(chunkEnd);
+              chunkEnd += 1;
+              if (chunkEnd - chunkStart >= 2 &&
+                  assembledHeightRatio >= targetHeightRatio) {
+                break;
+              }
+            }
+            final indexes = List<int>.generate(
+              chunkEnd - chunkStart,
+              (offset) => chunkStart + offset,
+            );
+            result.add(
+              MangaPageSpread(
+                indexes,
+                isVerticalComposite: true,
+                aspectRatios: [
+                  for (final index in indexes) aspectRatioAt(index),
+                ],
+              ),
+            );
+            chunkStart = chunkEnd;
+          }
+          pageIndex = runEnd;
+          continue;
+        }
+      }
+      final automaticWideSplit = spreadMode == MangaSpreadMode.double && isWide;
       if (isWide && (explicitWideSplit || automaticWideSplit)) {
         final segmentCount = segmentCountForAspectRatio(aspectRatio);
         final swapped = swappedSpreadStartIndexes.contains(pageIndex);

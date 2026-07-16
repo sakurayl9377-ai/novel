@@ -103,6 +103,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     defaultExtent: 1,
   );
   Timer? _aspectRatioSaveTimer;
+  Timer? _pageGeometryRefreshTimer;
   double _viewportWidth = 0;
   int _chapterProgressPercent = 0;
   int _currentPagedPageIndex = 0;
@@ -120,8 +121,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
   static const String _imageCacheName = 'manga_reader_images';
   static const Duration _imageCacheMaxAge = Duration(days: 14);
   static const int _prefetchRadius = 2;
-  static const int _maxTrackedPrefetchPages = _prefetchRadius * 2 + 1;
-  static const int _maxPendingImagePrefetches = 4;
+  static const int _pagedPrefetchRadius = 6;
+  static const int _maxTrackedPrefetchPages = _pagedPrefetchRadius * 2 + 1;
+  static const int _maxPendingImagePrefetches = 12;
   static const int _maxAutoDecodeWidth = 2048;
   static const int _maxHighDecodeWidth = 3072;
   static const int _maxOriginalDecodeWidth = 4096;
@@ -184,6 +186,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     _evictTrackedPrefetches();
     _saveTimer?.cancel();
     _aspectRatioSaveTimer?.cancel();
+    _pageGeometryRefreshTimer?.cancel();
     unawaited(_saveAspectRatioCache());
     unawaited(_saveHistory());
     _scrollController.removeListener(_handleScrollChanged);
@@ -715,17 +718,26 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
                       _scrollController.position.viewportDimension * 0.5
                 : 0,
           );
+    final radius = _preferences.readingMode == MangaReadingMode.paged
+        ? _pagedPrefetchRadius
+        : _prefetchRadius;
     final retainedIndexes = <int>{
       for (
-        var index = currentIndex - _prefetchRadius;
-        index <= currentIndex + _prefetchRadius;
+        var index = currentIndex - radius;
+        index <= currentIndex + radius;
         index++
       )
         if (index >= 0 && index < _images.length) index,
     };
     _evictDistantPrefetches(retainedIndexes);
     assert(_prefetchedPages.length <= _maxTrackedPrefetchPages);
-    for (final delta in const [0, 1, -1, 2, -2]) {
+    final deltas = <int>[0];
+    for (var distance = 1; distance <= radius; distance++) {
+      deltas
+        ..add(distance)
+        ..add(-distance);
+    }
+    for (final delta in deltas) {
       final index = currentIndex + delta;
       if (!retainedIndexes.contains(index)) continue;
       unawaited(
@@ -763,7 +775,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     }
     if (_preferences.readingMode == MangaReadingMode.paged &&
         (crossedWideBoundary || oldSegmentCount != newSegmentCount)) {
-      _pageGeometryVersion.value += 1;
+      _pageGeometryRefreshTimer?.cancel();
+      _pageGeometryRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+        if (mounted) _pageGeometryVersion.value += 1;
+      });
     }
     _aspectRatioSaveTimer?.cancel();
     _aspectRatioSaveTimer = Timer(
@@ -1417,6 +1432,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       viewportWidth: width,
       spreadMode: _preferences.spreadMode,
       direction: _preferences.pageDirection,
+      viewportHeight: MediaQuery.sizeOf(context).height,
       aspectRatioAt: (index) =>
           _pageAspectRatios[index] ?? _defaultPageAspectRatio,
       splitWidePageIndexes: _splitWidePages,
@@ -2029,6 +2045,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
           viewportWidth: viewportWidth,
           spreadMode: _preferences.spreadMode,
           direction: _preferences.pageDirection,
+          viewportHeight: MediaQuery.sizeOf(context).height,
           aspectRatioAt: (index) =>
               _pageAspectRatios[index] ?? _defaultPageAspectRatio,
           splitWidePageIndexes: _splitWidePages,

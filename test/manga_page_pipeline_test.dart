@@ -89,6 +89,27 @@ void main() {
     expect(spreads.single.aspectRatioAt(0), 0.22);
   });
 
+  test(
+    'consecutive horizontal slices assemble into vertical logical pages',
+    () {
+      final spreads = pipeline.build(
+        pageCount: 5,
+        viewportWidth: 400,
+        viewportHeight: 800,
+        spreadMode: MangaSpreadMode.single,
+        direction: MangaPageDirection.ltr,
+        aspectRatioAt: (index) => index < 4 ? 1.25 : 0.68,
+      );
+
+      expect(spreads, hasLength(3));
+      expect(spreads[0].pageIndexes, [0, 1, 2]);
+      expect(spreads[0].isVerticalComposite, isTrue);
+      expect(spreads[1].pageIndexes, [3]);
+      expect(spreads[1].isVerticalComposite, isTrue);
+      expect(spreads[2].pageIndexes, [4]);
+    },
+  );
+
   test('composite segment counts change when real dimensions arrive', () {
     expect(pipeline.segmentCountForAspectRatio(0.68), 1);
     expect(pipeline.segmentCountForAspectRatio(0.22), 1);

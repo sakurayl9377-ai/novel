@@ -30,6 +30,10 @@ void main() {
 
     expect(find.text('page-0'), findsOneWidget);
     expect(find.text('page-1'), findsOneWidget);
+    expect(
+      tester.widget<PageView>(find.byType(PageView)).allowImplicitScrolling,
+      isTrue,
+    );
     await tester.drag(find.byType(PageView), const Offset(-700, 0));
     await tester.pumpAndSettle();
     expect(find.text('page-2'), findsOneWidget);
@@ -66,6 +70,37 @@ void main() {
 
     expect(find.byKey(const ValueKey('manga-paged-tall-scroll')), findsNothing);
     expect(find.byKey(const ValueKey('page-0')), findsOneWidget);
+  });
+
+  testWidgets('vertical composite renders consecutive slices in one page', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MangaPagedView(
+            spreads: const [
+              MangaPageSpread(
+                [0, 1, 2],
+                isVerticalComposite: true,
+                aspectRatios: [1.25, 1.25, 1.25],
+              ),
+            ],
+            direction: MangaPageDirection.ltr,
+            initialPageIndex: 0,
+            pageBuilder: (_, pageIndex, _) => Text('slice-$pageIndex'),
+            endBuilder: (_) => const SizedBox.shrink(),
+            onPageChanged: (_, _) {},
+            onTap: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('slice-0'), findsOneWidget);
+    expect(find.text('slice-1'), findsOneWidget);
+    expect(find.text('slice-2'), findsOneWidget);
   });
 
   testWidgets('double tap zoom wins before horizontal page movement', (

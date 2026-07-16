@@ -91,6 +91,7 @@ class _MangaPagedViewState extends State<MangaPagedView> {
       final a = previous[index];
       final b = next[index];
       if (a.isWidePage != b.isWidePage ||
+          a.isVerticalComposite != b.isVerticalComposite ||
           a.pageIndexes.length != b.pageIndexes.length ||
           a.crops.length != b.crops.length ||
           a.aspectRatios.length != b.aspectRatios.length) {
@@ -127,6 +128,7 @@ class _MangaPagedViewState extends State<MangaPagedView> {
       key: const ValueKey('manga-paged-view'),
       controller: _controller,
       reverse: widget.direction == MangaPageDirection.rtl,
+      allowImplicitScrolling: true,
       physics: _zoomed
           ? const NeverScrollableScrollPhysics()
           : const PageScrollPhysics(),
@@ -148,6 +150,13 @@ class _MangaPagedViewState extends State<MangaPagedView> {
           },
           child: LayoutBuilder(
             builder: (context, constraints) {
+              if (spread.isVerticalComposite) {
+                return _buildVerticalComposite(
+                  context,
+                  spread: spread,
+                  constraints: constraints,
+                );
+              }
               final pageWidth =
                   constraints.maxWidth / spread.pageIndexes.length;
               return Row(
@@ -173,6 +182,42 @@ class _MangaPagedViewState extends State<MangaPagedView> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildVerticalComposite(
+    BuildContext context, {
+    required MangaPageSpread spread,
+    required BoxConstraints constraints,
+  }) {
+    final pageWidth = constraints.maxWidth;
+    final heights = <double>[
+      for (var index = 0; index < spread.pageIndexes.length; index++)
+        pageWidth / spread.aspectRatioAt(index),
+    ];
+    final totalHeight = heights.fold<double>(0, (sum, height) => sum + height);
+    return Center(
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: SizedBox(
+          width: pageWidth,
+          height: totalHeight,
+          child: Column(
+            children: [
+              for (var index = 0; index < spread.pageIndexes.length; index++)
+                SizedBox(
+                  width: pageWidth,
+                  height: heights[index],
+                  child: widget.pageBuilder(
+                    context,
+                    spread.pageIndexes[index],
+                    pageWidth,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
