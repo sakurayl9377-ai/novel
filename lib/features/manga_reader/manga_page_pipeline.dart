@@ -1,6 +1,65 @@
 import '../reader_core/reader_modes.dart';
 
-enum MangaPageCrop { full, leftHalf, rightHalf }
+class MangaPageCrop {
+  const MangaPageCrop({
+    required this.left,
+    required this.top,
+    required this.right,
+    required this.bottom,
+  });
+
+  static const full = MangaPageCrop(left: 0, top: 0, right: 1, bottom: 1);
+  static const leftHalf = MangaPageCrop(
+    left: 0,
+    top: 0,
+    right: 0.5,
+    bottom: 1,
+  );
+  static const rightHalf = MangaPageCrop(
+    left: 0.5,
+    top: 0,
+    right: 1,
+    bottom: 1,
+  );
+
+  factory MangaPageCrop.horizontalSegment(int index, int count) {
+    return MangaPageCrop(
+      left: index / count,
+      top: 0,
+      right: (index + 1) / count,
+      bottom: 1,
+    );
+  }
+
+  factory MangaPageCrop.verticalSegment(int index, int count) {
+    return MangaPageCrop(
+      left: 0,
+      top: index / count,
+      right: 1,
+      bottom: (index + 1) / count,
+    );
+  }
+
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+
+  double get widthFraction => right - left;
+  double get heightFraction => bottom - top;
+  bool get isFull => this == full;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MangaPageCrop &&
+      left == other.left &&
+      top == other.top &&
+      right == other.right &&
+      bottom == other.bottom;
+
+  @override
+  int get hashCode => Object.hash(left, top, right, bottom);
+}
 
 /// Immutable grouping of one or two source pages shown in a paged viewport.
 class MangaPageSpread {
@@ -33,11 +92,17 @@ class MangaPageSpread {
 /// spread, RTL only changes the visual order; history continues to use the
 /// original source page indexes.
 class MangaPagePipeline {
-  const MangaPagePipeline({this.widePageRatio = 1.15});
+  const MangaPagePipeline({
+    this.widePageRatio = 1.15,
+    this.typicalPageRatio = 0.68,
+    this.tallCompositeRatio = 0.42,
+  });
 
   static const double autoDoublePageMinWidth = 720;
 
   final double widePageRatio;
+  final double typicalPageRatio;
+  final double tallCompositeRatio;
 
   bool usesDoublePages({
     required MangaSpreadMode spreadMode,
@@ -75,23 +140,55 @@ class MangaPagePipeline {
         pageIndex += 1;
         continue;
       }
-      if (isWide && splitWidePageIndexes.contains(pageIndex)) {
+      final aspectRatio = aspectRatioAt(pageIndex);
+      final explicitWideSplit = splitWidePageIndexes.contains(pageIndex);
+      final automaticWideSplit =
+          spreadMode == MangaSpreadMode.double && isWide;
+      if (isWide && (explicitWideSplit || automaticWideSplit)) {
+        final segmentCount = (aspectRatio / typicalPageRatio)
+            .round()
+            .clamp(2, 6)
+            .toInt();
         final swapped = swappedSpreadStartIndexes.contains(pageIndex);
-        result.add(
-          MangaPageSpread(
-            <int>[pageIndex, pageIndex],
-            isWidePage: true,
-            crops: swapped
-                ? const <MangaPageCrop>[
-                    MangaPageCrop.rightHalf,
-                    MangaPageCrop.leftHalf,
-                  ]
-                : const <MangaPageCrop>[
-                    MangaPageCrop.leftHalf,
-                    MangaPageCrop.rightHalf,
-                  ],
-          ),
-        );
+        var segments = List<int>.generate(segmentCount, (index) => index);
+        if (direction == MangaPageDirection.rtl) {
+          segments = segments.reversed.toList(growable: false);
+        }
+        if (swapped) segments = segments.reversed.toList(growable: false);
+        final slotsPerSpread = doublePages ? 2 : 1;
+        for (var start = 0; start < segments.length; start += slotsPerSpread) {
+          final end = (start + slotsPerSpread).clamp(0, segments.length);
+          final visible = segments.sublist(start, end);
+          result.add(
+            MangaPageSpread(
+              List<int>.filled(visible.length, pageIndex),
+              isWidePage: true,
+              crops: [
+                for (final segment in visible)
+                  MangaPageCrop.horizontalSegment(segment, segmentCount),
+              ],
+            ),
+          );
+        }
+        pageIndex += 1;
+        continue;
+      }
+
+      if (aspectRatio < tallCompositeRatio) {
+        final segmentCount = (typicalPageRatio / aspectRatio)
+            .round()
+            .clamp(2, 6)
+            .toInt();
+        for (var segment = 0; segment < segmentCount; segment++) {
+          result.add(
+            MangaPageSpread(
+              <int>[pageIndex],
+              crops: <MangaPageCrop>[
+                MangaPageCrop.verticalSegment(segment, segmentCount),
+              ],
+            ),
+          );
+        }
         pageIndex += 1;
         continue;
       }

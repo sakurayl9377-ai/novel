@@ -136,7 +136,9 @@ class _MangaPagedViewState extends State<MangaPagedView> {
         }
         final spread = widget.spreads[spreadIndex];
         return _ZoomableMangaSpread(
-          key: ValueKey('manga-spread-${spread.pageIndexes.join('-')}'),
+          key: ValueKey(
+            'manga-spread-$spreadIndex-${spread.pageIndexes.join('-')}',
+          ),
           onTap: widget.onTap,
           onZoomChanged: (zoomed) {
             if (spreadIndex != _currentSpreadIndex || zoomed == _zoomed) return;
@@ -178,21 +180,33 @@ class _MangaPagedViewState extends State<MangaPagedView> {
     required double pageWidth,
     required MangaPageCrop crop,
   }) {
-    if (crop == MangaPageCrop.full) {
+    if (crop.isFull) {
       return widget.pageBuilder(context, pageIndex, pageWidth);
     }
-    final alignment = crop == MangaPageCrop.leftHalf
-        ? Alignment.centerLeft
-        : Alignment.centerRight;
+    final horizontalCenter = (crop.left + crop.right) / 2;
+    final verticalCenter = (crop.top + crop.bottom) / 2;
+    final alignment = Alignment(
+      horizontalCenter * 2 - 1,
+      verticalCenter * 2 - 1,
+    );
     return ClipRect(
-      child: OverflowBox(
-        alignment: alignment,
-        minWidth: pageWidth * 2,
-        maxWidth: pageWidth * 2,
-        child: SizedBox(
-          width: pageWidth * 2,
-          child: widget.pageBuilder(context, pageIndex, pageWidth * 2),
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final fullWidth = pageWidth / crop.widthFraction;
+          final fullHeight = constraints.maxHeight / crop.heightFraction;
+          return OverflowBox(
+            alignment: alignment,
+            minWidth: fullWidth,
+            maxWidth: fullWidth,
+            minHeight: fullHeight,
+            maxHeight: fullHeight,
+            child: SizedBox(
+              width: fullWidth,
+              height: fullHeight,
+              child: widget.pageBuilder(context, pageIndex, fullWidth),
+            ),
+          );
+        },
       ),
     );
   }

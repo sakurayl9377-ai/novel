@@ -81,6 +81,7 @@ class _NovelPagedViewState extends State<NovelPagedView> {
   int _pageEffectOrigin = 0;
   int _pageEffectDirection = 0;
   bool _pageEffectRunning = false;
+  double _curlTouchYFraction = 0.68;
 
   @override
   void initState() {
@@ -278,6 +279,7 @@ class _NovelPagedViewState extends State<NovelPagedView> {
       originPage: origin,
       direction: direction,
       progress: distance.abs().clamp(0.0, 1.0),
+      touchYFraction: _curlTouchYFraction,
     );
   }
 
@@ -303,6 +305,15 @@ class _NovelPagedViewState extends State<NovelPagedView> {
         final controller = _pageController!;
         return GestureDetector(
           behavior: HitTestBehavior.translucent,
+          onPanDown: (details) {
+            if (widget.mode != NovelPageMode.simulation ||
+                constraints.maxHeight <= 0) {
+              return;
+            }
+            _curlTouchYFraction = (details.localPosition.dy /
+                    constraints.maxHeight)
+                .clamp(0.12, 0.92);
+          },
           onTapUp: (details) => _handleTap(details, constraints.maxWidth),
           child: Stack(
             fit: StackFit.expand,
@@ -362,6 +373,7 @@ class _NovelPagedViewState extends State<NovelPagedView> {
                             painter: _PaperCurlPainter(
                               progress: transition.progress,
                               direction: transition.direction,
+                              touchYFraction: transition.touchYFraction,
                               paperColor:
                                   widget.pageBackgroundColor ??
                                   Theme.of(context).colorScheme.surface,
@@ -455,9 +467,20 @@ class _NovelPagedViewState extends State<NovelPagedView> {
         );
       case NovelPageMode.simulation:
         final transition = _paperCurlTransition(page);
-        if (!transition.isVisible || index != transition.originPage) {
+        if (!transition.isVisible) {
           return child;
         }
+        final targetPage = transition.originPage + transition.direction;
+        if (index == targetPage) {
+          return Transform.translate(
+            offset: Offset(
+              -transition.direction * (1 - transition.progress) * width,
+              0,
+            ),
+            child: child,
+          );
+        }
+        if (index != transition.originPage) return child;
         return Transform.translate(
           offset: Offset(transition.direction * transition.progress * width, 0),
           child: ClipPath(
@@ -466,6 +489,7 @@ class _NovelPagedViewState extends State<NovelPagedView> {
             clipper: _PaperCurlFrontClipper(
               progress: transition.progress,
               direction: transition.direction,
+              touchYFraction: transition.touchYFraction,
             ),
             child: child,
           ),
@@ -482,16 +506,19 @@ class _PaperCurlTransition {
     required this.originPage,
     required this.direction,
     required this.progress,
+    required this.touchYFraction,
   });
 
   const _PaperCurlTransition.idle()
     : originPage = 0,
       direction = 0,
-      progress = 0;
+      progress = 0,
+      touchYFraction = 0.68;
 
   final int originPage;
   final int direction;
   final double progress;
+  final double touchYFraction;
 
   bool get isVisible => direction != 0 && progress > 0.001 && progress < 0.999;
 }
@@ -500,10 +527,12 @@ class _PaperCurlFrontClipper extends CustomClipper<Path> {
   const _PaperCurlFrontClipper({
     required this.progress,
     required this.direction,
+    required this.touchYFraction,
   });
 
   final double progress;
   final int direction;
+  final double touchYFraction;
 
   @override
   Path getClip(Size size) {
@@ -512,37 +541,42 @@ class _PaperCurlFrontClipper extends CustomClipper<Path> {
         : size.width * progress;
     final bow =
         math.min(20.0, size.width * 0.05) * math.sin(math.pi * progress);
+    final tilt =
+        (touchYFraction - 0.5) * size.width * 0.42 *
+        math.sin(math.pi * progress);
+    final topFoldX = (foldX - tilt).clamp(0.0, size.width);
+    final bottomFoldX = (foldX + tilt).clamp(0.0, size.width);
     final path = Path();
     if (direction > 0) {
       path
         ..moveTo(0, 0)
-        ..lineTo(foldX, 0)
+        ..lineTo(topFoldX, 0)
         ..cubicTo(
-          foldX + bow * 0.18,
+          topFoldX + bow * 0.18,
           size.height * 0.17,
           foldX + bow,
-          size.height * 0.40,
+          size.height * touchYFraction,
           foldX + bow * 0.66,
           size.height * 0.56,
         )
         ..cubicTo(
           foldX + bow * 0.36,
           size.height * 0.72,
-          foldX + bow * 0.08,
+          bottomFoldX + bow * 0.08,
           size.height * 0.90,
-          foldX,
+          bottomFoldX,
           size.height,
         )
         ..lineTo(0, size.height)
         ..close();
     } else {
       path
-        ..moveTo(foldX, 0)
+        ..moveTo(topFoldX, 0)
         ..lineTo(size.width, 0)
         ..lineTo(size.width, size.height)
-        ..lineTo(foldX, size.height)
+        ..lineTo(bottomFoldX, size.height)
         ..cubicTo(
-          foldX - bow * 0.08,
+          bottomFoldX - bow * 0.08,
           size.height * 0.90,
           foldX - bow * 0.36,
           size.height * 0.72,
@@ -551,10 +585,10 @@ class _PaperCurlFrontClipper extends CustomClipper<Path> {
         )
         ..cubicTo(
           foldX - bow,
-          size.height * 0.40,
-          foldX - bow * 0.18,
+          size.height * touchYFraction,
+          topFoldX - bow * 0.18,
           size.height * 0.17,
-          foldX,
+          topFoldX,
           0,
         )
         ..close();
@@ -564,18 +598,22 @@ class _PaperCurlFrontClipper extends CustomClipper<Path> {
 
   @override
   bool shouldReclip(covariant _PaperCurlFrontClipper oldClipper) =>
-      oldClipper.progress != progress || oldClipper.direction != direction;
+      oldClipper.progress != progress ||
+      oldClipper.direction != direction ||
+      oldClipper.touchYFraction != touchYFraction;
 }
 
 class _PaperCurlPainter extends CustomPainter {
   const _PaperCurlPainter({
     required this.progress,
     required this.direction,
+    required this.touchYFraction,
     required this.paperColor,
   });
 
   final double progress;
   final int direction;
+  final double touchYFraction;
   final Color paperColor;
 
   @override
@@ -589,6 +627,9 @@ class _PaperCurlPainter extends CustomPainter {
     final bow = math.min(20.0, size.width * 0.05) * strength;
     final curlWidth = math.min(size.width * 0.14, 54.0) * strength;
     final shadowWidth = 18 + 38 * strength;
+    final tilt = (touchYFraction - 0.5) * size.width * 0.42 * strength;
+    final topFoldX = (foldX - tilt).clamp(0.0, size.width);
+    final bottomFoldX = (foldX + tilt).clamp(0.0, size.width);
 
     final targetShadowRect = direction > 0
         ? Rect.fromLTRB(
@@ -620,21 +661,21 @@ class _PaperCurlPainter extends CustomPainter {
     }
 
     final edge = Path()
-      ..moveTo(foldX, 0)
+      ..moveTo(topFoldX, 0)
       ..cubicTo(
-        foldX + directionValue * bow * 0.18,
+        topFoldX + directionValue * bow * 0.18,
         size.height * 0.17,
         foldX + directionValue * bow,
-        size.height * 0.40,
+        size.height * touchYFraction,
         foldX + directionValue * bow * 0.66,
         size.height * 0.56,
       )
       ..cubicTo(
         foldX + directionValue * bow * 0.36,
         size.height * 0.72,
-        foldX + directionValue * bow * 0.08,
+        bottomFoldX + directionValue * bow * 0.08,
         size.height * 0.90,
-        foldX,
+        bottomFoldX,
         size.height,
       );
     final outerX = (foldX + directionValue * curlWidth).clamp(0.0, size.width);
@@ -719,6 +760,7 @@ class _PaperCurlPainter extends CustomPainter {
   bool shouldRepaint(covariant _PaperCurlPainter oldDelegate) =>
       oldDelegate.progress != progress ||
       oldDelegate.direction != direction ||
+      oldDelegate.touchYFraction != touchYFraction ||
       oldDelegate.paperColor != paperColor;
 }
 

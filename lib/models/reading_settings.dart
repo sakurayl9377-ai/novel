@@ -2,12 +2,12 @@ import '../features/reader_core/reader_modes.dart';
 
 class ReadingSettings {
   static const int currentSchemaVersion = 3;
-  static const int currentLayoutPresetVersion = 2;
+  static const int currentLayoutPresetVersion = 3;
   static const String defaultPageTurnMode = 'verticalScroll';
   static const String systemFont = 'system';
   static const String notoSerifFont = 'NotoSerifSC';
   static const String wenKaiFont = 'LXGWWenKaiScreen';
-  static const double defaultFontSize = 23.0;
+  static const double defaultFontSize = 24.0;
   static const double defaultLineHeight = 2.2;
   static const double defaultParagraphSpacing = 0.85;
   static const double defaultHorizontalPadding = 26.0;
@@ -37,7 +37,7 @@ class ReadingSettings {
 
   ReadingSettings({
     this.fontSize = defaultFontSize,
-    this.fontFamily = systemFont,
+    this.fontFamily = wenKaiFont,
     this.backgroundColor = defaultPaperColor,
     this.brightness = 1.0,
     this.useSystemBrightness = true,
@@ -152,14 +152,13 @@ class ReadingSettings {
   };
 
   factory ReadingSettings.fromJson(Map<String, dynamic> json) {
-    final schemaVersion = (json['schemaVersion'] as num?)?.toInt() ?? 1;
     final layoutPresetVersion =
         (json['layoutPresetVersion'] as num?)?.toInt() ?? 1;
     final hasCurrentLayoutPreset =
-        schemaVersion >= currentSchemaVersion ||
         layoutPresetVersion >= currentLayoutPresetVersion;
-    final migrateUntouchedLegacyLayout =
-        !hasCurrentLayoutPreset && _matchesUntouchedLegacyLayout(json);
+    final migrateUntouchedLegacyLayout = !hasCurrentLayoutPreset &&
+        (_matchesUntouchedLegacyLayout(json) ||
+            _matchesUntouchedPreviousLayout(json));
     final useCurrentDefaults =
         hasCurrentLayoutPreset || migrateUntouchedLegacyLayout;
     final storedFont = json['fontFamily']?.toString().trim() ?? '';
@@ -184,7 +183,7 @@ class ReadingSettings {
                             ? defaultFontSize
                             : _legacyFontSize))
               .clamp(14.0, 34.0),
-      fontFamily: fontFamily,
+      fontFamily: migrateUntouchedLegacyLayout ? wenKaiFont : fontFamily,
       backgroundColor: background,
       brightness: ((json['brightness'] as num?)?.toDouble() ?? 1.0).clamp(
         0.05,
@@ -238,6 +237,19 @@ class ReadingSettings {
         _sameNumber(json['horizontalPadding'], _legacyHorizontalPadding) &&
         (json['backgroundColor']?.toString() ?? _legacyPaperColor) ==
             _legacyPaperColor &&
+        !nightMode;
+  }
+
+  static bool _matchesUntouchedPreviousLayout(Map<String, dynamic> json) {
+    final storedFont = json['fontFamily']?.toString().trim() ?? systemFont;
+    final nightMode = json['nightMode'] as bool? ?? false;
+    return _sameNumber(json['fontSize'], 23.0) &&
+        (storedFont.isEmpty || storedFont == systemFont) &&
+        _sameNumber(json['lineHeight'], defaultLineHeight) &&
+        _sameNumber(json['paragraphSpacing'], defaultParagraphSpacing) &&
+        _sameNumber(json['horizontalPadding'], defaultHorizontalPadding) &&
+        (json['backgroundColor']?.toString() ?? defaultPaperColor) ==
+            defaultPaperColor &&
         !nightMode;
   }
 
