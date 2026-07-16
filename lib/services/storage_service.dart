@@ -12,6 +12,7 @@ import '../models/local_library.dart';
 import '../models/manga_read_history.dart';
 import '../models/novel.dart';
 import '../models/novel_bookmark.dart';
+import '../models/reading_progress.dart';
 import 'legacy_local_library_migrator.dart';
 import 'legacy_progress_migrator.dart';
 import 'novel_offline_cache_service.dart';
@@ -338,6 +339,40 @@ class StorageService {
     return _getNovelProgress(ContentIdentity.novel(novel));
   }
 
+  Future<List<NovelReadingHistory>> getNovelReadingHistory() async {
+    await init();
+    final rows = await appProgressDatabase.list(
+      ContentType.novel,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+    return rows
+        .map((row) {
+          try {
+            final payload = ReadingProgress.fromJson(row.payload);
+            final title = row.metadata['title']?.toString() ?? '';
+            if (payload.novelId.isEmpty || title.isEmpty) return null;
+            return NovelReadingHistory(
+              novelId: payload.novelId,
+              title: title,
+              author: row.metadata['author']?.toString() ?? '',
+              coverUrl: row.metadata['coverUrl']?.toString() ?? '',
+              sourceId: row.metadata['sourceId']?.toString() ?? '',
+              sourceName: row.metadata['sourceName']?.toString() ?? '',
+              chapterIndex: payload.chapterIndex,
+              chapterTitle: payload.chapterTitle,
+              chapterUrl: payload.chapterUrl,
+              charPosition: payload.charPosition,
+              scrollPosition: payload.scrollPosition,
+              lastReadAt: payload.lastReadAt,
+            );
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<NovelReadingHistory>()
+        .toList(growable: false);
+  }
+
   Future<Map<String, dynamic>?> _getNovelProgress(
     ContentIdentity identity,
   ) async {
@@ -374,6 +409,8 @@ class StorageService {
         'title': novel.title,
         'author': novel.author,
         'coverUrl': novel.coverUrl,
+        'sourceId': novel.sourceId,
+        'sourceName': novel.sourceName,
       },
     );
   }

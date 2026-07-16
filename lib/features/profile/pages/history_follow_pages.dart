@@ -43,6 +43,180 @@ class _HistoryRecordsPage extends StatelessWidget {
                     );
                   },
                 ),
+                const Divider(height: 1, color: AppTheme.dividerColor),
+                _HistoryRecordTile(
+                  icon: Icons.menu_book_outlined,
+                  color: const Color(0xFF3D9B72),
+                  title: '小说阅读历史',
+                  subtitle: '继续阅读最近打开的小说',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const NovelHistoryScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class NovelHistoryScreen extends StatefulWidget {
+  const NovelHistoryScreen({super.key});
+
+  @override
+  State<NovelHistoryScreen> createState() => _NovelHistoryScreenState();
+}
+
+class _NovelHistoryScreenState extends State<NovelHistoryScreen> {
+  final StorageService _storage = StorageService();
+  late Future<List<NovelReadingHistory>> _future = _storage
+      .getNovelReadingHistory();
+
+  Future<void> _refresh() async {
+    final next = _storage.getNovelReadingHistory();
+    setState(() => _future = next);
+    await next;
+  }
+
+  Future<void> _open(NovelReadingHistory history) async {
+    final novel = Novel(
+      id: history.novelId,
+      title: history.title,
+      author: history.author,
+      coverUrl: history.coverUrl,
+      sourceId: history.sourceId,
+      sourceName: history.sourceName,
+      chapterUrl: history.chapterUrl,
+      currentChapterIndex: history.chapterIndex,
+      lastReadAt: history.lastReadAt,
+    );
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => BookDetailScreen(novel: novel)),
+    );
+    if (mounted) await _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('小说阅读历史')),
+      body: FutureBuilder<List<NovelReadingHistory>>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _ProfileHistoryMessage(
+              title: '历史记录加载失败',
+              onRefresh: _refresh,
+            );
+          }
+          final histories = snapshot.data ?? const <NovelReadingHistory>[];
+          if (histories.isEmpty) {
+            return _ProfileHistoryMessage(
+              title: '暂无小说阅读历史',
+              onRefresh: _refresh,
+            );
+          }
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+              itemCount: histories.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final history = histories[index];
+                final chapter = history.chapterTitle.isEmpty
+                    ? '第${history.chapterIndex + 1}章'
+                    : history.chapterTitle;
+                return _SurfaceCard(
+                  padding: EdgeInsets.zero,
+                  child: ListTile(
+                    onTap: () => _open(history),
+                    contentPadding: const EdgeInsets.all(12),
+                    leading: SizedBox(
+                      width: 52,
+                      height: 70,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(7),
+                        child: history.coverUrl.isEmpty
+                            ? const ColoredBox(
+                                color: Color(0xFFE7E7E7),
+                                child: Icon(Icons.menu_book_outlined),
+                              )
+                            : Image.network(
+                                history.coverUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const ColoredBox(
+                                  color: Color(0xFFE7E7E7),
+                                  child: Icon(Icons.menu_book_outlined),
+                                ),
+                              ),
+                      ),
+                    ),
+                    title: Text(
+                      history.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: Text(
+                      '$chapter · ${history.sourceName.isEmpty ? '小说书源' : history.sourceName}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ProfileHistoryMessage extends StatelessWidget {
+  const _ProfileHistoryMessage({required this.title, required this.onRefresh});
+
+  final String title;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(18, 100, 18, 28),
+        children: [
+          _SurfaceCard(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              children: [
+                const Icon(
+                  Icons.menu_book_outlined,
+                  size: 46,
+                  color: AppTheme.textHint,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                const Text('阅读小说后会自动记录进度'),
               ],
             ),
           ),

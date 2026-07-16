@@ -448,6 +448,13 @@ class _ReadingScreenState extends State<ReadingScreen>
       chapterIndex: _currentChapterIndex,
       scrollPosition: _lastScrollPosition,
       charPosition: position,
+      chapterTitle: _currentChapterTitle,
+      chapterUrl:
+          _chapters.isNotEmpty &&
+              _currentChapterIndex >= 0 &&
+              _currentChapterIndex < _chapters.length
+          ? _chapters[_currentChapterIndex].url
+          : '',
     );
 
     _progressSaveChain = _progressSaveChain
