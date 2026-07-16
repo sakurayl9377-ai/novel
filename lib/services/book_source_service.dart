@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book_source.dart';
 import '../models/chapter.dart';
+import '../models/content_progress.dart';
 import '../models/novel.dart';
 import 'site_domain_service.dart';
 import 'storage_service.dart';
@@ -1482,7 +1483,10 @@ class BookSourceService {
     Novel novel, {
     bool forceRefresh = false,
   }) {
-    final cacheKey = novel.id;
+    final cacheKey = ContentIdentity.novel(novel).contentKey;
+    _chapterCacheKeysByNovelId
+        .putIfAbsent(novel.id, () => <String>{})
+        .add(cacheKey);
     return forceRefresh
         ? _chapterListCache.refresh(
             cacheKey,
@@ -1494,8 +1498,22 @@ class BookSourceService {
           );
   }
 
-  void invalidateChapterList(String novelId) {
-    _chapterListCache.invalidate(novelId);
+  static final Map<String, Set<String>> _chapterCacheKeysByNovelId =
+      <String, Set<String>>{};
+
+  void invalidateChapterList(Novel novel) {
+    final cacheKey = ContentIdentity.novel(novel).contentKey;
+    _chapterListCache.invalidate(cacheKey);
+    final keys = _chapterCacheKeysByNovelId[novel.id];
+    keys?.remove(cacheKey);
+    if (keys?.isEmpty ?? false) _chapterCacheKeysByNovelId.remove(novel.id);
+  }
+
+  void invalidateChapterListsForNovelId(String novelId) {
+    final keys = _chapterCacheKeysByNovelId.remove(novelId) ?? const <String>{};
+    for (final cacheKey in keys) {
+      _chapterListCache.invalidate(cacheKey);
+    }
   }
 
   Future<List<Chapter>> _getChapterListUncached(Novel novel) async {

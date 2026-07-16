@@ -188,6 +188,7 @@ export async function userRoutes(app) {
       );
 
       run("BEGIN IMMEDIATE");
+      const writeOutcomes = [];
       try {
         let nextRevision = Number(
           one(
@@ -198,6 +199,7 @@ export async function userRoutes(app) {
           )?.revision || 0,
         );
         for (const item of items) {
+          let accepted = false;
           const existing = one(
             `SELECT *
              FROM user_content_progress
@@ -211,10 +213,18 @@ export async function userRoutes(app) {
             const losesDeterministicTie =
               item.clientUpdatedAtMs === existingClientTime &&
               deviceId <= existingDeviceId;
-            if (isOlder || losesDeterministicTie) continue;
+            if (isOlder || losesDeterministicTie) {
+              writeOutcomes.push({
+                contentType: item.contentType,
+                contentKey: item.contentKey,
+                accepted,
+              });
+              continue;
+            }
           }
 
           nextRevision += 1;
+          accepted = true;
           const deletedAtSql = item.deleted ? "datetime('now')" : "NULL";
           if (existing) {
             run(
@@ -258,6 +268,11 @@ export async function userRoutes(app) {
               ],
             );
           }
+          writeOutcomes.push({
+            contentType: item.contentType,
+            contentKey: item.contentKey,
+            accepted,
+          });
         }
         db.exec("COMMIT");
       } catch (error) {
@@ -269,11 +284,27 @@ export async function userRoutes(app) {
         throw error;
       }
 
-      return progressChanges(
+      const response = progressChanges(
         request.user.id,
         cursor,
         progressSyncMaxItems,
       );
+      return {
+        ...response,
+        writeResults: writeOutcomes.map((outcome) => {
+          const winner = one(
+            `SELECT *
+             FROM user_content_progress
+             WHERE user_id = ? AND content_type = ? AND content_key = ?`,
+            [request.user.id, outcome.contentType, outcome.contentKey],
+          );
+          return {
+            contentKey: outcome.contentKey,
+            accepted: outcome.accepted,
+            winner: winner ? progressJson(winner) : null,
+          };
+        }),
+      };
     },
   );
 

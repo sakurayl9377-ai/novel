@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga.dart';
+import 'manga_image_service.dart';
 import 'site_domain_service.dart';
 import 'swr_cache.dart';
 
@@ -735,7 +736,10 @@ class _BaoziHomeParser {
   }
 
   String _absoluteAssetUrl(String rawUrl) {
-    return _absoluteUrl(rawUrl, normalizePageHost: false);
+    return normalizeMangaImageUrl(
+      _absoluteUrl(rawUrl, normalizePageHost: false),
+      preferStableBaoziHost: true,
+    );
   }
 
   String _absoluteUrl(String rawUrl, {required bool normalizePageHost}) {
@@ -917,7 +921,10 @@ class _BaoziDetailParser {
   }
 
   String _absoluteAssetUrl(String rawUrl) {
-    return _absoluteUrl(rawUrl, normalizePageHost: false);
+    return normalizeMangaImageUrl(
+      _absoluteUrl(rawUrl, normalizePageHost: false),
+      preferStableBaoziHost: true,
+    );
   }
 
   String _absoluteUrl(String rawUrl, {required bool normalizePageHost}) {

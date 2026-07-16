@@ -14,11 +14,25 @@ class ProgressSyncPage {
     required this.cursor,
     required this.items,
     required this.hasMore,
+    this.writeResults,
   });
 
   final String cursor;
   final List<ContentProgressRecord> items;
   final bool hasMore;
+  final List<ProgressSyncWriteResult>? writeResults;
+}
+
+class ProgressSyncWriteResult {
+  const ProgressSyncWriteResult({
+    required this.contentKey,
+    required this.accepted,
+    this.winner,
+  });
+
+  final String contentKey;
+  final bool accepted;
+  final ContentProgressRecord? winner;
 }
 
 abstract class ProgressSyncApi {
@@ -118,10 +132,43 @@ class HttpProgressSyncApi implements ProgressSyncApi {
         }
       }
     }
+    List<ProgressSyncWriteResult>? writeResults;
+    final rawWriteResults = map['writeResults'];
+    if (map.containsKey('writeResults')) {
+      if (rawWriteResults is! List) {
+        throw const ProgressSyncException('Invalid progress sync response');
+      }
+      writeResults = <ProgressSyncWriteResult>[];
+      for (final raw in rawWriteResults.whereType<Map>()) {
+        final result = raw.cast<String, dynamic>();
+        final contentKey = result['contentKey']?.toString().trim() ?? '';
+        final accepted = result['accepted'];
+        if (contentKey.isEmpty || accepted is! bool) continue;
+        final rawWinner = result['winner'];
+        if (rawWinner is! Map) continue;
+        final ContentProgressRecord winner;
+        try {
+          winner = ContentProgressRecord.fromSyncJson(
+            rawWinner.cast<String, dynamic>(),
+          );
+        } catch (_) {
+          continue;
+        }
+        if (winner.contentKey != contentKey) continue;
+        writeResults.add(
+          ProgressSyncWriteResult(
+            contentKey: contentKey,
+            accepted: accepted,
+            winner: winner,
+          ),
+        );
+      }
+    }
     return ProgressSyncPage(
       cursor: map['cursor']?.toString() ?? '',
       items: items,
       hasMore: map['hasMore'] == true,
+      writeResults: writeResults,
     );
   }
 }
@@ -259,7 +306,8 @@ class ProgressSyncService {
         cursor: cursor,
         items: dirty,
       );
-      await _database.markClean(userId, dirty);
+      changed =
+          await _reconcilePush(page, dirty: dirty, userId: userId) || changed;
       changed = await _applyPage(page, userId: userId) || changed;
       cursor = page.cursor.isEmpty ? cursor : page.cursor;
       await _database.setState(_cursorKey(userId), cursor);
@@ -315,6 +363,59 @@ class ProgressSyncService {
     var changed = false;
     for (final item in page.items) {
       changed = await _database.applyRemote(item, userId: userId) || changed;
+    }
+    return changed;
+  }
+
+  Future<bool> _reconcilePush(
+    ProgressSyncPage page, {
+    required List<ContentProgressRecord> dirty,
+    required String userId,
+  }) async {
+    final writeResults = page.writeResults;
+    if (writeResults == null) {
+      // Old servers did not acknowledge writes individually. Preserve the
+      // legacy success behavior so rolling upgrades remain compatible.
+      await _database.markClean(userId, dirty);
+      return false;
+    }
+    final byContentKey = <String, ProgressSyncWriteResult>{
+      for (final result in writeResults) result.contentKey: result,
+    };
+    if (dirty.any((record) => !byContentKey.containsKey(record.contentKey))) {
+      throw const ProgressSyncException(
+        'Progress sync response omitted a write result',
+      );
+    }
+
+    var changed = false;
+    final acceptedWithoutWinner = <ContentProgressRecord>[];
+    for (final pushed in dirty) {
+      final result = byContentKey[pushed.contentKey]!;
+      final winner = result.winner;
+      if (winner != null) {
+        if (winner.contentKey != pushed.contentKey ||
+            winner.identity.contentType != pushed.identity.contentType ||
+            winner.identity.sourceKey != pushed.identity.sourceKey ||
+            winner.identity.itemId != pushed.identity.itemId) {
+          throw const ProgressSyncException(
+            'Progress sync winner has an invalid identity',
+          );
+        }
+        changed =
+            await _database.reconcilePushedWinner(
+              userId: userId,
+              pushed: pushed,
+              winner: winner,
+            ) ||
+            changed;
+      } else if (result.accepted) {
+        acceptedWithoutWinner.add(pushed);
+      }
+      // A rejected write without a valid winner deliberately stays dirty.
+    }
+    if (acceptedWithoutWinner.isNotEmpty) {
+      await _database.markClean(userId, acceptedWithoutWinner);
     }
     return changed;
   }

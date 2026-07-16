@@ -3,8 +3,23 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../models/chapter.dart';
+
+class ContinuousChapterViewController {
+  _ContinuousChapterViewState? _state;
+
+  Future<bool> moveByViewport(int direction) async {
+    return await _state?._moveByViewport(direction) ?? false;
+  }
+
+  void _attach(_ContinuousChapterViewState state) => _state = state;
+
+  void _detach(_ContinuousChapterViewState state) {
+    if (identical(_state, state)) _state = null;
+  }
+}
 
 /// A scroll reader which keeps neighbouring chapters in one continuous list.
 ///
@@ -25,6 +40,9 @@ class ContinuousChapterView extends StatefulWidget {
     this.onReadingPositionChanged,
     this.onReadingPositionSettled,
     this.onTap,
+    this.autoReadPixelsPerSecond = 0,
+    this.controller,
+    this.layoutKey,
   });
 
   final List<Chapter> chapters;
@@ -46,6 +64,9 @@ class ContinuousChapterView extends StatefulWidget {
   final void Function(int chapterIndex, String content, int charPosition)?
   onReadingPositionSettled;
   final VoidCallback? onTap;
+  final double autoReadPixelsPerSecond;
+  final ContinuousChapterViewController? controller;
+  final Object? layoutKey;
 
   @override
   State<ContinuousChapterView> createState() => _ContinuousChapterViewState();
@@ -53,6 +74,7 @@ class ContinuousChapterView extends StatefulWidget {
 
 class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   static const double _loadAheadExtent = 640;
+  static const double _sliverCacheExtent = 280;
   static const double _readingAnchorFraction = 0.38;
   static const int _liveReportIntervalMs = 80;
   static const int _retainedChapterRadius = 2;
@@ -63,6 +85,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   final SplayTreeMap<int, String> _contents = SplayTreeMap<int, String>();
   final Map<int, GlobalKey> _sectionKeys = <int, GlobalKey>{};
   final Map<int, GlobalKey> _textKeys = <int, GlobalKey>{};
+  final Map<int, double> _sectionExtents = <int, double>{};
   final Set<int> _loadingIndexes = <int>{};
   final Set<int> _failedIndexes = <int>{};
 
@@ -70,15 +93,20 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   bool _isUserScrollGesture = false;
   bool _allowPreviousChapterLoad = false;
   bool _revealPreviousEndingAfterLoad = false;
+  bool _postLayoutEdgeCheckScheduled = false;
   int? _lastReportedChapterIndex;
   int? _lastReportedCharPosition;
   int _lastLiveReportAtMs = 0;
+  late final Ticker _autoReadTicker;
+  Duration _lastAutoReadElapsed = Duration.zero;
 
   Iterable<int> get _loadedIndexes => _contents.keys;
 
   @override
   void initState() {
     super.initState();
+    widget.controller?._attach(this);
+    _autoReadTicker = Ticker(_handleAutoReadTick);
     final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
     _contents[initialIndex] = widget.initialContent;
     _sectionKeys[initialIndex] = GlobalKey();
@@ -91,12 +119,17 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       // previous chapter is loaded only after the reader intentionally swipes
       // upward toward it; otherwise its ending appears above every new start.
       _preloadNextChapter(initialIndex);
+      _syncAutoReadTicker();
     });
   }
 
   @override
   void didUpdateWidget(covariant ContinuousChapterView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
+    }
     // A new reader session is represented by a different key.  This branch
     // only keeps the current content in sync while the same session is alive.
     final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
@@ -111,12 +144,124 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         if (mounted) _scrollToActiveText();
       });
     }
+    if (oldWidget.autoReadPixelsPerSecond != widget.autoReadPixelsPerSecond) {
+      _syncAutoReadTicker();
+    }
+    if (oldWidget.layoutKey != widget.layoutKey) {
+      _preserveAnchorAcrossLayoutChange();
+    }
   }
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
+    _autoReadTicker.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<bool> _moveByViewport(int direction) async {
+    if (direction == 0 || !_scrollController.hasClients) return false;
+    final position = _scrollController.position;
+    if (direction < 0 && position.pixels <= position.minScrollExtent + 1) {
+      _allowPreviousChapterLoad = true;
+      _revealPreviousEndingAfterLoad = true;
+      final first = _contents.isEmpty ? 0 : _contents.firstKey()!;
+      await _loadChapter(first - 1);
+      await WidgetsBinding.instance.endOfFrame;
+    } else if (direction > 0 &&
+        position.pixels >= position.maxScrollExtent - 1) {
+      final last = _contents.isEmpty ? 0 : _contents.lastKey()!;
+      await _loadChapter(last + 1);
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    if (!mounted || !_scrollController.hasClients) return false;
+    final updated = _scrollController.position;
+    final target =
+        (updated.pixels + updated.viewportDimension * 0.88 * direction.sign)
+            .clamp(updated.minScrollExtent, updated.maxScrollExtent)
+            .toDouble();
+    if ((target - updated.pixels).abs() < 1) return false;
+    await _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+    _reportReadingPosition(settled: true);
+    return true;
+  }
+
+  void _preserveAnchorAcrossLayoutChange() {
+    if (!_scrollController.hasClients) return;
+    final viewport = _viewportKey.currentContext?.findRenderObject();
+    final chapterIndex = _anchoredChapterIndex();
+    if (viewport is! RenderBox || chapterIndex == null) return;
+    final content = _contents[chapterIndex];
+    if (content == null || content.isEmpty) return;
+    final anchor =
+        _scrollController.position.viewportDimension * _readingAnchorFraction;
+    final textOffset = _textOffsetAtViewportAnchor(
+      chapterIndex,
+      content,
+      anchor,
+    );
+    if (textOffset == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final position = _scrollController.position;
+      final target = _scrollTargetForTextOffset(
+        chapterIndex,
+        content,
+        textOffset,
+        position,
+      );
+      if (target == null || (target - position.pixels).abs() < 0.5) return;
+      _scrollController.jumpTo(target);
+      _reportReadingPosition(settled: true);
+    });
+  }
+
+  void _syncAutoReadTicker() {
+    final shouldRun = widget.autoReadPixelsPerSecond > 0;
+    if (shouldRun && !_autoReadTicker.isActive) {
+      _lastAutoReadElapsed = Duration.zero;
+      _autoReadTicker.start();
+    } else if (!shouldRun && _autoReadTicker.isActive) {
+      _autoReadTicker.stop();
+      _lastAutoReadElapsed = Duration.zero;
+      if (_scrollController.hasClients) {
+        _reportReadingPosition(settled: true);
+      }
+    }
+  }
+
+  void _handleAutoReadTick(Duration elapsed) {
+    if (!mounted ||
+        widget.autoReadPixelsPerSecond <= 0 ||
+        _isUserScrollGesture ||
+        !_scrollController.hasClients) {
+      _lastAutoReadElapsed = elapsed;
+      return;
+    }
+    if (_lastAutoReadElapsed == Duration.zero) {
+      _lastAutoReadElapsed = elapsed;
+      return;
+    }
+    final deltaSeconds =
+        (elapsed - _lastAutoReadElapsed).inMicroseconds / 1000000.0;
+    _lastAutoReadElapsed = elapsed;
+    if (deltaSeconds <= 0 || deltaSeconds > 0.25) return;
+
+    final position = _scrollController.position;
+    final target =
+        (position.pixels + widget.autoReadPixelsPerSecond * deltaSeconds)
+            .clamp(position.minScrollExtent, position.maxScrollExtent)
+            .toDouble();
+    if ((target - position.pixels).abs() < 0.05) return;
+    _scrollController.jumpTo(target);
+    _reportLiveReadingPosition();
+    _loadNearEdges(position);
   }
 
   int _safeChapterIndex(int index) {
@@ -192,6 +337,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     _loadingIndexes.add(chapterIndex);
     _failedIndexes.remove(chapterIndex);
+    final requestAnchorIndex =
+        _anchoredChapterIndex() ??
+        _safeChapterIndex(widget.initialChapterIndex);
     if (mounted) setState(() {});
 
     try {
@@ -207,12 +355,15 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       // continuous chapter window.
       if (!_isAdjacentToLoadedWindow(chapterIndex)) return;
 
-      final anchorIndex =
-          _anchoredChapterIndex() ??
-          _safeChapterIndex(widget.initialChapterIndex);
-      if ((chapterIndex - anchorIndex).abs() > _retainedChapterRadius) {
-        return;
-      }
+      // Keep the anchor that initiated the asynchronous edge load. Recomputing
+      // it after the request completes can reject a valid previous chapter if
+      // the retained slivers shifted while the user was still dragging.
+      final anchorIndex = requestAnchorIndex
+          .clamp(
+            chapterIndex - _retainedChapterRadius,
+            chapterIndex + _retainedChapterRadius,
+          )
+          .toInt();
       final beforeTop = _sectionTopFor(anchorIndex);
       final beforeOffset = _scrollController.hasClients
           ? _scrollController.offset
@@ -226,6 +377,12 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         anchorIndex: anchorIndex,
         incomingIndex: chapterIndex,
       );
+      final removedBeforeAnchorExtent = evictedIndexes
+          .where((index) => index < anchorIndex)
+          .fold<double>(
+            0,
+            (extent, index) => extent + (_sectionExtents[index] ?? 0),
+          );
 
       setState(() {
         _contents[chapterIndex] = content;
@@ -234,23 +391,45 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         _removeChapterState(evictedIndexes);
       });
 
+      var compensatedOffset = beforeOffset;
+      if (removedBeforeAnchorExtent > 0 && _scrollController.hasClients) {
+        final position = _scrollController.position;
+        compensatedOffset = (beforeOffset - removedBeforeAnchorExtent)
+            .clamp(position.minScrollExtent, position.maxScrollExtent)
+            .toDouble();
+        if ((compensatedOffset - position.pixels).abs() >= 0.5) {
+          _scrollController.jumpTo(compensatedOffset);
+        }
+      }
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
         // Inserting a previous chapter must not make the visible text jump.
         // Compensate only for the height inserted before the reading anchor.
-        final afterTop = _sectionTopFor(anchorIndex);
-        if (beforeTop != null && afterTop != null) {
-          final delta = afterTop - beforeTop;
-          if (delta.abs() >= 0.5) {
-            final position = _scrollController.position;
-            final revealOffset = revealPreviousEnding
-                ? position.viewportDimension * 0.65
-                : 0.0;
-            final target = (beforeOffset + delta - revealOffset).clamp(
-              0.0,
-              position.maxScrollExtent,
-            );
+        final position = _scrollController.position;
+        if (revealPreviousEnding) {
+          final previousTop = _sectionTopFor(chapterIndex);
+          final previousHeight = _sectionHeightFor(chapterIndex);
+          if (previousTop != null && previousHeight != null) {
+            final target =
+                (position.pixels +
+                        previousTop +
+                        previousHeight -
+                        position.viewportDimension * 0.65)
+                    .clamp(0.0, position.maxScrollExtent)
+                    .toDouble();
             _scrollController.jumpTo(target);
+          }
+        } else {
+          final afterTop = _sectionTopFor(anchorIndex);
+          if (beforeTop != null && afterTop != null) {
+            final delta = afterTop - beforeTop;
+            if (delta.abs() >= 0.5) {
+              final target = (compensatedOffset + delta)
+                  .clamp(0.0, position.maxScrollExtent)
+                  .toDouble();
+              _scrollController.jumpTo(target);
+            }
           }
         }
         _loadNearEdges(_scrollController.position);
@@ -352,8 +531,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
   double? _sectionTopFor(int chapterIndex) {
     final viewport = _viewportKey.currentContext?.findRenderObject();
-    final section = _sectionKeys[chapterIndex]?.currentContext
-        ?.findRenderObject();
+    final section = _renderObjectFor(_sectionKeys[chapterIndex]);
     if (viewport is! RenderBox || section is! RenderBox || !section.hasSize) {
       return null;
     }
@@ -361,15 +539,29 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   }
 
   double? _sectionHeightFor(int chapterIndex) {
-    final section = _sectionKeys[chapterIndex]?.currentContext
-        ?.findRenderObject();
-    if (section is! RenderBox || !section.hasSize) return null;
-    return section.size.height;
+    final section = _renderObjectFor(_sectionKeys[chapterIndex]);
+    if (section is! RenderBox || !section.hasSize) {
+      return _sectionExtents[chapterIndex];
+    }
+    final height = section.size.height;
+    _sectionExtents[chapterIndex] = height;
+    return height;
   }
 
   RenderParagraph? _textRenderFor(int chapterIndex) {
-    final render = _textKeys[chapterIndex]?.currentContext?.findRenderObject();
+    final render = _renderObjectFor(_textKeys[chapterIndex]);
     return render is RenderParagraph && render.hasSize ? render : null;
+  }
+
+  RenderObject? _renderObjectFor(GlobalKey? key) {
+    final context = key?.currentContext;
+    if (context == null) return null;
+    var isActive = true;
+    assert(() {
+      isActive = context is Element && context.debugIsActive;
+      return true;
+    }());
+    return isActive ? context.findRenderObject() : null;
   }
 
   double? _scrollTargetForTextOffset(
@@ -427,8 +619,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
   int? _anchoredChapterIndex() {
     final viewport = _viewportKey.currentContext?.findRenderObject();
-    if (viewport is! RenderBox || !viewport.hasSize) return null;
-    final anchor = viewport.size.height * _readingAnchorFraction;
+    if (viewport is! RenderBox || !_scrollController.hasClients) return null;
+    final anchor =
+        _scrollController.position.viewportDimension * _readingAnchorFraction;
     int? closestIndex;
     var closestDistance = double.infinity;
 
@@ -458,11 +651,13 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     if (content == null ||
         top == null ||
         height == null ||
-        viewport is! RenderBox) {
+        viewport is! RenderBox ||
+        !_scrollController.hasClients) {
       return;
     }
 
-    final anchor = viewport.size.height * _readingAnchorFraction;
+    final anchor =
+        _scrollController.position.viewportDimension * _readingAnchorFraction;
     final ratio = ((anchor - top) / height).clamp(0.0, 1.0);
     final charPosition =
         _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ??
@@ -521,8 +716,26 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     }
   }
 
+  void _schedulePostLayoutEdgeCheck() {
+    if (_postLayoutEdgeCheckScheduled) return;
+    _postLayoutEdgeCheckScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postLayoutEdgeCheckScheduled = false;
+      if (!mounted || !_scrollController.hasClients) return;
+      _loadNearEdges(_scrollController.position);
+    });
+  }
+
   bool _handleScrollNotification(ScrollNotification notification) {
     if (notification.depth != 0) return false;
+    // Slivers can update their estimated extent while the viewport is in
+    // performLayout. Geometry reads (localToGlobal/RenderBox.size) are not
+    // legal in that phase, so wait until the render tree is stable.
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      _schedulePostLayoutEdgeCheck();
+      return false;
+    }
 
     // Only a real finger drag is allowed to change the active chapter and
     // saved reading position. Layout changes, chapter prefetch correction,
@@ -590,9 +803,54 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     );
   }
 
+  int? _findSliverChildIndex(Key key, List<int> loadedIndexes) {
+    if (key == const ValueKey<String>('continuous-edge-before')) return 0;
+    if (key == const ValueKey<String>('continuous-edge-after')) {
+      return loadedIndexes.length + 1;
+    }
+    for (var index = 0; index < loadedIndexes.length; index++) {
+      if (identical(_sectionKeys[loadedIndexes[index]], key)) {
+        return index + 1;
+      }
+    }
+    return null;
+  }
+
+  Widget? _buildSliverChild(
+    BuildContext context,
+    int index,
+    List<int> loadedIndexes,
+  ) {
+    if (index == 0) {
+      return KeyedSubtree(
+        key: const ValueKey<String>('continuous-edge-before'),
+        child: _buildEdgeLoader(before: true),
+      );
+    }
+    if (index == loadedIndexes.length + 1) {
+      return KeyedSubtree(
+        key: const ValueKey<String>('continuous-edge-after'),
+        child: _buildEdgeLoader(before: false),
+      );
+    }
+
+    final chapterIndex = loadedIndexes[index - 1];
+    final content = _contents[chapterIndex];
+    if (content == null) return null;
+    return RepaintBoundary(
+      key: _keyFor(chapterIndex),
+      child: widget.sectionBuilder(
+        widget.chapters[chapterIndex],
+        chapterIndex,
+        content,
+        _textKeyFor(chapterIndex),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final loaded = _loadedIndexes;
+    final loadedIndexes = _loadedIndexes.toList(growable: false);
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTap: widget.onTap,
@@ -600,26 +858,29 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         onNotification: _handleScrollNotification,
         child: SizedBox.expand(
           key: _viewportKey,
-          child: SingleChildScrollView(
+          child: CustomScrollView(
             controller: _scrollController,
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildEdgeLoader(before: true),
-                for (final chapterIndex in loaded)
-                  RepaintBoundary(
-                    key: _keyFor(chapterIndex),
-                    child: widget.sectionBuilder(
-                      widget.chapters[chapterIndex],
-                      chapterIndex,
-                      _contents[chapterIndex]!,
-                      _textKeyFor(chapterIndex),
-                    ),
+            // Keep the legacy pixel cache behavior until the new viewport cache
+            // API preserves chapter reload anchoring on every supported engine.
+            // ignore: deprecated_member_use
+            cacheExtent: _sliverCacheExtent,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) =>
+                        _buildSliverChild(context, index, loadedIndexes),
+                    childCount: loadedIndexes.length + 2,
+                    findChildIndexCallback: (key) =>
+                        _findSliverChildIndex(key, loadedIndexes),
+                    addAutomaticKeepAlives: false,
+                    addRepaintBoundaries: false,
+                    addSemanticIndexes: false,
                   ),
-                _buildEdgeLoader(before: false),
-              ],
-            ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

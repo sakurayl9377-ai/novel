@@ -46,6 +46,7 @@ function envList(name, fallback = '') {
 
 export const config = {
   rootDir,
+  nodeEnvironment: env('NODE_ENV', 'development').trim().toLowerCase(),
   host: env('HOST', '0.0.0.0'),
   port: envNumber('PORT', 3010),
   dbPath: path.resolve(rootDir, env('DB_PATH', './data/interaction.sqlite')),
@@ -71,6 +72,7 @@ export const config = {
   corsOrigin: env('CORS_ORIGIN', '*'),
   trustedProxies: envList('TRUST_PROXY', '127.0.0.1,::1'),
   allowDevAuthCodes: envBool('ALLOW_DEV_AUTH_CODES', false),
+  allowBetaTestSession: envBool('ALLOW_BETA_TEST_SESSION', false),
   // The mobile app only receives normalized catalog data and episode HLS URLs.
   // A local server-managed catalog is preferred; an authenticated HTTPS
   // endpoint can be configured when the catalog is maintained elsewhere.

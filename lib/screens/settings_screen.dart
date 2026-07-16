@@ -14,6 +14,7 @@ import '../providers/reading_provider.dart';
 import '../providers/tts_provider.dart';
 import '../services/app_update_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/manga_cover.dart';
 import '../widgets/interaction_ui.dart';
 import 'anime_player_screen.dart';
 import 'anime_screen.dart';
@@ -21,7 +22,6 @@ import 'bookshelf_screen.dart';
 import 'chat_room_list_screen.dart';
 import 'interaction_auth_screen.dart';
 import 'manga_reader_screen.dart';
-import 'manga_screen.dart';
 import 'profile_screen.dart';
 
 class SettingsScreen extends StatefulWidget {

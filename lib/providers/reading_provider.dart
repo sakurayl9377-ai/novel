@@ -37,6 +37,9 @@ class ReadingProvider extends ChangeNotifier {
     final saved = await _storage.getReadingSettings();
     if (saved != null) {
       _settings = ReadingSettings.fromJson(saved);
+      if (ReadingSettings.needsLayoutPresetMigration(saved)) {
+        await _storage.saveReadingSettings(_settings.toJson());
+      }
       notifyListeners();
     }
   }
@@ -47,31 +50,35 @@ class ReadingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> updateFontSize(double size) async {
-    _settings.fontSize = size;
-    await _storage.saveReadingSettings(_settings.toJson());
+  /// Applies settings to the live reader without generating a database write
+  /// for every slider tick. The settings sheet persists the final snapshot
+  /// when it closes.
+  void previewSettings(ReadingSettings newSettings) {
+    _settings = newSettings;
     notifyListeners();
+  }
+
+  Future<void> updateFontSize(double size) async {
+    await saveSettings(_settings.copyWith(fontSize: size));
   }
 
   Future<void> updateFontFamily(String family) async {
-    _settings.fontFamily = family;
-    await _storage.saveReadingSettings(_settings.toJson());
-    notifyListeners();
+    await saveSettings(_settings.copyWith(fontFamily: family));
   }
 
   Future<void> updateBackgroundColor(String color) async {
-    _settings.backgroundColor = color;
-    _settings.nightMode = color == '#1A1A1A' || color == '#2B2B2B';
-    await _storage.saveReadingSettings(_settings.toJson());
-    notifyListeners();
+    await saveSettings(
+      _settings.copyWith(
+        backgroundColor: color,
+        nightMode: color == '#1A1A1A' || color == '#2B2B2B',
+      ),
+    );
   }
 
   Future<void> updatePageTurnMode(String mode) async {
-    _settings.pageTurnMode = ReadingSettings.pageTurnModes.contains(mode)
-        ? mode
-        : ReadingSettings.defaultPageTurnMode;
-    await _storage.saveReadingSettings(_settings.toJson());
-    notifyListeners();
+    final next = _settings.copyWith();
+    next.pageTurnMode = mode;
+    await saveSettings(next);
   }
 
   Future<void> toggleNightMode() async {
@@ -79,14 +86,14 @@ class ReadingProvider extends ChangeNotifier {
   }
 
   Future<void> setNightMode(bool enabled) async {
-    _settings.nightMode = enabled;
-    if (_settings.nightMode) {
-      _settings.backgroundColor = '#1A1A1A';
-    } else {
-      _settings.backgroundColor = '#FFF8ED';
-    }
-    await _storage.saveReadingSettings(_settings.toJson());
-    notifyListeners();
+    await saveSettings(
+      _settings.copyWith(
+        nightMode: enabled,
+        backgroundColor: enabled
+            ? '#1A1A1A'
+            : ReadingSettings.defaultPaperColor,
+      ),
+    );
   }
 
   void toggleSettings() {
@@ -142,13 +149,20 @@ class ReadingProvider extends ChangeNotifier {
   }
 
   void _handleRemoteRevision() {
-    unawaited(_reloadCurrentProgress());
+    unawaited(_reloadSyncedReaderState());
   }
 
-  Future<void> _reloadCurrentProgress() async {
+  Future<void> _reloadSyncedReaderState() async {
+    final owner = ProgressSyncService.instance.activeOwnerUserId;
+    final savedSettings = await _storage.getReadingSettings();
     final novel = _currentNovel;
-    if (novel == null) return;
-    final progressData = await _storage.getNovelReadingProgress(novel);
+    final progressData = novel == null
+        ? null
+        : await _storage.getNovelReadingProgress(novel);
+    if (owner != ProgressSyncService.instance.activeOwnerUserId) return;
+    _settings = savedSettings == null
+        ? ReadingSettings()
+        : ReadingSettings.fromJson(savedSettings);
     _currentProgress = progressData == null
         ? null
         : ReadingProgress.fromJson(progressData);

@@ -271,6 +271,7 @@ class ProgressDatabase {
   Future<void> saveLocal({
     required String ownerUserId,
     required ContentIdentity identity,
+    String? contentKey,
     required String subItemId,
     required Map<String, dynamic> payload,
     required Map<String, dynamic> metadata,
@@ -282,7 +283,7 @@ class ProgressDatabase {
       _db,
       ContentProgressRecord(
         identity: identity,
-        contentKey: identity.contentKey,
+        contentKey: _resolveContentKey(identity, contentKey),
         subItemId: ContentIdentity.normalizeSubItemId(subItemId),
         payload: payload,
         metadata: metadata,
@@ -299,11 +300,19 @@ class ProgressDatabase {
     ContentIdentity identity, {
     required String ownerUserId,
   }) async {
+    return getByContentKey(identity.contentKey, ownerUserId: ownerUserId);
+  }
+
+  Future<ContentProgressRecord?> getByContentKey(
+    String contentKey, {
+    required String ownerUserId,
+  }) async {
     await init();
+    final normalizedContentKey = _normalizeContentKey(contentKey);
     final rows = await _db.query(
       'content_progress',
       where: 'owner_user_id = ? AND content_key = ? AND deleted = 0',
-      whereArgs: [ownerUserId, identity.contentKey],
+      whereArgs: [ownerUserId, normalizedContentKey],
       limit: 1,
     );
     return rows.isEmpty ? null : _fromRow(rows.first);
@@ -382,19 +391,54 @@ class ProgressDatabase {
     return rows.map(_fromRow).toList(growable: false);
   }
 
+  Future<List<ContentProgressRecord>> listByPrefix(
+    String contentKeyPrefix, {
+    required String ownerUserId,
+    ContentType? type,
+  }) async {
+    await init();
+    final normalizedPrefix = _normalizeContentKey(contentKeyPrefix);
+    final escapedPrefix = normalizedPrefix
+        .replaceAll(r'\', r'\\')
+        .replaceAll('%', r'\%')
+        .replaceAll('_', r'\_');
+    final clauses = <String>[
+      'owner_user_id = ?',
+      r"content_key LIKE ? ESCAPE '\'",
+      'deleted = 0',
+    ];
+    final whereArgs = <Object?>[ownerUserId, '$escapedPrefix%'];
+    if (type != null) {
+      clauses.add('content_type = ?');
+      whereArgs.add(type.wireName);
+    }
+    final rows = await _db.query(
+      'content_progress',
+      where: clauses.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'client_updated_at_ms DESC, content_key ASC',
+    );
+    return rows.map(_fromRow).toList(growable: false);
+  }
+
   Future<void> deleteLocal(
     ContentIdentity identity, {
+    String? contentKey,
     required String ownerUserId,
     required String deviceId,
     required int clientUpdatedAtMs,
   }) async {
     await init();
-    final existing = await get(identity, ownerUserId: ownerUserId);
+    final resolvedContentKey = _resolveContentKey(identity, contentKey);
+    final existing = await getByContentKey(
+      resolvedContentKey,
+      ownerUserId: ownerUserId,
+    );
     await _upsert(
       _db,
       ContentProgressRecord(
         identity: identity,
-        contentKey: identity.contentKey,
+        contentKey: resolvedContentKey,
         subItemId: existing?.subItemId ?? '',
         payload: existing?.payload ?? const {},
         metadata: existing?.metadata ?? const {},
@@ -516,6 +560,31 @@ class ProgressDatabase {
           whereArgs: [userId, record.contentKey, record.clientUpdatedAtMs],
         );
       }
+    });
+  }
+
+  Future<bool> reconcilePushedWinner({
+    required String userId,
+    required ContentProgressRecord pushed,
+    required ContentProgressRecord winner,
+  }) async {
+    await init();
+    return _db.transaction((transaction) async {
+      final rows = await transaction.query(
+        'content_progress',
+        where: 'owner_user_id = ? AND content_key = ?',
+        whereArgs: [userId, pushed.contentKey],
+        limit: 1,
+      );
+      if (rows.isEmpty) return false;
+      final current = _fromRow(rows.first);
+      if (!_sameStoredRecord(current, pushed)) return false;
+      final changed = !_sameSyncedValue(current, winner);
+      await _replace(
+        transaction,
+        winner.copyWith(ownerUserId: userId, dirty: false),
+      );
+      return changed;
     });
   }
 
@@ -911,6 +980,82 @@ class ProgressDatabase {
         record.dirty ? 1 : 0,
       ],
     );
+  }
+
+  Future<void> _replace(
+    DatabaseExecutor executor,
+    ContentProgressRecord record,
+  ) async {
+    await executor.rawInsert(
+      '''
+      INSERT INTO content_progress (
+        owner_user_id, content_key, content_type, source_key, item_id,
+        sub_item_id, payload_json, metadata_json, device_id,
+        client_updated_at_ms, deleted, dirty
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(owner_user_id, content_key) DO UPDATE SET
+        content_type = excluded.content_type,
+        source_key = excluded.source_key,
+        item_id = excluded.item_id,
+        sub_item_id = excluded.sub_item_id,
+        payload_json = excluded.payload_json,
+        metadata_json = excluded.metadata_json,
+        device_id = excluded.device_id,
+        client_updated_at_ms = excluded.client_updated_at_ms,
+        deleted = excluded.deleted,
+        dirty = excluded.dirty
+      ''',
+      [
+        record.ownerUserId,
+        record.contentKey,
+        record.identity.contentType.wireName,
+        record.identity.sourceKey,
+        record.identity.itemId,
+        record.subItemId,
+        jsonEncode(record.payload),
+        jsonEncode(record.metadata),
+        record.deviceId,
+        record.clientUpdatedAtMs,
+        record.deleted ? 1 : 0,
+        record.dirty ? 1 : 0,
+      ],
+    );
+  }
+
+  static String _resolveContentKey(
+    ContentIdentity identity,
+    String? contentKey,
+  ) => _normalizeContentKey(contentKey ?? identity.contentKey);
+
+  static String _normalizeContentKey(String contentKey) {
+    final normalized = contentKey.trim();
+    if (normalized.isEmpty) {
+      throw ArgumentError.value(contentKey, 'contentKey', 'must not be empty');
+    }
+    return normalized;
+  }
+
+  static bool _sameStoredRecord(
+    ContentProgressRecord left,
+    ContentProgressRecord right,
+  ) {
+    return left.contentKey == right.contentKey &&
+        left.identity.contentType == right.identity.contentType &&
+        left.identity.sourceKey == right.identity.sourceKey &&
+        left.identity.itemId == right.identity.itemId &&
+        left.subItemId == right.subItemId &&
+        jsonEncode(left.payload) == jsonEncode(right.payload) &&
+        jsonEncode(left.metadata) == jsonEncode(right.metadata) &&
+        left.deviceId == right.deviceId &&
+        left.clientUpdatedAtMs == right.clientUpdatedAtMs &&
+        left.deleted == right.deleted;
+  }
+
+  static bool _sameSyncedValue(
+    ContentProgressRecord left,
+    ContentProgressRecord right,
+  ) {
+    return _sameStoredRecord(left, right);
   }
 
   static Future<void> _upsertBookshelfItem(

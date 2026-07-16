@@ -38,7 +38,8 @@ void main() {
       ).readAsStringSync();
 
       expect(home, contains('_maxPrecachedCovers = 8'));
-      expect(home, contains('memCacheWidth: cacheWidth'));
+      expect(home, contains('ResizeImage.resizeIfNeeded('));
+      expect(home, contains('MangaCover(imageUrl: item.imageUrl)'));
       expect(reader, contains('_prefetchRadius = 2'));
       expect(reader, contains('_maxTrackedPrefetchPages'));
       expect(reader, contains('cacheWidth: widget.cacheWidth'));

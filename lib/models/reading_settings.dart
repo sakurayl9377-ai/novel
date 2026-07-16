@@ -1,11 +1,23 @@
 import '../features/reader_core/reader_modes.dart';
 
 class ReadingSettings {
-  static const int currentSchemaVersion = 2;
+  static const int currentSchemaVersion = 3;
+  static const int currentLayoutPresetVersion = 2;
   static const String defaultPageTurnMode = 'verticalScroll';
   static const String systemFont = 'system';
   static const String notoSerifFont = 'NotoSerifSC';
   static const String wenKaiFont = 'LXGWWenKaiScreen';
+  static const double defaultFontSize = 23.0;
+  static const double defaultLineHeight = 2.2;
+  static const double defaultParagraphSpacing = 0.85;
+  static const double defaultHorizontalPadding = 26.0;
+  static const String defaultPaperColor = '#F4E3BC';
+
+  static const double _legacyFontSize = 20.0;
+  static const double _legacyLineHeight = 1.75;
+  static const double _legacyParagraphSpacing = 0.85;
+  static const double _legacyHorizontalPadding = 24.0;
+  static const String _legacyPaperColor = '#F6E7C5';
 
   double fontSize;
   String fontFamily;
@@ -24,17 +36,17 @@ class ReadingSettings {
   double autoReadSpeed;
 
   ReadingSettings({
-    this.fontSize = 20.0,
+    this.fontSize = defaultFontSize,
     this.fontFamily = systemFont,
-    this.backgroundColor = '#F6E7C5',
+    this.backgroundColor = defaultPaperColor,
     this.brightness = 1.0,
     this.useSystemBrightness = true,
     this.pageMode = NovelPageMode.verticalScroll,
     this.showLineHeight = false,
     this.nightMode = false,
-    this.lineHeight = 1.75,
-    this.paragraphSpacing = 0.85,
-    this.horizontalPadding = 24.0,
+    this.lineHeight = defaultLineHeight,
+    this.paragraphSpacing = defaultParagraphSpacing,
+    this.horizontalPadding = defaultHorizontalPadding,
     this.singleHandMode = false,
     this.volumeKeyTurnPage = false,
     this.keepScreenOn = false,
@@ -48,7 +60,8 @@ class ReadingSettings {
   }
 
   static const List<String> backgroundColors = [
-    '#F6E7C5',
+    defaultPaperColor,
+    _legacyPaperColor,
     '#FFF8ED',
     '#F2F2F2',
     '#C7EDCC',
@@ -73,6 +86,14 @@ class ReadingSettings {
     wenKaiFont => '霞鹜文楷',
     _ => '系统默认',
   };
+
+  static bool needsLayoutPresetMigration(Map<String, dynamic> json) {
+    final schemaVersion = (json['schemaVersion'] as num?)?.toInt() ?? 1;
+    final layoutPresetVersion =
+        (json['layoutPresetVersion'] as num?)?.toInt() ?? 1;
+    return schemaVersion < currentSchemaVersion ||
+        layoutPresetVersion < currentLayoutPresetVersion;
+  }
 
   ReadingSettings copyWith({
     double? fontSize,
@@ -112,6 +133,7 @@ class ReadingSettings {
 
   Map<String, dynamic> toJson() => {
     'schemaVersion': currentSchemaVersion,
+    'layoutPresetVersion': currentLayoutPresetVersion,
     'fontSize': fontSize,
     'fontFamily': fontFamily,
     'backgroundColor': backgroundColor,
@@ -130,21 +152,38 @@ class ReadingSettings {
   };
 
   factory ReadingSettings.fromJson(Map<String, dynamic> json) {
+    final schemaVersion = (json['schemaVersion'] as num?)?.toInt() ?? 1;
+    final layoutPresetVersion =
+        (json['layoutPresetVersion'] as num?)?.toInt() ?? 1;
+    final hasCurrentLayoutPreset =
+        schemaVersion >= currentSchemaVersion ||
+        layoutPresetVersion >= currentLayoutPresetVersion;
+    final migrateUntouchedLegacyLayout =
+        !hasCurrentLayoutPreset && _matchesUntouchedLegacyLayout(json);
+    final useCurrentDefaults =
+        hasCurrentLayoutPreset || migrateUntouchedLegacyLayout;
     final storedFont = json['fontFamily']?.toString().trim() ?? '';
     final fontFamily = switch (storedFont) {
       notoSerifFont || '宋体' => notoSerifFont,
       wenKaiFont || '楷体' => wenKaiFont,
       _ => systemFont,
     };
-    final background = json['backgroundColor']?.toString() ?? '#F6E7C5';
+    final background = migrateUntouchedLegacyLayout
+        ? defaultPaperColor
+        : json['backgroundColor']?.toString() ??
+              (useCurrentDefaults ? defaultPaperColor : _legacyPaperColor);
     final night =
         json['nightMode'] as bool? ??
         background == '#1A1A1A' || background == '#2B2B2B';
     return ReadingSettings(
-      fontSize: ((json['fontSize'] as num?)?.toDouble() ?? 20.0).clamp(
-        14.0,
-        34.0,
-      ),
+      fontSize:
+          (migrateUntouchedLegacyLayout
+                  ? defaultFontSize
+                  : (json['fontSize'] as num?)?.toDouble() ??
+                        (useCurrentDefaults
+                            ? defaultFontSize
+                            : _legacyFontSize))
+              .clamp(14.0, 34.0),
       fontFamily: fontFamily,
       backgroundColor: background,
       brightness: ((json['brightness'] as num?)?.toDouble() ?? 1.0).clamp(
@@ -155,17 +194,30 @@ class ReadingSettings {
       pageMode: NovelPageMode.fromStorage(json['pageTurnMode']),
       showLineHeight: json['showLineHeight'] as bool? ?? false,
       nightMode: night,
-      lineHeight: ((json['lineHeight'] as num?)?.toDouble() ?? 1.75).clamp(
-        1.2,
-        2.2,
-      ),
-      paragraphSpacing: ((json['paragraphSpacing'] as num?)?.toDouble() ?? 0.85)
-          .clamp(0.0, 1.6),
+      lineHeight:
+          (migrateUntouchedLegacyLayout
+                  ? defaultLineHeight
+                  : (json['lineHeight'] as num?)?.toDouble() ??
+                        (useCurrentDefaults
+                            ? defaultLineHeight
+                            : _legacyLineHeight))
+              .clamp(1.2, 2.2),
+      paragraphSpacing:
+          (migrateUntouchedLegacyLayout
+                  ? defaultParagraphSpacing
+                  : (json['paragraphSpacing'] as num?)?.toDouble() ??
+                        (useCurrentDefaults
+                            ? defaultParagraphSpacing
+                            : _legacyParagraphSpacing))
+              .clamp(0.0, 1.6),
       horizontalPadding:
-          ((json['horizontalPadding'] as num?)?.toDouble() ?? 24.0).clamp(
-            12.0,
-            40.0,
-          ),
+          (migrateUntouchedLegacyLayout
+                  ? defaultHorizontalPadding
+                  : (json['horizontalPadding'] as num?)?.toDouble() ??
+                        (useCurrentDefaults
+                            ? defaultHorizontalPadding
+                            : _legacyHorizontalPadding))
+              .clamp(12.0, 40.0),
       singleHandMode: json['singleHandMode'] as bool? ?? false,
       volumeKeyTurnPage: json['volumeKeyTurnPage'] as bool? ?? false,
       keepScreenOn: json['keepScreenOn'] as bool? ?? false,
@@ -174,5 +226,23 @@ class ReadingSettings {
         3.0,
       ),
     );
+  }
+
+  static bool _matchesUntouchedLegacyLayout(Map<String, dynamic> json) {
+    final storedFont = json['fontFamily']?.toString().trim() ?? systemFont;
+    final nightMode = json['nightMode'] as bool? ?? false;
+    return _sameNumber(json['fontSize'], _legacyFontSize) &&
+        (storedFont.isEmpty || storedFont == systemFont) &&
+        _sameNumber(json['lineHeight'], _legacyLineHeight) &&
+        _sameNumber(json['paragraphSpacing'], _legacyParagraphSpacing) &&
+        _sameNumber(json['horizontalPadding'], _legacyHorizontalPadding) &&
+        (json['backgroundColor']?.toString() ?? _legacyPaperColor) ==
+            _legacyPaperColor &&
+        !nightMode;
+  }
+
+  static bool _sameNumber(Object? value, double expected) {
+    final actual = value is num ? value.toDouble() : expected;
+    return (actual - expected).abs() < 0.0001;
   }
 }

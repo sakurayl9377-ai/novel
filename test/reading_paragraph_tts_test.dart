@@ -18,6 +18,26 @@ void main() {
 
     expect(source, contains('activeTtsParagraph.start'));
     expect(source, contains('paragraphRangeForOffset('));
+    expect(source, contains('context.select<TtsProvider, (bool, int, int)>'));
+    expect(source, contains('Selector<TtsProvider, (bool, bool)>'));
+    expect(source, isNot(contains('Consumer<TtsProvider>')));
     expect(source, isNot(contains('_sentenceRangeForOffset(')));
   });
+
+  test(
+    'expanded TTS controls own the bottom surface and expose exit actions',
+    () {
+      final source = File('lib/screens/reading_screen.dart').readAsStringSync();
+
+      expect(
+        source,
+        contains('bottomChrome: _showTtsPanel ? null : _buildBottomChrome()'),
+      );
+      expect(source, contains("ValueKey('novel-tts-panel-close')"));
+      expect(source, contains("label: const Text('收起')"));
+      expect(source, contains("label: '结束朗读'"));
+      expect(source, contains('_buildSleepTimerControl(ttsProvider, isNight)'));
+      expect(source, contains("'全书'"));
+    },
+  );
 }

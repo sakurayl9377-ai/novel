@@ -26,8 +26,50 @@ import {
 const emailCooldownSeconds = 60;
 const emailDailyLimit = 5;
 const emailDailyWindowSeconds = 24 * 60 * 60;
+const betaTestEmail = 'reader-beta-session@local.invalid';
+const betaTestNickname = 'Sakura Beta 测试员';
 
 export async function authRoutes(app) {
+  app.post('/auth/beta-session', async (request, reply) => {
+    if (!canCreateBetaTestSession(request)) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+
+    const limited = enforceRateLimits(request, reply, [
+      rateRule('auth_beta_session_ip', request.ip, 30, 15 * 60 * 1000),
+    ]);
+    if (limited) return limited;
+
+    const requestIp = String(request.ip || '').slice(0, 80);
+    let user = one('SELECT * FROM users WHERE email = ?', [betaTestEmail]);
+    if (!user) {
+      run(
+        `INSERT OR IGNORE INTO users
+         (email, nickname, password_hash, role, status, register_ip, last_login_ip)
+         VALUES (?, ?, ?, 'user', 'active', ?, ?)`,
+        [
+          betaTestEmail,
+          betaTestNickname,
+          hashPassword(cryptoRandomId()),
+          requestIp,
+          requestIp,
+        ],
+      );
+      user = one('SELECT * FROM users WHERE email = ?', [betaTestEmail]);
+    }
+    run(
+      `UPDATE users
+       SET nickname = ?, role = 'user', status = 'active', banned_until = '',
+           last_login_at = datetime('now'), last_login_ip = ?,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [betaTestNickname, requestIp, user.id],
+    );
+    user = one('SELECT * FROM users WHERE id = ?', [user.id]);
+
+    return serializeAuth(user, createSession(user.id));
+  });
+
   app.get('/auth/captcha', async (request, reply) => {
     const limited = enforceRateLimits(request, reply, [
       rateRule('auth_captcha_ip', request.ip, 30, 5 * 60 * 1000),
@@ -368,6 +410,36 @@ function cooldownWait(createdAt) {
   const normalized = String(createdAt).replace(' ', 'T') + 'Z';
   const elapsed = (Date.now() - Date.parse(normalized)) / 1000;
   return Math.max(0, Math.ceil(emailCooldownSeconds - elapsed));
+}
+
+function canCreateBetaTestSession(request) {
+  if (!config.allowBetaTestSession) return false;
+  if (config.nodeEnvironment === 'production') return false;
+  if (request.headers['x-sakura-reader-beta'] !== '1') return false;
+  return isPrivateOrLoopbackIp(request.ip);
+}
+
+function isPrivateOrLoopbackIp(value) {
+  let ip = String(value || '').trim().toLowerCase();
+  if (ip.startsWith('::ffff:')) ip = ip.slice('::ffff:'.length);
+  if (ip === '::1') return true;
+  if (ip.startsWith('fc') || ip.startsWith('fd')) return true;
+  if (/^fe[89ab]/.test(ip)) return true;
+
+  const octets = ip.split('.').map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) {
+    return false;
+  }
+  return (
+    octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
 }
 
 function rateRule(scope, key, limit, windowMs) {

@@ -223,6 +223,58 @@ void main() {
     await logout;
   });
 
+  test(
+    'beta build automatically creates and securely saves its test session',
+    () async {
+      const betaAccount = InteractionAccountSession(
+        token: 'beta-session-token',
+        user: InteractionUser(
+          id: 909,
+          email: 'reader-beta-session@local.invalid',
+          nickname: 'Sakura Beta 测试员',
+        ),
+      );
+      final authService = _BetaInteractionAuthService(betaAccount);
+      final provider = InteractionAuthProvider(
+        authService: authService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+        betaTestAccountEnabled: true,
+      );
+
+      await provider.loadSession();
+
+      expect(authService.createCalls, 1);
+      expect(provider.isLoggedIn, isTrue);
+      expect(provider.token, betaAccount.token);
+      expect(provider.user?.id, betaAccount.user.id);
+      final envelope =
+          jsonDecode(sessionStorage.values['interaction_auth_session_v2']!)
+              as Map<String, dynamic>;
+      expect(envelope['token'], betaAccount.token);
+      final savedAccounts = envelope['accounts'] as List;
+      expect(savedAccounts, hasLength(2));
+      expect(
+        ((savedAccounts.first as Map<String, dynamic>)['user']
+            as Map<String, dynamic>)['id'],
+        betaAccount.user.id,
+      );
+    },
+  );
+
+  test('formal build cannot enter the beta test account', () async {
+    final authService = _BetaInteractionAuthService(account);
+    final provider = InteractionAuthProvider(
+      authService: authService,
+      appInstallReportService: _NoopAppInstallReportService(),
+      sessionStorage: sessionStorage,
+      betaTestAccountEnabled: false,
+    );
+
+    await expectLater(provider.enterBetaTestAccount(), throwsStateError);
+    expect(authService.createCalls, 0);
+  });
+
   for (final statusCode in [401, 403]) {
     test(
       'switchAccount removes a definitively rejected $statusCode session',
@@ -340,6 +392,19 @@ class _BlockingLogoutInteractionAuthService extends InteractionAuthService {
     logoutToken = token;
     logoutStarted.complete();
     await finishLogout.future;
+  }
+}
+
+class _BetaInteractionAuthService extends InteractionAuthService {
+  _BetaInteractionAuthService(this.account);
+
+  final InteractionAccountSession account;
+  int createCalls = 0;
+
+  @override
+  Future<InteractionAuthResult> createBetaTestSession() async {
+    createCalls += 1;
+    return InteractionAuthResult(token: account.token, user: account.user);
   }
 }
 

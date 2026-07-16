@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Rational
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import androidx.core.app.NotificationManagerCompat
@@ -31,8 +32,15 @@ import java.io.File
 class MainActivity : AudioServiceActivity() {
     private val updateChannel = "com.novel.novel_app/app_update"
     private val playerChannel = "com.novel.novel_app/player"
+    private val readerChannelName = "com.novel.novel_app/reader"
     private val appInfoChannel = "com.novel.novel_app/app_info"
     private val ttsNotificationChannel = "com.novel.novel_app.channel.tts"
+    private var readerChannel: MethodChannel? = null
+    private var mangaTileChannel: MangaTileChannel? = null
+    private var readerSessionActive = false
+    private var readerVolumeKeysEnabled = false
+    private var readerKeepScreenOn = false
+    private var readerBrightnessOverridden = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,6 +63,11 @@ class MainActivity : AudioServiceActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         ensureTtsNotificationChannel()
         super.configureFlutterEngine(flutterEngine)
+        mangaTileChannel?.dispose()
+        mangaTileChannel = MangaTileChannel(
+            applicationContext,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, updateChannel).setMethodCallHandler { call, result ->
             when (call.method) {
                 "installApk" -> {
@@ -104,12 +117,14 @@ class MainActivity : AudioServiceActivity() {
                     val attributes = window.attributes
                     attributes.screenBrightness = value.toFloat()
                     window.attributes = attributes
+                    if (readerSessionActive) readerBrightnessOverridden = true
                     result.success(null)
                 }
                 "resetScreenBrightness" -> {
                     val attributes = window.attributes
                     attributes.screenBrightness = -1f
                     window.attributes = attributes
+                    if (readerSessionActive) readerBrightnessOverridden = false
                     result.success(null)
                 }
                 "setFullscreenSystemUi" -> {
@@ -117,6 +132,30 @@ class MainActivity : AudioServiceActivity() {
                     result.success(null)
                 }
                 else -> result.notImplemented()
+            }
+        }
+        readerChannel?.setMethodCallHandler(null)
+        releaseReaderSession(resetBrightness = true)
+        readerChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            readerChannelName,
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "configureReaderSession" -> {
+                        readerSessionActive = true
+                        readerVolumeKeysEnabled =
+                            call.argument<Boolean>("volumeKeyTurnPage") == true
+                        readerKeepScreenOn = call.argument<Boolean>("keepScreenOn") == true
+                        applyReaderKeepScreenOn()
+                        result.success(true)
+                    }
+                    "releaseReaderSession" -> {
+                        releaseReaderSession(resetBrightness = true)
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
             }
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, appInfoChannel).setMethodCallHandler { call, result ->
@@ -146,6 +185,60 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        mangaTileChannel?.dispose()
+        mangaTileChannel = null
+        readerChannel?.setMethodCallHandler(null)
+        readerChannel = null
+        releaseReaderSession(resetBrightness = true)
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onDestroy() {
+        mangaTileChannel?.dispose()
+        mangaTileChannel = null
+        releaseReaderSession(resetBrightness = true)
+        super.onDestroy()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val readerAction = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP -> "previous"
+            KeyEvent.KEYCODE_VOLUME_DOWN -> "next"
+            else -> null
+        }
+        if (readerSessionActive && readerVolumeKeysEnabled && readerAction != null) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                readerChannel?.invokeMethod(
+                    "onVolumeKey",
+                    mapOf("action" to readerAction),
+                )
+            }
+            // Consume both key-down and key-up while reader paging owns the
+            // volume keys. Repeated key-down events are consumed without
+            // triggering a rapid burst of page changes.
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun applyReaderKeepScreenOn() {
+        window.decorView.keepScreenOn = readerSessionActive && readerKeepScreenOn
+    }
+
+    private fun releaseReaderSession(resetBrightness: Boolean) {
+        readerSessionActive = false
+        readerVolumeKeysEnabled = false
+        readerKeepScreenOn = false
+        applyReaderKeepScreenOn()
+        if (resetBrightness && readerBrightnessOverridden) {
+            val attributes = window.attributes
+            attributes.screenBrightness = -1f
+            window.attributes = attributes
+        }
+        readerBrightnessOverridden = false
     }
 
     private fun setFullscreenSystemUi(enabled: Boolean) {

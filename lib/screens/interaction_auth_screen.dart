@@ -79,6 +79,13 @@ class _InteractionAuthScreenState extends State<InteractionAuthScreen> {
             _PremiumAuthHero(mode: _mode),
             const SizedBox(height: 12),
             if (!isReset) ...[
+              if (auth.betaTestAccountEnabled) ...[
+                _BetaTestAccountPanel(
+                  isLoading: auth.isLoading,
+                  onPressed: _enterBetaTestAccount,
+                ),
+                const SizedBox(height: 12),
+              ],
               _ModeSwitch(
                 mode: _mode,
                 disabled: auth.isLoading,
@@ -314,6 +321,16 @@ class _InteractionAuthScreenState extends State<InteractionAuthScreen> {
     }
   }
 
+  Future<void> _enterBetaTestAccount() async {
+    try {
+      await context.read<InteractionAuthProvider>().enterBetaTestAccount();
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (error) {
+      if (mounted) _showMessage(_friendlyError(error));
+    }
+  }
+
   void _startCooldown(int seconds) {
     _cooldownTimer?.cancel();
     setState(() => _cooldownSeconds = seconds);
@@ -355,6 +372,54 @@ class _InteractionAuthScreenState extends State<InteractionAuthScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _BetaTestAccountPanel extends StatelessWidget {
+  const _BetaTestAccountPanel({
+    required this.isLoading,
+    required this.onPressed,
+  });
+
+  final bool isLoading;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E6),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE8C77A)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.science_outlined, color: Color(0xFF9A6A12)),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '测试版专用账号',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text('无需输入账号密码，仅连接本地或测试服务时可用。'),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            key: const ValueKey('beta-test-account-button'),
+            onPressed: isLoading ? null : onPressed,
+            icon: const Icon(Icons.login_rounded),
+            label: const Text('一键进入测试账号'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

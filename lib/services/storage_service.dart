@@ -6,17 +6,20 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/anime_watch_history.dart';
+import '../models/chapter.dart';
 import '../models/content_progress.dart';
 import '../models/local_library.dart';
 import '../models/manga_read_history.dart';
 import '../models/novel.dart';
+import '../models/novel_bookmark.dart';
 import 'legacy_local_library_migrator.dart';
 import 'legacy_progress_migrator.dart';
+import 'novel_offline_cache_service.dart';
 import 'progress_sync_service.dart';
+import 'reader_data_repository.dart';
 
 class StorageService {
   static const String _bookSourcesKey = 'book_sources';
-  static const String _readingSettingsKey = 'reading_settings';
   static const String _ttsSettingsKey = 'tts_settings';
   static const Duration _animeWatchHistoryRetention = Duration(days: 30);
   static const Duration _mangaReadHistoryRetention = Duration(days: 30);
@@ -28,6 +31,9 @@ class StorageService {
   bool _didMigrateLegacyLocalLibrary = false;
   int _lastChapterCachePruneAtMs = 0;
   int _downloadWritesSincePrune = 0;
+  late ReaderSettingsRepository _readerSettingsRepository;
+  late NovelBookmarkRepository _novelBookmarkRepository;
+  late NovelOfflineCacheService _novelOfflineCacheService;
   static const int _chapterCacheMaxFiles = 3000;
   static const int _chapterCacheMaxBytes = 300 * 1024 * 1024;
   static const Duration _chapterCacheMaxAge = Duration(days: 90);
@@ -50,8 +56,19 @@ class StorageService {
     if (!await dataDir.exists()) {
       await dataDir.create(recursive: true);
     }
+    _novelOfflineCacheService = NovelOfflineCacheService(dataDir);
     await appProgressDatabase.init();
     final deviceId = await ProgressSyncService.instance.getDeviceId();
+    _readerSettingsRepository = ReaderSettingsRepository(
+      database: appProgressDatabase,
+      preferences: _prefs,
+      deviceIdProvider: ProgressSyncService.instance.getDeviceId,
+    );
+    _novelBookmarkRepository = NovelBookmarkRepository(
+      database: appProgressDatabase,
+      deviceIdProvider: ProgressSyncService.instance.getDeviceId,
+    );
+    await _readerSettingsRepository.migrateLegacyIfNeeded();
     _didMigrateLegacyProgress = await LegacyProgressMigrator(
       database: appProgressDatabase,
       preferences: _prefs,
@@ -232,13 +249,71 @@ class StorageService {
   // ============ 阅读设置 ============
 
   Future<Map<String, dynamic>?> getReadingSettings() async {
-    final jsonStr = _prefs.getString(_readingSettingsKey);
-    if (jsonStr == null) return null;
-    return jsonDecode(jsonStr) as Map<String, dynamic>;
+    await init();
+    return _readerSettingsRepository.load(
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
   }
 
   Future<void> saveReadingSettings(Map<String, dynamic> settings) async {
-    await _prefs.setString(_readingSettingsKey, jsonEncode(settings));
+    await init();
+    await _readerSettingsRepository.save(
+      settings,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
+  }
+
+  Future<List<NovelBookmark>> getNovelBookmarks(Novel novel) async {
+    await init();
+    return _novelBookmarkRepository.list(
+      novel,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+  }
+
+  Future<NovelBookmark> createNovelBookmark({
+    required Novel novel,
+    required int chapterIndex,
+    required String chapterId,
+    required String chapterTitle,
+    required int charPosition,
+    required String contextText,
+    required String contentDigest,
+  }) async {
+    await init();
+    final bookmark = await _novelBookmarkRepository.create(
+      novel: novel,
+      chapterIndex: chapterIndex,
+      chapterId: chapterId,
+      chapterTitle: chapterTitle,
+      charPosition: charPosition,
+      contextText: contextText,
+      contentDigest: contentDigest,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
+    return bookmark;
+  }
+
+  Future<void> saveNovelBookmark(Novel novel, NovelBookmark bookmark) async {
+    await init();
+    await _novelBookmarkRepository.save(
+      novel,
+      bookmark,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
+  }
+
+  Future<void> deleteNovelBookmark(Novel novel, String bookmarkId) async {
+    await init();
+    await _novelBookmarkRepository.delete(
+      novel,
+      bookmarkId,
+      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+    );
+    ProgressSyncService.instance.notifyLocalMutation();
   }
 
   // ============ 语音朗读设置 ============
@@ -485,6 +560,143 @@ class StorageService {
   }
 
   // ============ 章节目录缓存 ============
+
+  Future<void> saveNovelChapterList(
+    Novel novel,
+    List<Map<String, dynamic>> chapters,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.saveTemporaryChapterList(novel, chapters);
+    unawaited(_pruneChapterCacheIfNeeded());
+  }
+
+  Future<List<Map<String, dynamic>>?> getNovelChapterList(Novel novel) async {
+    await init();
+    return _novelOfflineCacheService.getTemporaryChapterList(novel);
+  }
+
+  Future<void> saveTemporaryNovelChapterContent(
+    Novel novel,
+    Chapter chapter,
+    String content,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.saveTemporaryChapterContent(
+      novel,
+      chapter,
+      content,
+    );
+    unawaited(_pruneChapterCacheIfNeeded());
+  }
+
+  Future<String?> getTemporaryNovelChapterContent(
+    Novel novel,
+    Chapter chapter,
+  ) async {
+    await init();
+    return _novelOfflineCacheService.getTemporaryChapterContent(novel, chapter);
+  }
+
+  Future<void> deleteTemporaryNovelChapterContent(
+    Novel novel,
+    Chapter chapter,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.deleteTemporaryChapterContent(
+      novel,
+      chapter,
+    );
+  }
+
+  Future<String?> getPersistentNovelChapterContent(
+    Novel novel,
+    Chapter chapter,
+  ) async {
+    await init();
+    return _novelOfflineCacheService.getPersistentChapterContent(
+      novel,
+      chapter,
+    );
+  }
+
+  Future<String> resolveNovelChapterContent({
+    required Novel novel,
+    required Chapter chapter,
+    required Future<String> Function() loadFromNetwork,
+    NovelChapterContentValidator? isValidContent,
+  }) async {
+    await init();
+    final content = await _novelOfflineCacheService.resolveChapterContent(
+      novel: novel,
+      chapter: chapter,
+      loadFromNetwork: loadFromNetwork,
+      isValidContent: isValidContent,
+    );
+    unawaited(_pruneChapterCacheIfNeeded());
+    return content;
+  }
+
+  Future<void> pinNovelChapter(
+    Novel novel,
+    Chapter chapter,
+    String content,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.pinChapter(novel, chapter, content);
+  }
+
+  Future<void> clearPinnedNovelChapter(Novel novel) async {
+    await init();
+    await _novelOfflineCacheService.clearPinnedChapter(novel);
+  }
+
+  Future<void> saveDownloadedNovelChapter(
+    Novel novel,
+    Chapter chapter,
+    String content,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.saveDownloadedChapter(
+      novel,
+      chapter,
+      content,
+    );
+  }
+
+  Future<void> removeDownloadedNovelChapter(
+    Novel novel,
+    String chapterId,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.removeDownloadedChapter(novel, chapterId);
+  }
+
+  Future<void> clearDownloadedNovelChapters(Novel novel) async {
+    await init();
+    await _novelOfflineCacheService.clearDownloadedChapters(novel);
+  }
+
+  Future<NovelOfflineStatus> getNovelOfflineStatus(Novel novel) async {
+    await init();
+    return _novelOfflineCacheService.getStatus(novel);
+  }
+
+  Future<NovelCacheBatchResult> cacheNovelChapterBatch({
+    required Novel novel,
+    required List<Chapter> chapters,
+    required Iterable<int> chapterIndices,
+    required NovelChapterContentLoader loadContent,
+    NovelCacheProgressCallback? onProgress,
+  }) async {
+    await init();
+    return _novelOfflineCacheService.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: chapterIndices,
+      loadContent: loadContent,
+      onProgress: onProgress,
+    );
+  }
 
   String _chapterListPath(String novelId) =>
       '$_dataDirPath/chapters_${_cacheFileKey(novelId)}.json';

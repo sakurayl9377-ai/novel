@@ -3,6 +3,66 @@ import 'package:novel_app/features/reader_core/reader_modes.dart';
 import 'package:novel_app/models/reading_settings.dart';
 
 void main() {
+  test('new readers use the calibrated comfortable paper layout', () {
+    final settings = ReadingSettings();
+
+    expect(settings.fontSize, 23);
+    expect(settings.lineHeight, 2.2);
+    expect(settings.paragraphSpacing, 0.85);
+    expect(settings.horizontalPadding, 26);
+    expect(settings.backgroundColor, '#F4E3BC');
+    expect(
+      settings.toJson()['layoutPresetVersion'],
+      ReadingSettings.currentLayoutPresetVersion,
+    );
+  });
+
+  test('untouched beta 8 typography migrates without changing page mode', () {
+    final legacy = <String, dynamic>{
+      'schemaVersion': 2,
+      'fontSize': 20.0,
+      'fontFamily': ReadingSettings.systemFont,
+      'backgroundColor': '#F6E7C5',
+      'nightMode': false,
+      'lineHeight': 1.75,
+      'paragraphSpacing': 0.85,
+      'horizontalPadding': 24.0,
+      'pageTurnMode': 'simulation',
+    };
+    final settings = ReadingSettings.fromJson(legacy);
+
+    expect(ReadingSettings.needsLayoutPresetMigration(legacy), isTrue);
+    expect(settings.fontSize, 23);
+    expect(settings.lineHeight, 2.2);
+    expect(settings.paragraphSpacing, 0.85);
+    expect(settings.horizontalPadding, 26);
+    expect(settings.backgroundColor, '#F4E3BC');
+    expect(settings.pageMode, NovelPageMode.simulation);
+    expect(
+      ReadingSettings.needsLayoutPresetMigration(settings.toJson()),
+      isFalse,
+    );
+  });
+
+  test('any customized beta 8 layout keeps every legacy visual value', () {
+    final settings = ReadingSettings.fromJson({
+      'schemaVersion': 2,
+      'fontSize': 21.0,
+      'fontFamily': ReadingSettings.systemFont,
+      'backgroundColor': '#F6E7C5',
+      'nightMode': false,
+      'lineHeight': 1.75,
+      'paragraphSpacing': 0.85,
+      'horizontalPadding': 24.0,
+    });
+
+    expect(settings.fontSize, 21);
+    expect(settings.lineHeight, 1.75);
+    expect(settings.paragraphSpacing, 0.85);
+    expect(settings.horizontalPadding, 24);
+    expect(settings.backgroundColor, '#F6E7C5');
+  });
+
   test('legacy Chinese page and font settings migrate to stable codes', () {
     final settings = ReadingSettings.fromJson({
       'pageTurnMode': '仿真',

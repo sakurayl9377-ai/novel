@@ -16,10 +16,11 @@ void main() {
     );
   }
 
-  testWidgets('starts clean and preloads only the following chapter', (
+  testWidgets('preloads following data without building an offscreen chapter', (
     tester,
   ) async {
     final requestedIndexes = <int>[];
+    final builtIndexes = <int>{};
     final positions = <int>[];
     final chapters = List<Chapter>.generate(3, chapter);
 
@@ -41,6 +42,7 @@ void main() {
                 return List<String>.filled(100, 'chapter $index').join(' ');
               },
               sectionBuilder: (chapter, index, content, textKey) {
+                builtIndexes.add(index);
                 return Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
@@ -69,7 +71,10 @@ void main() {
     expect(requestedIndexes, isNot(contains(0)));
     expect(find.text('Chapter 0'), findsNothing);
     expect(find.text('Chapter 1'), findsOneWidget);
-    expect(find.text('Chapter 2'), findsOneWidget);
+    expect(find.text('Chapter 2'), findsNothing);
+    expect(builtIndexes, {1});
+    expect(find.byType(CustomScrollView), findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsNothing);
 
     await tester.drag(find.byType(Scrollable), const Offset(0, -350));
     await tester.pump();
@@ -423,7 +428,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 20));
       }
       expect(requestedIndexes, contains(5));
-      expect(find.byKey(const ValueKey('eviction-section-0')), findsOneWidget);
+      expect(find.byKey(const ValueKey('eviction-section-0')), findsNothing);
 
       Finder anchoredSectionFinder() {
         final viewport = tester.getRect(find.byType(ContinuousChapterView));
@@ -446,7 +451,6 @@ void main() {
 
       expect(find.byKey(const ValueKey('eviction-section-0')), findsNothing);
       expect(tester.getTopLeft(forwardAnchor).dy, closeTo(forwardAnchorTop, 1));
-      expect(find.byKey(const ValueKey('eviction-section-5')), findsOneWidget);
 
       for (
         var gesture = 0;
@@ -466,12 +470,25 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 20));
 
-      expect(find.byKey(const ValueKey('eviction-section-0')), findsOneWidget);
-      expect(find.byKey(const ValueKey('eviction-section-5')), findsNothing);
       expect(
         tester.getTopLeft(backwardAnchor).dy,
         closeTo(backwardAnchorTop, 1),
       );
+      for (
+        var gesture = 0;
+        gesture < 6 &&
+            find
+                .byKey(const ValueKey('eviction-section-0'))
+                .evaluate()
+                .isEmpty;
+        gesture++
+      ) {
+        await tester.drag(find.byType(Scrollable), const Offset(0, 120));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(find.byKey(const ValueKey('eviction-section-0')), findsOneWidget);
+      expect(find.byKey(const ValueKey('eviction-section-5')), findsNothing);
       final retainedCount = List<int>.generate(8, (index) => index)
           .where(
             (index) => find
@@ -480,7 +497,7 @@ void main() {
                 .isNotEmpty,
           )
           .length;
-      expect(retainedCount, 5);
+      expect(retainedCount, inInclusiveRange(1, 3));
     },
   );
 }

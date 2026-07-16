@@ -12,13 +12,13 @@ import '../models/manga.dart';
 import '../models/manga_read_history.dart';
 import '../services/download_manager_service.dart';
 import '../services/manga_service.dart';
+import '../widgets/manga_cover.dart';
 import '../services/storage_service.dart';
 import '../utils/auth_gate.dart';
 import '../utils/catalog_title_parts.dart';
 import '../widgets/comment_preview_panel.dart';
 import 'comment_thread_screen.dart';
 import 'manga_reader_screen.dart';
-import 'manga_screen.dart';
 
 class MangaDetailScreen extends StatefulWidget {
   const MangaDetailScreen({super.key, required this.mangaId, this.title});

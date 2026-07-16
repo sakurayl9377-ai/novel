@@ -7,7 +7,9 @@ import 'package:flutter/rendering.dart';
 import '../config/theme.dart';
 import '../services/bounded_task_scheduler.dart';
 import '../services/image_cache_service.dart';
+import '../services/manga_image_service.dart';
 import '../services/manga_service.dart';
+import '../widgets/manga_cover.dart';
 import 'manga_detail_screen.dart';
 import 'manga_more_screen.dart';
 
@@ -128,7 +130,8 @@ class _MangaScreenState extends State<MangaScreen> {
 
   void _precacheImageUrls(Iterable<String> urls) {
     final uniqueUrls = urls
-        .where((url) => url.isNotEmpty)
+        .expand((url) => mangaImageCandidates(url).take(1))
+        .toSet()
         .take(_maxPrecachedCovers)
         .toList();
     if (uniqueUrls.isEmpty) return;
@@ -748,86 +751,6 @@ class _PosterMangaCard extends StatelessWidget {
       ),
     );
   }
-}
-
-class MangaCover extends StatelessWidget {
-  const MangaCover({
-    super.key,
-    required this.imageUrl,
-    this.fit = BoxFit.cover,
-  });
-
-  final String imageUrl;
-  final BoxFit fit;
-
-  @override
-  Widget build(BuildContext context) {
-    if (imageUrl.isEmpty) {
-      return const ColoredBox(
-        color: AppTheme.dividerColor,
-        child: Center(child: Icon(Icons.image_outlined)),
-      );
-    }
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final logicalWidth = constraints.hasBoundedWidth
-            ? constraints.maxWidth
-            : MediaQuery.sizeOf(context).width / 3;
-        final logicalHeight = constraints.hasBoundedHeight
-            ? constraints.maxHeight
-            : logicalWidth * 1.5;
-        final pixelRatio = MediaQuery.devicePixelRatioOf(context);
-        final cacheWidth = (logicalWidth * pixelRatio)
-            .ceil()
-            .clamp(1, 1440)
-            .toInt();
-        final cacheHeight = (logicalHeight * pixelRatio)
-            .ceil()
-            .clamp(1, 2160)
-            .toInt();
-        return CachedNetworkImage(
-          imageUrl: imageUrl,
-          cacheManager: AppImageCacheService.manager,
-          fit: fit,
-          memCacheWidth: cacheWidth,
-          memCacheHeight: cacheHeight,
-          maxWidthDiskCache: 1440,
-          httpHeaders: mangaImageHeaders(imageUrl: imageUrl),
-          errorWidget: (context, url, error) => const ColoredBox(
-            color: AppTheme.dividerColor,
-            child: Center(child: Icon(Icons.broken_image_outlined)),
-          ),
-          placeholder: (context, url) {
-            return const ColoredBox(
-              color: AppTheme.dividerColor,
-              child: SizedBox.expand(),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-Map<String, String> mangaImageHeaders({
-  String imageUrl = '',
-  String referer = '',
-}) {
-  final uri = Uri.tryParse(imageUrl);
-  final origin = uri == null || uri.host.isEmpty
-      ? ''
-      : '${uri.scheme}://${uri.host}/';
-  return {
-    'Referer': referer.isNotEmpty
-        ? referer
-        : origin.isNotEmpty
-        ? origin
-        : 'https://cn.bzmgcn.com/',
-    'User-Agent':
-        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-  };
 }
 
 class _SectionHeader extends StatelessWidget {

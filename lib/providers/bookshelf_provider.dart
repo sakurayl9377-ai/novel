@@ -72,8 +72,8 @@ class BookshelfProvider extends ChangeNotifier {
 
       final novel = Novel.fromJson(novelData);
       await _storage.saveBookToShelf(novel.toJson());
-      await _storage.saveChapterList(
-        novel.id,
+      await _storage.saveNovelChapterList(
+        novel,
         chapters.cast<Map<String, dynamic>>(),
       );
 

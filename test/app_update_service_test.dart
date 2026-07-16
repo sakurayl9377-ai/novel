@@ -28,6 +28,42 @@ void main() {
     expect(uri.path, '/app3/version.json');
   });
 
+  test(
+    'reader beta policy never contacts or installs from the release channel',
+    () async {
+      final service = AppUpdateService(
+        updatesEnabled: false,
+        httpClient: MockClient((_) async {
+          fail(
+            'disabled update checks must not contact the production channel',
+          );
+        }),
+      );
+
+      final result = await service.checkForUpdate();
+      expect(result.currentVersionName, '1.0.0');
+      expect(result.currentVersionCode, 1);
+      expect(result.hasUpdate, isFalse);
+      expect(result.update, isNull);
+
+      final disabledUpdate = AppUpdateInfo(
+        versionName: '2.0.0',
+        versionCode: 2,
+        apkUrl: 'https://novel.kxhub.xyz/app3/test.apk',
+        sha256: List<String>.filled(64, '0').join(),
+        notes: const <String>[],
+      );
+      await expectLater(
+        service.downloadApk(disabledUpdate),
+        throwsA(isA<UnsupportedError>()),
+      );
+      await expectLater(
+        service.installApk(File('disabled.apk')),
+        throwsA(isA<UnsupportedError>()),
+      );
+    },
+  );
+
   test('downloadApk reuses a full response to the range probe', () async {
     final testDir = Directory.systemTemp.createTempSync('app_update_test_');
     addTearDown(() {

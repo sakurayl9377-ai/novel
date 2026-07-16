@@ -51,7 +51,13 @@ class InteractionAuthException implements Exception {
 }
 
 class InteractionAuthService {
-  InteractionAuthService({this.client});
+  InteractionAuthService({this.client, bool? betaTestSessionEnabled})
+    : betaTestSessionEnabled =
+          betaTestSessionEnabled ?? betaTestSessionBuildEnabled;
+
+  static const bool betaTestSessionBuildEnabled =
+      bool.fromEnvironment('READER_BETA') &&
+      bool.fromEnvironment('READER_BETA_TEST_ACCOUNT');
 
   static final http.Client _sharedHttpClient = http.Client();
 
@@ -61,6 +67,29 @@ class InteractionAuthService {
   );
 
   final http.Client? client;
+  final bool betaTestSessionEnabled;
+
+  Future<InteractionAuthResult> createBetaTestSession() async {
+    if (!betaTestSessionEnabled) {
+      throw const InteractionAuthException('测试账号仅在专用测试版中可用');
+    }
+    try {
+      final json = await _request(
+        'POST',
+        '/auth/beta-session',
+        betaTestBootstrap: true,
+      );
+      return _authResultFromJson(json);
+    } on InteractionAuthException catch (error) {
+      if (error.statusCode == 404) {
+        throw const InteractionAuthException(
+          '本地或测试服务尚未开启测试账号入口',
+          statusCode: 404,
+        );
+      }
+      rethrow;
+    }
+  }
 
   Future<CaptchaInfo> fetchCaptcha() async {
     final json = await _request('GET', '/auth/captcha');
@@ -201,12 +230,14 @@ class InteractionAuthService {
     String path, {
     Map<String, dynamic>? body,
     String? token,
+    bool betaTestBootstrap = false,
   }) async {
     final uri = Uri.parse('$baseUrl$path');
     final headers = <String, String>{
       'Accept': 'application/json',
-      if (body != null) 'Content-Type': 'application/json',
+      if (body != null || method == 'POST') 'Content-Type': 'application/json',
       if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      if (betaTestBootstrap) 'X-Sakura-Reader-Beta': '1',
     };
     final httpClient = client ?? _sharedHttpClient;
     final response = switch (method) {

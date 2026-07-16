@@ -16,10 +16,14 @@ class InteractionAuthProvider extends ChangeNotifier {
     InteractionAuthService? authService,
     AppInstallReportService? appInstallReportService,
     AuthSessionStorage? sessionStorage,
+    bool? betaTestAccountEnabled,
   }) : _authService = authService ?? InteractionAuthService(),
        _appInstallReportService =
            appInstallReportService ?? AppInstallReportService(),
-       _sessionStorage = sessionStorage ?? SecureAuthSessionStorage();
+       _sessionStorage = sessionStorage ?? SecureAuthSessionStorage(),
+       _betaTestAccountEnabled =
+           betaTestAccountEnabled ??
+           InteractionAuthService.betaTestSessionBuildEnabled;
 
   static const String _tokenKey = 'interaction_auth_token';
   static const String _userKey = 'interaction_auth_user';
@@ -29,6 +33,7 @@ class InteractionAuthProvider extends ChangeNotifier {
   final InteractionAuthService _authService;
   final AppInstallReportService _appInstallReportService;
   final AuthSessionStorage _sessionStorage;
+  final bool _betaTestAccountEnabled;
   final StorageService _storage = StorageService();
 
   bool _isLoading = false;
@@ -37,6 +42,7 @@ class InteractionAuthProvider extends ChangeNotifier {
   List<InteractionAccountSession> _accounts = const [];
 
   bool get isLoading => _isLoading;
+  bool get betaTestAccountEnabled => _betaTestAccountEnabled;
   bool get isLoggedIn => _token.isNotEmpty && _user != null;
   String get token => _token;
   InteractionUser? get user => _user;
@@ -59,6 +65,14 @@ class InteractionAuthProvider extends ChangeNotifier {
           }
         } catch (_) {
           // Keep the cached session when startup verification fails offline.
+        }
+      }
+      if (_token.isEmpty && _betaTestAccountEnabled) {
+        try {
+          await _acceptAuthResult(await _authService.createBetaTestSession());
+        } catch (_) {
+          // The beta can still open offline and expose a one-tap retry on the
+          // login screen when its local/test backend is not yet reachable.
         }
       }
       _scheduleAppInstallReport();
@@ -122,6 +136,19 @@ class InteractionAuthProvider extends ChangeNotifier {
       _user = result.user;
       _upsertCurrentAccount();
       await _saveSession();
+      _scheduleAppInstallReport();
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  Future<void> enterBetaTestAccount() async {
+    if (!_betaTestAccountEnabled) {
+      throw StateError('Beta test account is disabled for this build.');
+    }
+    _setLoading(true);
+    try {
+      await _acceptAuthResult(await _authService.createBetaTestSession());
       _scheduleAppInstallReport();
     } finally {
       _setLoading(false);
@@ -218,6 +245,13 @@ class InteractionAuthProvider extends ChangeNotifier {
     _token = '';
     _user = null;
     await _persistClearedSession();
+  }
+
+  Future<void> _acceptAuthResult(InteractionAuthResult result) async {
+    _token = result.token;
+    _user = result.user;
+    _upsertCurrentAccount();
+    await _saveSession();
   }
 
   Future<void> _persistClearedSession() async {

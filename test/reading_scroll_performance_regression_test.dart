@@ -19,6 +19,9 @@ void main() {
       expect(continuous, contains('_reportLiveReadingPosition()'));
       expect(continuous, contains('SplayTreeMap<int, String>'));
       expect(continuous, contains('RepaintBoundary('));
+      expect(reader, contains('Set<int> _availableChapterIndexes'));
+      expect(reader, contains('Future<void> _runSearch('));
+      expect(reader, isNot(contains('Map<int, String> _contents')));
     },
   );
 }

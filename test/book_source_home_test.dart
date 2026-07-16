@@ -111,6 +111,63 @@ void main() {
     expect(catalogRequests, 1);
   });
 
+  testWidgets('catalog cache isolates the same novel id across sources', (
+    tester,
+  ) async {
+    await _initStorage(tester);
+    var catalogRequests = 0;
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/book') {
+        final id = request.url.queryParameters['id'] ?? '';
+        return http.Response(
+          jsonEncode({'id': id, 'dirid': 'catalog-$id', 'title': 'Book $id'}),
+          200,
+          request: request,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      if (request.url.path == '/api/booklist') {
+        catalogRequests++;
+        final id = request.url.queryParameters['id'] ?? '';
+        return http.Response(
+          jsonEncode({
+            'list': [id == 'catalog-111' ? '来源甲章节' : '来源乙章节'],
+          }),
+          200,
+          request: request,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }
+      return http.Response('not found', 404, request: request);
+    });
+    final service = BookSourceService(httpClient: client);
+    final sourceA = Novel(
+      id: 'same-catalog-id',
+      title: '来源甲',
+      sourceId: 'source-a',
+      chapterUrl: 'https://www.bqg475.cc/#/book/111/',
+    );
+    final sourceB = Novel(
+      id: 'same-catalog-id',
+      title: '来源乙',
+      sourceId: 'source-b',
+      chapterUrl: 'https://www.bqg475.cc/#/book/222/',
+    );
+
+    final catalogs = await tester.runAsync(
+      () async => <List<dynamic>>[
+        await service.getChapterList(sourceA),
+        await service.getChapterList(sourceB),
+        await service.getChapterList(sourceA),
+      ],
+    );
+
+    expect((catalogs![0].single as dynamic).title, '来源甲章节');
+    expect((catalogs[1].single as dynamic).title, '来源乙章节');
+    expect((catalogs[2].single as dynamic).title, '来源甲章节');
+    expect(catalogRequests, 2);
+  });
+
   test(
     'provisional catalog makes the requested chapter immediately readable',
     () {

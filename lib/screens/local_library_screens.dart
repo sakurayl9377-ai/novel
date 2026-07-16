@@ -7,13 +7,13 @@ import '../models/local_library.dart';
 import '../models/manga.dart';
 import '../models/manga_read_history.dart';
 import '../services/storage_service.dart';
+import '../widgets/manga_cover.dart';
 import '../services/download_manager_service.dart';
 import 'anime_detail_screen.dart';
 import 'anime_player_screen.dart';
 import 'anime_screen.dart';
 import 'manga_detail_screen.dart';
 import 'manga_reader_screen.dart';
-import 'manga_screen.dart';
 
 class FavoritesScreen extends StatefulWidget {
   const FavoritesScreen({super.key});

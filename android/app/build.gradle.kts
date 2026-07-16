@@ -21,6 +21,15 @@ val releaseSigningPropertyNames = listOf(
 val releaseSigningConfigured = keystorePropertiesFile.exists() &&
     releaseSigningPropertyNames.all { !keystoreProperties.getProperty(it).isNullOrBlank() }
 
+val readerBetaBuild = providers.gradleProperty("readerBeta")
+    .orNull
+    ?.equals("true", ignoreCase = true) == true
+val readerBetaNumber = providers.gradleProperty("readerBetaNumber")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.matches(Regex("[0-9]+")) }
+    ?: "1"
+
 gradle.taskGraph.whenReady {
     val releaseArtifactTask = Regex(
         "^(assemble|package|bundle).*release$",
@@ -41,6 +50,10 @@ android {
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
+    buildFeatures {
+        resValues = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -48,17 +61,40 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.novel.novel_app"
+        applicationId = if (readerBetaBuild) {
+            "com.novel.novel_app.beta"
+        } else {
+            "com.novel.novel_app"
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        versionName = if (readerBetaBuild) {
+            "${flutter.versionName}-beta.$readerBetaNumber"
+        } else {
+            flutter.versionName
+        }
+        resValue(
+            "string",
+            "app_name",
+            if (readerBetaBuild) "Sakura 测试版" else "Sakura",
+        )
+        manifestPlaceholders["updateInstallPermission"] = if (readerBetaBuild) {
+            "com.novel.novel_app.beta.permission.UPDATES_DISABLED"
+        } else {
+            "android.permission.REQUEST_INSTALL_PACKAGES"
+        }
         ndk {
             // Self-hosted release APKs target physical Android devices only.
             // Debug adds x86_64 below so emulator builds remain available.
-            abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+            // Flutter configures ABI splits itself for the independent reader
+            // beta. Keeping ndk.abiFilters alongside splits makes AGP reject
+            // the build as a conflicting configuration.
+            if (!readerBetaBuild) {
+                abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+            }
         }
     }
 
@@ -76,7 +112,9 @@ android {
     buildTypes {
         debug {
             ndk {
-                abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+                if (!readerBetaBuild) {
+                    abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
+                }
             }
         }
         release {
@@ -84,7 +122,9 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
             ndk {
-                abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+                if (!readerBetaBuild) {
+                    abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+                }
             }
         }
     }

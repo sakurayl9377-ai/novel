@@ -55,13 +55,15 @@ class AppUpdateCheckResult {
 class AppUpdateService {
   AppUpdateService({
     this.httpClient,
+    bool? updatesEnabled,
     Future<Directory> Function()? temporaryDirectoryProvider,
     int parallelDownloadParts = 4,
     int parallelDownloadThresholdBytes = 16 * 1024 * 1024,
     int minimumParallelPartBytes = 8 * 1024 * 1024,
     Duration requestHeaderTimeout = const Duration(seconds: 20),
     Duration requestAbortSettleTimeout = const Duration(seconds: 2),
-  }) : _temporaryDirectoryProvider =
+  }) : _updatesEnabled = updatesEnabled ?? !isReaderBetaBuild,
+       _temporaryDirectoryProvider =
            temporaryDirectoryProvider ?? getTemporaryDirectory,
        _parallelDownloadParts = parallelDownloadParts,
        _parallelDownloadThresholdBytes = parallelDownloadThresholdBytes,
@@ -76,6 +78,7 @@ class AppUpdateService {
 
   static const String updateJsonUrl =
       'https://novel.kxhub.xyz/app3/version.json';
+  static const bool isReaderBetaBuild = bool.fromEnvironment('READER_BETA');
   static const Duration _responseIdleTimeout = Duration(seconds: 30);
   static const Duration _progressNotificationInterval = Duration(
     milliseconds: 100,
@@ -90,6 +93,7 @@ class AppUpdateService {
   static final Map<String, Future<void>> _activeInstalls = {};
 
   final http.Client? httpClient;
+  final bool _updatesEnabled;
   final Future<Directory> Function() _temporaryDirectoryProvider;
   final int _parallelDownloadParts;
   final int _parallelDownloadThresholdBytes;
@@ -100,6 +104,13 @@ class AppUpdateService {
   Future<AppUpdateCheckResult> checkForUpdate() async {
     final packageInfo = await PackageInfo.fromPlatform();
     final currentCode = int.tryParse(packageInfo.buildNumber) ?? 0;
+    if (!_updatesEnabled) {
+      return AppUpdateCheckResult(
+        currentVersionName: packageInfo.version,
+        currentVersionCode: currentCode,
+        hasUpdate: false,
+      );
+    }
     final response = await _get(
       Uri.parse(updateJsonUrl),
     ).timeout(const Duration(seconds: 15));
@@ -137,6 +148,9 @@ class AppUpdateService {
     AppUpdateInfo update, {
     void Function(int received, int total)? onProgress,
   }) async {
+    if (!_updatesEnabled) {
+      throw UnsupportedError('App updates are disabled in reader beta builds');
+    }
     final apkUri = _trustedApkUri(update.apkUrl);
     if (apkUri == null || !_isSha256(update.sha256)) {
       throw Exception('Invalid update config');
@@ -731,6 +745,11 @@ class AppUpdateService {
   }
 
   Future<void> installApk(File apkFile) {
+    if (!_updatesEnabled) {
+      return Future<void>.error(
+        UnsupportedError('App updates are disabled in reader beta builds'),
+      );
+    }
     final key = apkFile.absolute.path;
     final active = _activeInstalls[key];
     if (active != null) return active;

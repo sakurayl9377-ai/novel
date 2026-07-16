@@ -69,7 +69,7 @@ void main() {
       expect(find.textContaining('1/3 · Chapter 1'), findsOneWidget);
 
       final nextButton = tester.widget<IconButton>(
-        find.widgetWithIcon(IconButton, Icons.chevron_right),
+        find.widgetWithIcon(IconButton, Icons.chevron_right_rounded),
       );
       expect(nextButton.onPressed, isNotNull);
       nextButton.onPressed!();
@@ -94,7 +94,7 @@ void main() {
       expect(find.textContaining('1/3 · Chapter 1'), findsNothing);
 
       final previousButton = tester.widget<IconButton>(
-        find.widgetWithIcon(IconButton, Icons.chevron_left),
+        find.widgetWithIcon(IconButton, Icons.chevron_left_rounded),
       );
       expect(previousButton.onPressed, isNotNull);
       previousButton.onPressed!();

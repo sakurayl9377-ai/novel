@@ -18,6 +18,19 @@ import 'manga_service.dart';
 import 'offline_hls_parser.dart';
 import 'storage_service.dart';
 
+@visibleForTesting
+DownloadItem recoverInterruptedDownload(
+  DownloadItem item, {
+  required int recoveredAtMs,
+}) {
+  if (item.status != 'downloading') return item;
+  return item.copyWith(
+    status: 'queued',
+    errorMessage: '',
+    updatedAtMs: recoveredAtMs,
+  );
+}
+
 class DownloadManagerService extends ChangeNotifier {
   DownloadManagerService._();
 
@@ -51,6 +64,7 @@ class DownloadManagerService extends ChangeNotifier {
     _rootDirectory = Directory('${documents.path}/novel_app/downloads');
     await _rootDirectory!.create(recursive: true);
     final stored = await _storage.recoverDownloadItems();
+    final recoveredAtMs = DateTime.now().millisecondsSinceEpoch;
     var changed = false;
     _items = [
       for (final item in stored)
@@ -59,10 +73,10 @@ class DownloadManagerService extends ChangeNotifier {
             status: 'failed',
             errorMessage: '本地文件已丢失，请重新下载',
             localPath: '',
-            updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+            updatedAtMs: recoveredAtMs,
           )
         else
-          item,
+          recoverInterruptedDownload(item, recoveredAtMs: recoveredAtMs),
     ];
     for (var index = 0; index < stored.length; index++) {
       if (_items[index].status != stored[index].status ||

@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
 import '../services/manga_service.dart';
+import '../widgets/manga_cover.dart';
 import 'manga_detail_screen.dart';
-import 'manga_screen.dart';
 
 class MangaMoreScreen extends StatefulWidget {
   const MangaMoreScreen({super.key, required this.title, required this.url});
