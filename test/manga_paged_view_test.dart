@@ -36,6 +36,35 @@ void main() {
     expect(changes.last, [2, 2]);
   });
 
+  testWidgets('tall source pages scroll vertically without crop slots', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MangaPagedView(
+            spreads: const [
+              MangaPageSpread([0], aspectRatios: [0.22]),
+            ],
+            direction: MangaPageDirection.ltr,
+            initialPageIndex: 0,
+            pageBuilder: (context, index, width) => ColoredBox(
+              color: Colors.blue,
+              child: SizedBox(width: width, height: double.infinity),
+            ),
+            endBuilder: (_) => const SizedBox.shrink(),
+            onPageChanged: (_, _) {},
+            onTap: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('manga-paged-tall-scroll')), findsOneWidget);
+    expect(find.byType(SingleChildScrollView), findsOneWidget);
+  });
+
   testWidgets('double tap zoom wins before horizontal page movement', (
     tester,
   ) async {

@@ -67,17 +67,25 @@ class MangaPageSpread {
     this.pageIndexes, {
     this.isWidePage = false,
     this.crops = const <MangaPageCrop>[],
+    this.aspectRatios = const <double>[],
   });
 
   /// Source page indexes in their visual left-to-right order.
   final List<int> pageIndexes;
   final bool isWidePage;
   final List<MangaPageCrop> crops;
+  final List<double> aspectRatios;
 
   MangaPageCrop cropAt(int visualIndex) {
     return crops.isEmpty || visualIndex >= crops.length
         ? MangaPageCrop.full
         : crops[visualIndex];
+  }
+
+  double aspectRatioAt(int visualIndex) {
+    return aspectRatios.isEmpty || visualIndex >= aspectRatios.length
+        ? 0.68
+        : aspectRatios[visualIndex];
   }
 
   int get firstSourceIndex => pageIndexes.reduce((a, b) => a < b ? a : b);
@@ -108,9 +116,6 @@ class MangaPagePipeline {
     if (!aspectRatio.isFinite || aspectRatio <= 0) return 1;
     if (aspectRatio >= widePageRatio) {
       return (aspectRatio / typicalPageRatio).round().clamp(2, 6).toInt();
-    }
-    if (aspectRatio < tallCompositeRatio) {
-      return (typicalPageRatio / aspectRatio).round().clamp(2, 6).toInt();
     }
     return 1;
   }
@@ -147,7 +152,13 @@ class MangaPagePipeline {
     while (pageIndex < pageCount) {
       final isWide = aspectRatioAt(pageIndex) >= widePageRatio;
       if (forceSinglePageIndexes.contains(pageIndex)) {
-        result.add(MangaPageSpread(<int>[pageIndex], isWidePage: isWide));
+        result.add(
+          MangaPageSpread(
+            <int>[pageIndex],
+            isWidePage: isWide,
+            aspectRatios: <double>[aspectRatioAt(pageIndex)],
+          ),
+        );
         pageIndex += 1;
         continue;
       }
@@ -175,22 +186,7 @@ class MangaPagePipeline {
                 for (final segment in visible)
                   MangaPageCrop.horizontalSegment(segment, segmentCount),
               ],
-            ),
-          );
-        }
-        pageIndex += 1;
-        continue;
-      }
-
-      if (aspectRatio < tallCompositeRatio) {
-        final segmentCount = segmentCountForAspectRatio(aspectRatio);
-        for (var segment = 0; segment < segmentCount; segment++) {
-          result.add(
-            MangaPageSpread(
-              <int>[pageIndex],
-              crops: <MangaPageCrop>[
-                MangaPageCrop.verticalSegment(segment, segmentCount),
-              ],
+              aspectRatios: List<double>.filled(visible.length, aspectRatio),
             ),
           );
         }
@@ -204,14 +200,25 @@ class MangaPagePipeline {
       if ((!doublePages && !forcePair) ||
           (isWide && !forcePair) ||
           pageIndex == pageCount - 1) {
-        result.add(MangaPageSpread(<int>[pageIndex], isWidePage: isWide));
+        result.add(
+          MangaPageSpread(
+            <int>[pageIndex],
+            isWidePage: isWide,
+            aspectRatios: <double>[aspectRatio],
+          ),
+        );
         pageIndex += 1;
         continue;
       }
 
       final nextIsWide = aspectRatioAt(pageIndex + 1) >= widePageRatio;
       if (nextIsWide && !forcePair) {
-        result.add(MangaPageSpread(<int>[pageIndex]));
+        result.add(
+          MangaPageSpread(
+            <int>[pageIndex],
+            aspectRatios: <double>[aspectRatio],
+          ),
+        );
         pageIndex += 1;
         continue;
       }
@@ -222,7 +229,14 @@ class MangaPagePipeline {
       if (swappedSpreadStartIndexes.contains(pageIndex)) {
         visualIndexes = visualIndexes.reversed.toList(growable: false);
       }
-      result.add(MangaPageSpread(visualIndexes));
+      result.add(
+        MangaPageSpread(
+          visualIndexes,
+          aspectRatios: [
+            for (final index in visualIndexes) aspectRatioAt(index),
+          ],
+        ),
+      );
       pageIndex += 2;
     }
     return result;

@@ -92,12 +92,14 @@ class _MangaPagedViewState extends State<MangaPagedView> {
       final b = next[index];
       if (a.isWidePage != b.isWidePage ||
           a.pageIndexes.length != b.pageIndexes.length ||
-          a.crops.length != b.crops.length) {
+          a.crops.length != b.crops.length ||
+          a.aspectRatios.length != b.aspectRatios.length) {
         return false;
       }
       for (var page = 0; page < a.pageIndexes.length; page++) {
         if (a.pageIndexes[page] != b.pageIndexes[page] ||
-            a.cropAt(page) != b.cropAt(page)) {
+            a.cropAt(page) != b.cropAt(page) ||
+            a.aspectRatioAt(page) != b.aspectRatioAt(page)) {
           return false;
         }
       }
@@ -163,6 +165,7 @@ class _MangaPagedViewState extends State<MangaPagedView> {
                         pageIndex: spread.pageIndexes[slotIndex],
                         pageWidth: pageWidth,
                         crop: spread.cropAt(slotIndex),
+                        aspectRatio: spread.aspectRatioAt(slotIndex),
                       ),
                     ),
                 ],
@@ -179,8 +182,19 @@ class _MangaPagedViewState extends State<MangaPagedView> {
     required int pageIndex,
     required double pageWidth,
     required MangaPageCrop crop,
+    required double aspectRatio,
   }) {
     if (crop.isFull) {
+      if (aspectRatio < 0.42) {
+        return SingleChildScrollView(
+          key: const ValueKey('manga-paged-tall-scroll'),
+          physics: const BouncingScrollPhysics(),
+          child: AspectRatio(
+            aspectRatio: aspectRatio,
+            child: widget.pageBuilder(context, pageIndex, pageWidth),
+          ),
+        );
+      }
       return widget.pageBuilder(context, pageIndex, pageWidth);
     }
     final horizontalCenter = (crop.left + crop.right) / 2;

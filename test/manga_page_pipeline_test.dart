@@ -74,7 +74,7 @@ void main() {
     expect(spreads.last.crops.single.left, closeTo(2 / 3, 0.001));
   });
 
-  test('vertical composites are split into full-height virtual pages', () {
+  test('vertical composites remain intact for in-page scrolling', () {
     final spreads = pipeline.build(
       pageCount: 1,
       viewportWidth: 400,
@@ -83,15 +83,15 @@ void main() {
       aspectRatioAt: (_) => 0.22,
     );
 
-    expect(spreads, hasLength(3));
-    expect(spreads.map((spread) => spread.pageIndexes.single), [0, 0, 0]);
-    expect(spreads.first.crops.single.heightFraction, closeTo(1 / 3, 0.001));
-    expect(spreads.last.crops.single.top, closeTo(2 / 3, 0.001));
+    expect(spreads, hasLength(1));
+    expect(spreads.single.pageIndexes, [0]);
+    expect(spreads.single.cropAt(0), MangaPageCrop.full);
+    expect(spreads.single.aspectRatioAt(0), 0.22);
   });
 
   test('composite segment counts change when real dimensions arrive', () {
     expect(pipeline.segmentCountForAspectRatio(0.68), 1);
-    expect(pipeline.segmentCountForAspectRatio(0.22), 3);
+    expect(pipeline.segmentCountForAspectRatio(0.22), 1);
     expect(pipeline.segmentCountForAspectRatio(2.04), 3);
   });
 
