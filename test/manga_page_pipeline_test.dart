@@ -99,6 +99,7 @@ void main() {
         spreadMode: MangaSpreadMode.single,
         direction: MangaPageDirection.ltr,
         aspectRatioAt: (index) => index < 4 ? 1.25 : 0.68,
+        safeBreakAfterIndexes: const {2},
       );
 
       expect(spreads, hasLength(3));
@@ -114,6 +115,21 @@ void main() {
     expect(pipeline.segmentCountForAspectRatio(0.68), 1);
     expect(pipeline.segmentCountForAspectRatio(0.22), 1);
     expect(pipeline.segmentCountForAspectRatio(2.04), 3);
+  });
+
+  test('connected horizontal slices stay together without a safe break', () {
+    final spreads = pipeline.build(
+      pageCount: 4,
+      viewportWidth: 400,
+      viewportHeight: 800,
+      spreadMode: MangaSpreadMode.single,
+      direction: MangaPageDirection.ltr,
+      aspectRatioAt: (_) => 1.25,
+    );
+
+    expect(spreads, hasLength(1));
+    expect(spreads.single.pageIndexes, [0, 1, 2, 3]);
+    expect(spreads.single.isVerticalComposite, isTrue);
   });
 
   test('wide page can be split into two cropped visual slots', () {

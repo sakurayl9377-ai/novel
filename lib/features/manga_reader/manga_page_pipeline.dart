@@ -139,6 +139,7 @@ class MangaPagePipeline {
     Set<int> forcePairStartIndexes = const <int>{},
     Set<int> forceSinglePageIndexes = const <int>{},
     Set<int> swappedSpreadStartIndexes = const <int>{},
+    Set<int> safeBreakAfterIndexes = const <int>{},
   }) {
     if (pageCount <= 0) return const <MangaPageSpread>[];
     final doublePages = usesDoublePages(
@@ -182,7 +183,9 @@ class MangaPagePipeline {
               assembledHeightRatio += 1 / aspectRatioAt(chunkEnd);
               chunkEnd += 1;
               if (chunkEnd - chunkStart >= 2 &&
-                  assembledHeightRatio >= targetHeightRatio) {
+                  assembledHeightRatio >= targetHeightRatio &&
+                  (safeBreakAfterIndexes.contains(chunkEnd - 1) ||
+                      chunkEnd == runEnd)) {
                 break;
               }
             }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:extended_image/extended_image.dart';
@@ -95,6 +96,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
   final Set<int> _forceSinglePages = {};
   final Set<int> _swappedSpreadStarts = {};
   final Set<int> _zoomedLongStripPages = {};
+  final Set<int> _safePageBreakAfterIndexes = {};
+  final Set<int> _pageBreakAnalysisPending = {};
+  final Set<int> _analyzedPageBreakIndexes = {};
   final ValueNotifier<int> _chapterProgress = ValueNotifier<int>(0);
   final ValueNotifier<int> _pageGeometryVersion = ValueNotifier<int>(0);
   final MangaPagePipeline _pagePipeline = const MangaPagePipeline();
@@ -249,6 +253,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
         _forceSinglePages.clear();
         _swappedSpreadStarts.clear();
         _zoomedLongStripPages.clear();
+        _safePageBreakAfterIndexes.clear();
+        _pageBreakAnalysisPending.clear();
+        _analyzedPageBreakIndexes.clear();
         _chapterProgressPercent = 0;
         _chapterProgress.value = 0;
         _currentPagedPageIndex = 0;
@@ -322,6 +329,9 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
         _forceSinglePages.clear();
         _swappedSpreadStarts.clear();
         _zoomedLongStripPages.clear();
+        _safePageBreakAfterIndexes.clear();
+        _pageBreakAnalysisPending.clear();
+        _analyzedPageBreakIndexes.clear();
         _chapterProgressPercent = 0;
         _chapterProgress.value = 0;
         _currentPagedPageIndex = restoredPageIndex;
@@ -682,6 +692,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
         final width = image.width.toDouble();
         final height = image.height.toDouble();
         if (width > 0 && height > 0) {
+          unawaited(_analyzeSafePageBreak(index, image));
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (_isCurrentChapterLoad(chapterLoadGeneration) &&
                 referer == _currentChapter.url) {
@@ -705,6 +716,48 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       if (!_prefetchedPages.contains(index)) {
         await provider.evict();
       }
+    }
+  }
+
+  Future<void> _analyzeSafePageBreak(int index, ui.Image image) async {
+    if (_analyzedPageBreakIndexes.contains(index) ||
+        !_pageBreakAnalysisPending.add(index)) {
+      return;
+    }
+    try {
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null || image.width <= 0 || image.height <= 0) return;
+      final bytes = data.buffer.asUint8List();
+      final sampledRows = image.height.clamp(8, 32);
+      var sampled = 0;
+      var nearWhite = 0;
+      for (var y = image.height - sampledRows; y < image.height; y += 2) {
+        for (var x = 0; x < image.width; x += 6) {
+          final offset = (y * image.width + x) * 4;
+          if (offset + 2 >= bytes.length) continue;
+          sampled += 1;
+          if (bytes[offset] >= 242 &&
+              bytes[offset + 1] >= 242 &&
+              bytes[offset + 2] >= 242) {
+            nearWhite += 1;
+          }
+        }
+      }
+      if (sampled == 0 || nearWhite / sampled < 0.96) return;
+      if (_safePageBreakAfterIndexes.add(index) && mounted) {
+        _pageGeometryRefreshTimer?.cancel();
+        _pageGeometryRefreshTimer = Timer(
+          const Duration(milliseconds: 120),
+          () {
+            if (mounted) _pageGeometryVersion.value += 1;
+          },
+        );
+      }
+    } catch (_) {
+      // Pixel analysis is best effort; unknown seams remain unbroken.
+    } finally {
+      _pageBreakAnalysisPending.remove(index);
+      _analyzedPageBreakIndexes.add(index);
     }
   }
 
@@ -1439,6 +1492,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       forcePairStartIndexes: _forcePairedPages,
       forceSinglePageIndexes: _forceSinglePages,
       swappedSpreadStartIndexes: _swappedSpreadStarts,
+      safeBreakAfterIndexes: _safePageBreakAfterIndexes,
     );
   }
 
@@ -2052,6 +2106,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
           forcePairStartIndexes: _forcePairedPages,
           forceSinglePageIndexes: _forceSinglePages,
           swappedSpreadStartIndexes: _swappedSpreadStarts,
+          safeBreakAfterIndexes: _safePageBreakAfterIndexes,
         );
         return MangaPagedView(
           key: ValueKey('manga-paged-${_currentChapter.url}'),

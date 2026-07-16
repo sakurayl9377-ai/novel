@@ -20,6 +20,7 @@ test('selects only a reliable catalog cover match', () => {
 test('accepts persisted covers only from the active catalog provider', () => {
   const supported = videoCoverResolverInternals.isSupportedCachedCover;
   assert.equal(supported({ provider: 'dbzy', coverUrl: 'https://img.example/cover.jpg' }), true);
+  assert.equal(supported({ provider: 'dbzy', coverUrl: '/video-covers/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg' }), true);
   assert.equal(supported({ provider: 'removed-provider', coverUrl: 'https://img.example/cover.jpg' }), false);
   assert.equal(supported({ provider: 'dbzy', coverUrl: 'not-a-url' }), false);
 });

@@ -196,28 +196,33 @@ class _MangaPagedViewState extends State<MangaPagedView> {
         pageWidth / spread.aspectRatioAt(index),
     ];
     final totalHeight = heights.fold<double>(0, (sum, height) => sum + height);
-    return Center(
-      child: FittedBox(
-        fit: BoxFit.contain,
-        child: SizedBox(
-          width: pageWidth,
-          height: totalHeight,
-          child: Column(
-            children: [
-              for (var index = 0; index < spread.pageIndexes.length; index++)
-                SizedBox(
-                  width: pageWidth,
-                  height: heights[index],
-                  child: widget.pageBuilder(
-                    context,
-                    spread.pageIndexes[index],
-                    pageWidth,
-                  ),
-                ),
-            ],
-          ),
-        ),
+    final content = SizedBox(
+      width: pageWidth,
+      height: totalHeight,
+      child: Column(
+        children: [
+          for (var index = 0; index < spread.pageIndexes.length; index++)
+            SizedBox(
+              width: pageWidth,
+              height: heights[index],
+              child: widget.pageBuilder(
+                context,
+                spread.pageIndexes[index],
+                pageWidth,
+              ),
+            ),
+        ],
       ),
+    );
+    if (totalHeight > constraints.maxHeight * 1.25) {
+      return SingleChildScrollView(
+        key: const ValueKey('manga-paged-safe-composite-scroll'),
+        physics: const BouncingScrollPhysics(),
+        child: content,
+      );
+    }
+    return Center(
+      child: FittedBox(fit: BoxFit.contain, child: content),
     );
   }
 

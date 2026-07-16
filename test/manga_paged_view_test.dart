@@ -101,6 +101,10 @@ void main() {
     expect(find.text('slice-0'), findsOneWidget);
     expect(find.text('slice-1'), findsOneWidget);
     expect(find.text('slice-2'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('manga-paged-safe-composite-scroll')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('double tap zoom wins before horizontal page movement', (

@@ -29,6 +29,7 @@ class _VideoScreenState extends State<VideoScreen>
   late final WuhandkyService _service;
   final TextEditingController _searchController = TextEditingController();
   List<WuhandkyVideoItem> _items = const [];
+  WuhandkyVideoHome? _home;
   int _categoryIndex = 0;
   bool _loading = true;
   bool _searching = false;
@@ -62,9 +63,14 @@ class _VideoScreenState extends State<VideoScreen>
       if (refresh) _items = const [];
     });
     try {
-      final items = await _service.fetchCategory(categoryPath);
+      final home = _categoryIndex == 0 ? await _service.fetchHome() : null;
+      final items =
+          home?.featured ?? await _service.fetchCategory(categoryPath);
       if (!mounted || requestGeneration != _requestGeneration) return;
-      setState(() => _items = items);
+      setState(() {
+        _home = home ?? _home;
+        _items = items;
+      });
     } catch (error) {
       if (!mounted || requestGeneration != _requestGeneration) return;
       setState(() => _error = _friendlyError(error));
@@ -193,6 +199,21 @@ class _VideoScreenState extends State<VideoScreen>
               )
             : _items.isEmpty
             ? const _ScrollableStatus(child: Text('没有找到相关影视'))
+            : !_searching && _categoryIndex == 0 && _home != null
+            ? _VideoHomeView(
+                home: _home!,
+                onOpen: _open,
+                onSelectCategory: (path) {
+                  final index = _categories.indexWhere(
+                    (item) => item.$2 == path,
+                  );
+                  if (index >= 0) _selectCategory(index);
+                },
+                resolveCover: (item) => _service.resolveCoverUrl(
+                  title: item.title,
+                  itemKey: item.detailUrl,
+                ),
+              )
             : GridView.builder(
                 padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -224,6 +245,177 @@ class _VideoScreenState extends State<VideoScreen>
       return '影视源连接异常，已尝试兼容线路，请切换网络后重试';
     }
     return text.isEmpty ? '影视源暂时不可用，请稍后重试' : text;
+  }
+}
+
+class _VideoHomeView extends StatelessWidget {
+  const _VideoHomeView({
+    required this.home,
+    required this.onOpen,
+    required this.onSelectCategory,
+    required this.resolveCover,
+  });
+
+  final WuhandkyVideoHome home;
+  final ValueChanged<WuhandkyVideoItem> onOpen;
+  final ValueChanged<String> onSelectCategory;
+  final Future<String?> Function(WuhandkyVideoItem item) resolveCover;
+
+  @override
+  Widget build(BuildContext context) {
+    final featured = home.featured.first;
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+          sliver: SliverToBoxAdapter(
+            child: _VideoFeaturedCard(
+              item: featured,
+              onTap: () => onOpen(featured),
+              resolveCover: () => resolveCover(featured),
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 72,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              scrollDirection: Axis.horizontal,
+              itemCount: home.sections.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final section = home.sections[index];
+                const icons = [
+                  Icons.movie_creation_outlined,
+                  Icons.live_tv_outlined,
+                  Icons.animation_outlined,
+                  Icons.mic_external_on_outlined,
+                ];
+                return ActionChip(
+                  avatar: Icon(icons[index % icons.length], size: 20),
+                  label: Text(section.title),
+                  onPressed: () => onSelectCategory(section.path),
+                );
+              },
+            ),
+          ),
+        ),
+        for (final section in home.sections) ...[
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      section.title,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => onSelectCategory(section.path),
+                    child: const Text('更多'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 238,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                scrollDirection: Axis.horizontal,
+                itemCount: section.items.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final item = section.items[index];
+                  return SizedBox(
+                    width: 126,
+                    child: _VideoCard(
+                      item: item,
+                      onTap: () => onOpen(item),
+                      resolveCover: () => resolveCover(item),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+        const SliverToBoxAdapter(child: SizedBox(height: 30)),
+      ],
+    );
+  }
+}
+
+class _VideoFeaturedCard extends StatelessWidget {
+  const _VideoFeaturedCard({
+    required this.item,
+    required this.onTap,
+    required this.resolveCover,
+  });
+
+  final WuhandkyVideoItem item;
+  final VoidCallback onTap;
+  final Future<String?> Function() resolveCover;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: SizedBox(
+        height: 190,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              _VideoPoster(
+                url: item.coverUrl,
+                title: item.title,
+                resolveCover: resolveCover,
+              ),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Color(0xE6000000)],
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 18,
+                right: 18,
+                bottom: 16,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('今日推荐', style: TextStyle(color: Colors.white70)),
+                    const SizedBox(height: 4),
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 23,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

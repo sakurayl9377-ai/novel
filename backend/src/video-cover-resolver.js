@@ -1,5 +1,6 @@
 import { ensureManagedUploadRetirementTriggers, one, run } from './db.js';
 import { searchDbzyCache } from './dbzy-source.js';
+import { mirrorVideoCover } from './video-cover-cache.js';
 
 const COVER_PROVIDER = 'dbzy';
 let tableReady = false;
@@ -28,6 +29,12 @@ export async function resolveVideoCover({
 
   const result = await findCatalogCover(normalizedTitle, normalizedYear);
   if (!result.coverUrl) return emptyResult();
+  let coverUrl;
+  try {
+    coverUrl = await mirrorVideoCover(result.coverUrl);
+  } catch {
+    return emptyResult();
+  }
   run(
     `INSERT INTO video_cover_urls
        (source_key, item_key, title, year, cover_url, provider, matched_title, updated_at)
@@ -36,9 +43,9 @@ export async function resolveVideoCover({
        title = excluded.title, year = excluded.year, cover_url = excluded.cover_url,
        provider = excluded.provider, matched_title = excluded.matched_title,
        updated_at = datetime('now')`,
-    [normalizedSource, normalizedItemKey, normalizedTitle, normalizedYear, result.coverUrl, result.provider, result.matchedTitle],
+    [normalizedSource, normalizedItemKey, normalizedTitle, normalizedYear, coverUrl, result.provider, result.matchedTitle],
   );
-  return { ...result, cached: false };
+  return { ...result, coverUrl, cached: false };
 }
 
 export function selectBestCoverMatch(title, year, items) {
@@ -139,7 +146,7 @@ function isHttpUrl(value) {
 
 function isSupportedCachedCover(row) {
   return String(row?.provider || '').trim().toLowerCase() === COVER_PROVIDER
-    && isHttpUrl(row?.coverUrl);
+    && (isHttpUrl(row?.coverUrl) || /^\/video-covers\/files\/[a-f0-9]{64}\.(?:gif|jpe?g|png|webp)$/i.test(String(row?.coverUrl || '')));
 }
 
 function emptyResult() {

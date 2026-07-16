@@ -2,6 +2,10 @@ import { all, one, run } from "./db.js";
 import { grantReward } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import { resolveVideoCover } from "./video-cover-resolver.js";
+import { createReadStream } from "node:fs";
+import { access } from "node:fs/promises";
+import path from "node:path";
+import { config } from "./config.js";
 import {
   badRequest,
   optionalInt,
@@ -30,12 +34,35 @@ export async function contentRoutes(app) {
     ]);
     if (limited) return limited;
     const query = request.query || {};
-    return resolveVideoCover({
+    const result = await resolveVideoCover({
       sourceKey: optionalString(query.source, 40) || "wuhandky",
       itemKey: requiredString(query.itemKey, "itemKey", 500),
       title: requiredString(query.title, "title", 200),
       year: optionalString(query.year, 10),
     });
+    if (result.coverUrl.startsWith('/')) {
+      const host = String(request.headers.host || request.hostname || '').replace(/[^a-zA-Z0-9.:[\]-]/g, '');
+      result.coverUrl = `${request.protocol}://${host}${config.apiPrefix}${result.coverUrl}`;
+    }
+    return result;
+  });
+
+  app.get('/video-covers/files/:file', async (request, reply) => {
+    const file = String(request.params?.file || '');
+    if (!/^[a-f0-9]{64}\.(?:gif|jpe?g|png|webp)$/i.test(file)) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+    const extension = path.extname(file).toLowerCase();
+    const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : extension === '.gif' ? 'image/gif' : 'image/jpeg';
+    const filePath = path.join(config.videoCoverDir, file);
+    try {
+      await access(filePath);
+    } catch {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+    return reply.type(mime).header('Cache-Control', 'public, max-age=31536000, immutable').send(
+      createReadStream(filePath),
+    );
   });
 
   app.get("/comments", async (request) => {

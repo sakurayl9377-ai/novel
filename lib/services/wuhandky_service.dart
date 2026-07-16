@@ -9,6 +9,12 @@ import 'interaction_auth_service.dart';
 import 'site_domain_service.dart';
 
 class WuhandkyService {
+  static const homeCategories = <(String, String)>[
+    ('电影', '/dianying/'),
+    ('电视剧', '/dianshiju/'),
+    ('动漫', '/dongman/'),
+    ('综艺', '/zongyi/'),
+  ];
   static final Map<String, String> _resolvedCoverCache = <String, String>{};
   static const Set<String> _httpImageHosts = {
     'pic.fzmmx.com',
@@ -37,6 +43,24 @@ class WuhandkyService {
     return parseList(
       utf8.decode(response.bodyBytes),
       baseUri: response.request?.url,
+    );
+  }
+
+  Future<WuhandkyVideoHome> fetchHome() async {
+    final results = await Future.wait([
+      fetchCategory('/new.html'),
+      for (final category in homeCategories) fetchCategory(category.$2),
+    ]);
+    return WuhandkyVideoHome(
+      featured: results.first.take(6).toList(growable: false),
+      sections: [
+        for (var index = 0; index < homeCategories.length; index++)
+          WuhandkyVideoSection(
+            title: homeCategories[index].$1,
+            path: homeCategories[index].$2,
+            items: results[index + 1].take(12).toList(growable: false),
+          ),
+      ],
     );
   }
 

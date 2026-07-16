@@ -14,6 +14,25 @@ class WuhandkyVideoItem {
   final String score;
 }
 
+class WuhandkyVideoSection {
+  const WuhandkyVideoSection({
+    required this.title,
+    required this.path,
+    required this.items,
+  });
+
+  final String title;
+  final String path;
+  final List<WuhandkyVideoItem> items;
+}
+
+class WuhandkyVideoHome {
+  const WuhandkyVideoHome({required this.featured, required this.sections});
+
+  final List<WuhandkyVideoItem> featured;
+  final List<WuhandkyVideoSection> sections;
+}
+
 class WuhandkyVideoDetail {
   const WuhandkyVideoDetail({
     required this.title,

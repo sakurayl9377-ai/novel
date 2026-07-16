@@ -97,6 +97,14 @@ export const config = {
   dbzyTimeoutMs: envNumber('DBZY_TIMEOUT_MS', 8000),
   dbzyMinRequestIntervalMs: envNumber('DBZY_MIN_REQUEST_INTERVAL_MS', 350),
   dbzyMaxBytes: envNumber('DBZY_MAX_BYTES', 8 * 1024 * 1024),
+  videoCoverDir: path.resolve(
+    rootDir,
+    env('VIDEO_COVER_DIR', './data/video-covers'),
+  ),
+  videoCoverMaxBytes: envNumber(
+    'VIDEO_COVER_MAX_BYTES',
+    3 * 1024 * 1024,
+  ),
   dbzySyncEnabled: envBool('DBZY_SYNC_ENABLED', true),
   dbzySyncIntervalMs: envNumber('DBZY_SYNC_INTERVAL_MS', 30 * 60 * 1000),
   videoPolicyTimezone: env('VIDEO_POLICY_TIMEZONE', 'Asia/Hong_Kong'),
