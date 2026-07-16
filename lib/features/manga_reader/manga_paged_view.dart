@@ -165,7 +165,6 @@ class _MangaPagedViewState extends State<MangaPagedView> {
                         pageIndex: spread.pageIndexes[slotIndex],
                         pageWidth: pageWidth,
                         crop: spread.cropAt(slotIndex),
-                        aspectRatio: spread.aspectRatioAt(slotIndex),
                       ),
                     ),
                 ],
@@ -182,19 +181,8 @@ class _MangaPagedViewState extends State<MangaPagedView> {
     required int pageIndex,
     required double pageWidth,
     required MangaPageCrop crop,
-    required double aspectRatio,
   }) {
     if (crop.isFull) {
-      if (aspectRatio < 0.42) {
-        return SingleChildScrollView(
-          key: const ValueKey('manga-paged-tall-scroll'),
-          physics: const BouncingScrollPhysics(),
-          child: AspectRatio(
-            aspectRatio: aspectRatio,
-            child: widget.pageBuilder(context, pageIndex, pageWidth),
-          ),
-        );
-      }
       return widget.pageBuilder(context, pageIndex, pageWidth);
     }
     final horizontalCenter = (crop.left + crop.right) / 2;

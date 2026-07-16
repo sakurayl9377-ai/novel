@@ -36,7 +36,7 @@ void main() {
     expect(changes.last, [2, 2]);
   });
 
-  testWidgets('tall source pages scroll vertically without crop slots', (
+  testWidgets('tall source pages stay intact without nested scrolling', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -48,9 +48,12 @@ void main() {
             ],
             direction: MangaPageDirection.ltr,
             initialPageIndex: 0,
-            pageBuilder: (context, index, width) => ColoredBox(
-              color: Colors.blue,
-              child: SizedBox(width: width, height: double.infinity),
+            pageBuilder: (context, index, width) => KeyedSubtree(
+              key: ValueKey('page-$index'),
+              child: ColoredBox(
+                color: Colors.blue,
+                child: SizedBox(width: width, height: double.infinity),
+              ),
             ),
             endBuilder: (_) => const SizedBox.shrink(),
             onPageChanged: (_, _) {},
@@ -61,8 +64,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('manga-paged-tall-scroll')), findsOneWidget);
-    expect(find.byType(SingleChildScrollView), findsOneWidget);
+    expect(find.byKey(const ValueKey('manga-paged-tall-scroll')), findsNothing);
+    expect(find.byKey(const ValueKey('page-0')), findsOneWidget);
   });
 
   testWidgets('double tap zoom wins before horizontal page movement', (
