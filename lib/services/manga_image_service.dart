@@ -73,3 +73,28 @@ Map<String, String> mangaImageHeaders({
         '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
   };
 }
+
+List<String> normalizeMangaChapterImageSequence(Iterable<String> images) {
+  final urls = <String>[];
+  for (final rawUrl in images) {
+    final url = normalizeMangaImageUrl(rawUrl);
+    if (url.isEmpty) continue;
+    urls.add(url);
+  }
+
+  if (urls.length < 6 || urls.length.isOdd) return urls;
+  final half = urls.length ~/ 2;
+  for (var index = 0; index < half; index++) {
+    if (_mangaImageIdentity(urls[index]) !=
+        _mangaImageIdentity(urls[index + half])) {
+      return urls;
+    }
+  }
+  return urls.sublist(0, half);
+}
+
+String _mangaImageIdentity(String url) {
+  final uri = Uri.tryParse(url);
+  if (uri == null) return url;
+  return Uri.decodeComponent(uri.path).toLowerCase();
+}

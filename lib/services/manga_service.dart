@@ -25,7 +25,7 @@ class MangaService {
   static const String _homeHtmlCacheKey = 'manga_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'manga_home_html_cache_time_v1';
   static const String _chapterImagesCachePrefix =
-      'manga_chapter_images_cache_v1_';
+      'manga_chapter_images_cache_v2_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
   static const Duration _chapterImagesCacheTtl = Duration(days: 7);
   static const int _maxChapterImageCacheEntries = 80;
@@ -314,10 +314,9 @@ class MangaService {
       if (!allowExpired && age > _chapterImagesCacheTtl.inMilliseconds) {
         return null;
       }
-      final images = (data['images'] as List<dynamic>? ?? const [])
-          .whereType<String>()
-          .where((url) => url.isNotEmpty)
-          .toList();
+      final images = normalizeMangaChapterImageSequence(
+        (data['images'] as List<dynamic>? ?? const []).whereType<String>(),
+      );
       return images.isEmpty ? null : images;
     } catch (_) {
       return null;
@@ -830,7 +829,7 @@ class _BaoziDetailParser {
       if (!_looksLikePageImage(url) || !seen.add(url)) continue;
       urls.add(url);
     }
-    return urls;
+    return normalizeMangaChapterImageSequence(urls);
   }
 
   Map<String, String> _parseMeta(dom.Document document) {

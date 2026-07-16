@@ -21,6 +21,8 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
   double _gestureStartBrightness = 0.5;
   double _currentBrightness = 0.5;
   double? _brightnessPreview;
+  bool _temporarySpeedActive = false;
+  double _temporarySpeedRestore = 1;
 
   bool get _usesFullScreenLayout =>
       widget.forceFullScreenLayout ||
@@ -54,6 +56,12 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    if (_temporarySpeedActive) {
+      unawaited(
+        _videoController?.setPlaybackSpeed(_temporarySpeedRestore) ??
+            Future<void>.value(),
+      );
+    }
     _chewieController?.removeListener(_handleChewieChanged);
     _videoController?.removeListener(_handleVideoChanged);
     super.dispose();
@@ -150,6 +158,31 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
     await controller.setPlaybackSpeed(speed);
     widget.onPlaybackSpeedChanged(speed);
     _showControls();
+  }
+
+  Future<void> _startTemporarySpeed() async {
+    final controller = _videoController;
+    if (_temporarySpeedActive ||
+        controller == null ||
+        !controller.value.isInitialized ||
+        _gestureMode != _VideoGestureMode.none) {
+      return;
+    }
+    _hideTimer?.cancel();
+    _temporarySpeedRestore = controller.value.playbackSpeed;
+    setState(() => _temporarySpeedActive = true);
+    await controller.setPlaybackSpeed(2);
+  }
+
+  Future<void> _stopTemporarySpeed() async {
+    if (!_temporarySpeedActive) return;
+    final controller = _videoController;
+    final restore = _temporarySpeedRestore;
+    if (mounted) setState(() => _temporarySpeedActive = false);
+    if (controller != null && controller.value.isInitialized) {
+      await controller.setPlaybackSpeed(restore);
+    }
+    _restartHideTimer();
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -316,6 +349,9 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _toggleControls,
+          onLongPressStart: (_) => unawaited(_startTemporarySpeed()),
+          onLongPressEnd: (_) => unawaited(_stopTemporarySpeed()),
+          onLongPressCancel: () => unawaited(_stopTemporarySpeed()),
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -394,6 +430,31 @@ class _AnimeVideoControlsState extends State<_AnimeVideoControls> {
                         if (_gestureMode == _VideoGestureMode.brightness &&
                             _brightnessPreview != null)
                           _buildBrightnessPreview(_brightnessPreview!),
+                        if (_temporarySpeedActive)
+                          const Center(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Color(0xB3000000),
+                                borderRadius: BorderRadius.all(
+                                  Radius.circular(22),
+                                ),
+                              ),
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 10,
+                                ),
+                                child: Text(
+                                  '2.0x 快进中',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ValueListenableBuilder<_DanmakuOverlaySnapshot>(
                           valueListenable: widget.danmakuListenable,
                           builder: (context, snapshot, _) {

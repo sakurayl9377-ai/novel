@@ -42,4 +42,16 @@ void main() {
     expect(screen, isNot(contains('_DanmakuQuickDock(')));
     expect(contentWidgets, isNot(contains('class _DanmakuQuickDock')));
   });
+
+  test('long press temporarily uses 2x and restores the selected speed', () {
+    final controls = File(
+      'lib/screens/anime_player_controls.part.dart',
+    ).readAsStringSync();
+
+    expect(controls, contains('onLongPressStart:'));
+    expect(controls, contains('onLongPressEnd:'));
+    expect(controls, contains('_temporarySpeedRestore'));
+    expect(controls, contains('setPlaybackSpeed(2)'));
+    expect(controls, contains("'2.0x 快进中'"));
+  });
 }
