@@ -41,6 +41,7 @@ class _SearchScreenState extends State<SearchScreen> {
   NovelHomeData _homeData = const NovelHomeData.empty();
   List<Novel> _results = [];
   List<Novel> _aiNovels = const [];
+  bool _searchAllSources = false;
   bool _autoOpenedInitial = false;
   int _searchGeneration = 0;
 
@@ -50,13 +51,19 @@ class _SearchScreenState extends State<SearchScreen> {
   void initState() {
     super.initState();
     _searchController.text = widget.initialKeyword.trim();
-    unawaited(_loadHome());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      unawaited(context.read<BookSourceProvider>().loadSources());
-      final initial = widget.initialKeyword.trim();
-      if (initial.isNotEmpty) unawaited(_search(initial));
+      unawaited(_initialize());
     });
+  }
+
+  Future<void> _initialize() async {
+    await context.read<BookSourceProvider>().loadSources();
+    if (!mounted) return;
+    await _loadHome();
+    if (!mounted) return;
+    final initial = widget.initialKeyword.trim();
+    if (initial.isNotEmpty) await _search(initial);
   }
 
   Future<void> _loadHome({bool forceRefresh = false}) async {
@@ -69,7 +76,11 @@ class _SearchScreenState extends State<SearchScreen> {
       final aiNovelsFuture = _aiCreationService.fetchNovels().catchError(
         (_) => <Novel>[],
       );
-      final data = await _service.fetchHome(forceRefresh: forceRefresh);
+      final sourceId = context.read<BookSourceProvider>().selectedSourceId;
+      final data = await _service.fetchHome(
+        forceRefresh: forceRefresh,
+        sourceId: sourceId,
+      );
       final aiNovels = await aiNovelsFuture;
       if (!mounted) return;
       setState(() {
@@ -99,7 +110,10 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
-      await context.read<BookSourceProvider>().searchBooks(query);
+      await context.read<BookSourceProvider>().searchBooks(
+        query,
+        allSources: _searchAllSources,
+      );
       if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
         _results = context.read<BookSourceProvider>().searchResults;
@@ -133,6 +147,22 @@ class _SearchScreenState extends State<SearchScreen> {
       _results = [];
       _errorMessage = null;
     });
+  }
+
+  Future<void> _handleSourceMenu(String value) async {
+    if (value == 'scope:all') {
+      setState(() => _searchAllSources = !_searchAllSources);
+      if (_showingSearchResults) await _search(_searchedKeyword);
+      return;
+    }
+    if (!value.startsWith('source:')) return;
+
+    final sourceId = value.substring('source:'.length);
+    await context.read<BookSourceProvider>().selectSource(sourceId);
+    if (!mounted) return;
+    setState(() => _searchAllSources = false);
+    await _loadHome();
+    if (_showingSearchResults) await _search(_searchedKeyword);
   }
 
   void _openNovel(Novel novel) {
@@ -169,12 +199,37 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final isNight = Theme.of(context).brightness == Brightness.dark;
+    final sourceProvider = context.watch<BookSourceProvider>();
+    final enabledSources = sourceProvider.sources
+        .where((source) => source.enabled)
+        .toList();
 
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 12,
         title: _buildSearchField(isNight),
         actions: [
+          PopupMenuButton<String>(
+            tooltip: '切换书源',
+            onSelected: (value) => unawaited(_handleSourceMenu(value)),
+            icon: Icon(
+              _searchAllSources ? Icons.hub_outlined : Icons.swap_horiz,
+            ),
+            itemBuilder: (context) => [
+              for (final source in enabledSources)
+                CheckedPopupMenuItem<String>(
+                  value: 'source:${source.id}',
+                  checked: source.id == sourceProvider.selectedSourceId,
+                  child: Text(source.name),
+                ),
+              if (enabledSources.isNotEmpty) const PopupMenuDivider(),
+              CheckedPopupMenuItem<String>(
+                value: 'scope:all',
+                checked: _searchAllSources,
+                child: const Text('搜索全部书源'),
+              ),
+            ],
+          ),
           if (_showingSearchResults)
             IconButton(
               tooltip: '返回首页',

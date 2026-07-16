@@ -13,6 +13,8 @@ import '../services/novel_offline_cache_service.dart';
 import '../services/storage_service.dart';
 
 class BookSourceProvider extends ChangeNotifier {
+  static const String _selectedSourceKey = 'selected_novel_source_id';
+
   BookSourceProvider({
     StorageService? storage,
     BookSourceService? sourceService,
@@ -27,6 +29,7 @@ class BookSourceProvider extends ChangeNotifier {
 
   List<BookSource> _sources = [];
   List<Novel> _searchResults = [];
+  String _selectedSourceId = '';
   static const int _chapterCacheMaxEntries = 24;
   final LinkedHashMap<String, List<Chapter>> _chapterCache =
       LinkedHashMap<String, List<Chapter>>();
@@ -39,41 +42,87 @@ class BookSourceProvider extends ChangeNotifier {
   List<BookSource> get sources => _sources;
   List<Novel> get searchResults => _searchResults;
   bool get isSearching => _isSearching;
+  String get selectedSourceId => _selectedSourceId;
+  BookSource? get selectedSource {
+    for (final source in _sources) {
+      if (source.id == _selectedSourceId) return source;
+    }
+    return null;
+  }
 
   Future<void> loadSources() async {
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    await _storage.init();
+    _sources = await _sourceService.ensureBuiltinSources();
+    _selectedSourceId = _storage.getString(_selectedSourceKey) ?? '';
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
   Future<void> addSource(BookSource source) async {
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    await _sourceService.addSource(source);
+    _sources = await _sourceService.ensureBuiltinSources();
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
   Future<void> updateSource(BookSource source) async {
-    if (_sourceService.isBqg995Source(source)) {
-      await _sourceService.updateSource(source);
-    }
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    await _sourceService.updateSource(source);
+    _sources = await _sourceService.ensureBuiltinSources();
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
   Future<void> deleteSource(String sourceId) async {
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    await _sourceService.deleteSource(sourceId);
+    _sources = await _sourceService.ensureBuiltinSources();
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
   Future<void> toggleSource(String sourceId, bool enabled) async {
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    await _sourceService.toggleSource(sourceId, enabled);
+    _sources = await _sourceService.ensureBuiltinSources();
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
   Future<void> addDefaultSources() async {
-    _sources = await _sourceService.ensureOnlyBqg995Source();
+    _sources = await _sourceService.ensureBuiltinSources();
+    await _ensureSelectedSource();
     notifyListeners();
   }
 
-  Future<void> searchBooks(String keyword) async {
+  Future<void> selectSource(String sourceId) async {
+    final selectable = _sources.any(
+      (source) => source.id == sourceId && source.enabled,
+    );
+    if (!selectable || sourceId == _selectedSourceId) return;
+    _selectedSourceId = sourceId;
+    await _storage.setString(_selectedSourceKey, sourceId);
+    notifyListeners();
+  }
+
+  Future<void> _ensureSelectedSource() async {
+    final selectedIsEnabled = _sources.any(
+      (source) => source.id == _selectedSourceId && source.enabled,
+    );
+    if (selectedIsEnabled) return;
+
+    _selectedSourceId = '';
+    for (final source in _sources) {
+      if (source.enabled) {
+        _selectedSourceId = source.id;
+        break;
+      }
+    }
+    if (_selectedSourceId.isEmpty) {
+      await _storage.remove(_selectedSourceKey);
+    } else {
+      await _storage.setString(_selectedSourceKey, _selectedSourceId);
+    }
+  }
+
+  Future<void> searchBooks(String keyword, {bool allSources = false}) async {
     if (keyword.trim().isEmpty) return;
 
     _isSearching = true;
@@ -81,11 +130,14 @@ class BookSourceProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final results = await _sourceService.searchBooks(keyword);
+      final results = await _sourceService.searchBooks(
+        keyword,
+        sourceId: allSources ? null : _selectedSourceId,
+      );
 
       final seen = <String>{};
       for (final novel in results) {
-        final key = '${novel.title}|${novel.author}';
+        final key = '${novel.sourceId}|${novel.title}|${novel.author}';
         if (seen.add(key)) _searchResults.add(novel);
       }
     } finally {
@@ -244,6 +296,8 @@ class BookSourceProvider extends ChangeNotifier {
           (candidate) => candidate.id == novel.sourceId,
           orElse: () => _sources.isNotEmpty
               ? _sources.first
+              : novel.sourceId == BookSourceService.wenku8Source.id
+              ? BookSourceService.wenku8Source
               : BookSourceService.bqg995Source,
         );
         return _sourceService.getChapterContent(chapter, source);

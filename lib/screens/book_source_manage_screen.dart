@@ -94,7 +94,9 @@ class _BookSourceManageScreenState extends State<BookSourceManageScreen> {
   Widget _buildSourceItem(BookSource source, BookSourceProvider provider) {
     return Dismissible(
       key: Key(source.id),
-      direction: DismissDirection.endToStart,
+      direction: source.id.startsWith('builtin_')
+          ? DismissDirection.none
+          : DismissDirection.endToStart,
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),

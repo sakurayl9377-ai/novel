@@ -47,6 +47,8 @@ class BookSourceService {
   static const String _bqgWwwApiOrigin = 'https://www.apibi.cc';
   static const String _bqgWebOrigin = 'https://www.bqg691.cc';
   static const String _bqgLegacyOrigin = 'https://www.bqg995.xyz';
+  static const String _wenku8PrimaryOrigin = 'https://www.wenku8.cc';
+  static const String _wenku8BackupOrigin = 'https://www.wenku8.net';
   static const List<String> _bqgChapterApiOrigins = [
     _bqgPrimaryOrigin,
     _bqgApexOrigin,
@@ -76,6 +78,18 @@ class BookSourceService {
     enabled: true,
     weight: 100,
   );
+  static final BookSource wenku8Source = BookSource(
+    id: 'builtin_wenku8',
+    name: '轻小说文库',
+    baseUrl: _wenku8PrimaryOrigin,
+    searchUrl: '$_wenku8PrimaryOrigin/wap/article/search.php',
+    chapterListUrl:
+        '$_wenku8PrimaryOrigin/wap/article/readbook.php?aid={bookId}',
+    contentUrl:
+        '$_wenku8PrimaryOrigin/wap/article/readchapter.php?aid={bookId}&cid={chapterId}',
+    enabled: true,
+    weight: 90,
+  );
 
   BookSourceService({this.httpClient});
 
@@ -94,19 +108,38 @@ class BookSourceService {
     return (httpClient ?? _sharedHttpClient).get(uri, headers: headers);
   }
 
+  Future<http.Response> _post(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+  }) {
+    return (httpClient ?? _sharedHttpClient).post(
+      uri,
+      headers: headers,
+      body: body,
+    );
+  }
+
   bool isBqg995Source(BookSource source) {
     final host = Uri.tryParse(source.baseUrl)?.host.toLowerCase() ?? '';
     return _isKnownBqgHost(host);
   }
 
-  Future<List<BookSource>> ensureOnlyBqg995Source() async {
+  bool isWenku8Source(BookSource source) {
+    if (source.id == wenku8Source.id) return true;
+    final host = Uri.tryParse(source.baseUrl)?.host.toLowerCase() ?? '';
+    return _isKnownWenku8Host(host);
+  }
+
+  Future<List<BookSource>> ensureBuiltinSources() async {
     final sources = await getAllSources();
     BookSource? savedBqg;
+    BookSource? savedWenku8;
     for (final source in sources) {
-      if (isBqg995Source(source)) {
+      if (source.id == bqg995Source.id) {
         savedBqg ??= source;
-      } else {
-        await deleteSource(source.id);
+      } else if (source.id == wenku8Source.id) {
+        savedWenku8 ??= source;
       }
     }
 
@@ -115,15 +148,43 @@ class BookSourceService {
       name: bqg995Source.name,
       baseUrl: currentOrigin,
       searchUrl: '$currentOrigin/api/search?q={keyword}',
-      enabled: true,
+      enabled: savedBqg?.enabled ?? bqg995Source.enabled,
       weight: bqg995Source.weight,
     );
+    final normalizedWenku8 = (savedWenku8 ?? wenku8Source).copyWith(
+      name: wenku8Source.name,
+      baseUrl: _wenku8PrimaryOrigin,
+      searchUrl: wenku8Source.searchUrl,
+      chapterListUrl: wenku8Source.chapterListUrl,
+      contentUrl: wenku8Source.contentUrl,
+      enabled: savedWenku8?.enabled ?? wenku8Source.enabled,
+      weight: wenku8Source.weight,
+    );
     await updateSource(normalized);
-    return [normalized];
+    await updateSource(normalizedWenku8);
+
+    final merged = <BookSource>[
+      for (final source in sources)
+        if (source.id != normalized.id && source.id != normalizedWenku8.id)
+          source,
+      normalized,
+      normalizedWenku8,
+    ];
+    merged.sort((left, right) => right.weight.compareTo(left.weight));
+    return merged;
   }
 
-  Future<NovelHomeData> fetchHome({bool forceRefresh = false}) async {
-    final sources = await _searchableSources(await getEnabledSources());
+  @Deprecated('Use ensureBuiltinSources instead.')
+  Future<List<BookSource>> ensureOnlyBqg995Source() => ensureBuiltinSources();
+
+  Future<NovelHomeData> fetchHome({
+    bool forceRefresh = false,
+    String? sourceId,
+  }) async {
+    var sources = await _searchableSources(await getAllSources());
+    if (sourceId != null && sourceId.isNotEmpty) {
+      sources = sources.where((source) => source.id == sourceId).toList();
+    }
 
     for (final source in sources) {
       final cacheKey = _homeCacheKey(source);
@@ -172,7 +233,9 @@ class BookSourceService {
   }
 
   Future<NovelHomeData> _fetchHomeFromSource(BookSource source) async {
-    final data = _isBqgApiSource(source)
+    final data = isWenku8Source(source)
+        ? await _fetchWenku8Home(source)
+        : _isBqgApiSource(source)
         ? await _fetchBqgApiHome(source)
         : await _fetchHtmlHome(source);
     if (data.isEmpty) throw StateError('novel home is empty');
@@ -211,11 +274,185 @@ class BookSourceService {
   }
 
   Future<Novel> fetchBookDetail(Novel novel) async {
+    if (_isWenku8Novel(novel)) {
+      return _fetchWenku8BookDetail(novel);
+    }
+    if (!_isBqgNovel(novel)) return novel;
+
     final bookId = _extractBookId(novel.chapterUrl) ?? _extractBqgId(novel.id);
     if (bookId == null) return novel;
 
     final meta = await _getBookApiMeta(novel, bookId);
     return meta?.novel ?? novel;
+  }
+
+  Future<NovelHomeData> _fetchWenku8Home(BookSource source) async {
+    for (final origin in _wenku8OriginCandidates(source.baseUrl)) {
+      try {
+        final response = await _get(
+          Uri.parse('$origin/wap/'),
+          headers: _headers('$origin/wap/'),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+
+        final responseOrigin = _originOfResponse(response, fallback: origin);
+        final parsed = _parseWenku8Home(
+          _decodeBody(response),
+          source.copyWith(baseUrl: responseOrigin),
+        );
+        if (!parsed.isEmpty) return parsed;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const NovelHomeData.empty();
+  }
+
+  NovelHomeData _parseWenku8Home(String wml, BookSource source) {
+    final grouped = <String, List<Novel>>{};
+    var currentSection = '';
+
+    for (final rawLine in wml.split(
+      RegExp(r'<br\s*/?>', caseSensitive: false),
+    )) {
+      final lineText = _cleanHtmlText(rawLine);
+      final sectionMatch = RegExp(r'【([^】]+)】').firstMatch(lineText);
+      if (sectionMatch != null) {
+        currentSection = sectionMatch.group(1)!.trim();
+        grouped.putIfAbsent(currentSection, () => <Novel>[]);
+      }
+      if (currentSection.isEmpty) continue;
+
+      final fragment = html_parser.parseFragment(rawLine);
+      for (final anchor in fragment.querySelectorAll('a')) {
+        final href = anchor.attributes['href'] ?? '';
+        final bookId = _extractWenku8BookId(href);
+        final title = _cleanHtmlText(anchor.text);
+        if (bookId == null || !_isNovelTitle(title)) continue;
+        final novels = grouped[currentSection]!;
+        if (novels.any(
+          (item) => _extractWenku8BookId(item.chapterUrl) == bookId,
+        )) {
+          continue;
+        }
+        novels.add(_wenku8Novel(source, bookId: bookId, title: title));
+      }
+    }
+
+    final sections = <NovelHomeSection>[];
+    for (final entry in grouped.entries) {
+      if (entry.value.isEmpty) continue;
+      sections.add(NovelHomeSection(title: entry.key, items: entry.value));
+    }
+    if (sections.isEmpty) return const NovelHomeData.empty();
+
+    return NovelHomeData(
+      sourceName: source.name,
+      featured: sections.first.items,
+      sections: sections.skip(1).toList(),
+      categories: const [],
+    );
+  }
+
+  Future<Novel> _fetchWenku8BookDetail(Novel novel) async {
+    final bookId =
+        _extractWenku8BookId(novel.chapterUrl) ??
+        _extractWenku8BookId(novel.id);
+    if (bookId == null) return novel;
+
+    for (final origin in _wenku8OriginCandidates(novel.chapterUrl)) {
+      try {
+        final response = await _get(
+          Uri.parse('$origin/wap/article/articleinfo.php?id=$bookId'),
+          headers: _headers('$origin/wap/'),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+
+        final body = _decodeBody(response);
+        final responseOrigin = _originOfResponse(response, fallback: origin);
+        final title = _firstWenku8Match(body, [
+          RegExp(r'''<card[^>]*title=["']([^"']+)["']''', caseSensitive: false),
+          RegExp(r'<b>(.*?)</b>', dotAll: true, caseSensitive: false),
+        ]);
+        final author = _firstWenku8Match(body, [
+          RegExp(r'作者:\s*(?:<anchor[^>]*>)?([^<]+)', dotAll: true),
+        ]);
+        final status = _firstWenku8Match(body, [
+          RegExp(r'状态:\s*([^<]+)<br', dotAll: true, caseSensitive: false),
+        ]);
+        final cover = _firstWenku8Match(body, [
+          RegExp(
+            r'''<img[^>]*src=["']([^"']*/image/[^"']+)["']''',
+            caseSensitive: false,
+          ),
+        ]);
+        final description = _firstWenku8Match(body, [
+          RegExp(
+            r'\[作品简介\]\s*<br\s*/?>(.*?)(?:<br\s*/?>\s*<p\s+align=|</p>)',
+            dotAll: true,
+            caseSensitive: false,
+          ),
+        ]);
+
+        return novel.copyWith(
+          title: title.isEmpty ? novel.title : title,
+          author: author.isEmpty ? novel.author : author,
+          coverUrl: cover.isEmpty
+              ? _wenku8CoverUrl(bookId)
+              : _secureWenku8Url(responseOrigin, cover),
+          description: description.isEmpty ? novel.description : description,
+          chapterUrl: '$responseOrigin/wap/article/readbook.php?aid=$bookId',
+          sourceId: novel.sourceId.isEmpty ? wenku8Source.id : novel.sourceId,
+          sourceName: novel.sourceName.isEmpty
+              ? wenku8Source.name
+              : novel.sourceName,
+          status: status.isEmpty ? novel.status : status,
+        );
+      } catch (_) {
+        continue;
+      }
+    }
+    return novel;
+  }
+
+  String _firstWenku8Match(String input, List<RegExp> patterns) {
+    for (final pattern in patterns) {
+      final value = pattern.firstMatch(input)?.group(1) ?? '';
+      final cleaned = _cleanHtmlText(value);
+      if (cleaned.isNotEmpty) return cleaned;
+    }
+    return '';
+  }
+
+  Novel _wenku8Novel(
+    BookSource source, {
+    required String bookId,
+    required String title,
+    String author = '',
+  }) {
+    final origin = _originOf(source.baseUrl).isEmpty
+        ? _wenku8PrimaryOrigin
+        : _originOf(source.baseUrl);
+    return Novel(
+      id: '${source.id}_wenku8_$bookId',
+      title: title,
+      author: author,
+      coverUrl: _wenku8CoverUrl(bookId),
+      chapterUrl: '$origin/wap/article/articleinfo.php?id=$bookId',
+      sourceId: source.id,
+      sourceName: source.name,
+    );
+  }
+
+  String _wenku8CoverUrl(String bookId) {
+    final numericId = int.tryParse(bookId) ?? 0;
+    return 'https://img.wenku8.com/image/${numericId ~/ 1000}/$bookId/${bookId}s.jpg';
+  }
+
+  String _secureWenku8Url(String baseUrl, String rawUrl) {
+    return _normalizeUrl(baseUrl, rawUrl)
+        .replaceFirst('http://img.wenku8.com', 'https://img.wenku8.com')
+        .replaceFirst('http://www.wenku8.', 'https://www.wenku8.');
   }
 
   Future<_BqgBookApiMeta?> _getBookApiMeta(Novel novel, String bookId) async {
@@ -495,6 +732,64 @@ class BookSourceService {
         lowerHost == Uri.parse(_bqgWwwApiOrigin).host ||
         lowerHost == Uri.parse(_bqgWebOrigin).host ||
         lowerHost == Uri.parse(_bqgLegacyOrigin).host;
+  }
+
+  bool _isKnownWenku8Host(String host) {
+    final lowerHost = host.toLowerCase();
+    return lowerHost == Uri.parse(_wenku8PrimaryOrigin).host ||
+        lowerHost == Uri.parse(_wenku8BackupOrigin).host ||
+        lowerHost.endsWith('.wenku8.cc') ||
+        lowerHost.endsWith('.wenku8.net') ||
+        lowerHost.endsWith('.wenku8.com') ||
+        lowerHost.endsWith('.wenku8.cn');
+  }
+
+  bool _isBqgNovel(Novel novel) {
+    if (novel.sourceId == bqg995Source.id || novel.id.contains('_bqg_')) {
+      return true;
+    }
+    final host = Uri.tryParse(novel.chapterUrl)?.host ?? '';
+    return _isKnownBqgHost(host);
+  }
+
+  bool _isWenku8Novel(Novel novel) {
+    if (novel.sourceId == wenku8Source.id || novel.id.contains('_wenku8_')) {
+      return true;
+    }
+    final host = Uri.tryParse(novel.chapterUrl)?.host ?? '';
+    return _isKnownWenku8Host(host);
+  }
+
+  List<String> _wenku8OriginCandidates(String preferredUrl) {
+    final candidates = <String>[];
+
+    void add(String origin) {
+      final normalized = _originOf(origin);
+      if (normalized.isEmpty) return;
+      final host = Uri.tryParse(normalized)?.host ?? '';
+      if (_isKnownWenku8Host(host) && !candidates.contains(normalized)) {
+        candidates.add(normalized);
+      }
+    }
+
+    add(preferredUrl);
+    add(_wenku8PrimaryOrigin);
+    add(_wenku8BackupOrigin);
+    return candidates;
+  }
+
+  String? _extractWenku8BookId(String value) {
+    final patterns = [
+      RegExp(r'[?&](?:id|aid)=(\d+)'),
+      RegExp(r'/book/(\d+)\.htm'),
+      RegExp(r'/novel/\d+/(\d+)/'),
+      RegExp(r'_wenku8_(\d+)$'),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(value);
+      if (match != null) return match.group(1);
+    }
+    return null;
   }
 
   String _bqgBestOrigin(String urlOrOrigin) {
@@ -898,10 +1193,12 @@ class BookSourceService {
 
   Future<List<BookSource>> getEnabledSources() async {
     final sourcesData = await _storage.getBookSources();
-    return sourcesData
+    final sources = sourcesData
         .map((s) => BookSource.fromJson(s))
         .where((s) => s.enabled)
         .toList();
+    sources.sort((left, right) => right.weight.compareTo(left.weight));
+    return sources;
   }
 
   Future<List<BookSource>> getAllSources() async {
@@ -927,14 +1224,21 @@ class BookSourceService {
     await _storage.saveBookSource(source.copyWith(enabled: enabled).toJson());
   }
 
-  Future<List<Novel>> searchBooks(String keyword) async {
-    final sources = await _searchableSources(await getEnabledSources());
+  Future<List<Novel>> searchBooks(String keyword, {String? sourceId}) async {
+    var sources = await _searchableSources(await getAllSources());
+    if (sourceId != null && sourceId.isNotEmpty) {
+      sources = sources.where((source) => source.id == sourceId).toList();
+    }
     final results = <Novel>[];
+    final seen = <String>{};
 
     for (final source in sources) {
       try {
-        results.addAll(await _searchFromSource(source, keyword));
-        if (results.isNotEmpty) break;
+        for (final novel in await _searchFromSource(source, keyword)) {
+          final key =
+              '${novel.sourceId}|${novel.title}|${novel.author}|${novel.chapterUrl}';
+          if (seen.add(key)) results.add(novel);
+        }
       } catch (_) {
         continue;
       }
@@ -947,30 +1251,51 @@ class BookSourceService {
     List<BookSource> savedSources,
   ) async {
     final currentOrigin = await _domainService.currentOrigin(_bqgDomain);
-    for (final source in savedSources) {
-      if (source.enabled && isBqg995Source(source)) {
-        return [
+    final sources = <BookSource>[...savedSources];
+    if (!sources.any((source) => source.id == bqg995Source.id)) {
+      sources.add(bqg995Source);
+    }
+    if (!sources.any((source) => source.id == wenku8Source.id)) {
+      sources.add(wenku8Source);
+    }
+
+    final normalized = <BookSource>[];
+    for (final source in sources) {
+      if (!source.enabled) continue;
+      if (source.id == bqg995Source.id) {
+        normalized.add(
           source.copyWith(
             name: bqg995Source.name,
             baseUrl: currentOrigin,
             searchUrl: '$currentOrigin/api/search?q={keyword}',
             weight: bqg995Source.weight,
           ),
-        ];
+        );
+      } else if (source.id == wenku8Source.id) {
+        normalized.add(
+          source.copyWith(
+            name: wenku8Source.name,
+            baseUrl: _wenku8PrimaryOrigin,
+            searchUrl: wenku8Source.searchUrl,
+            weight: wenku8Source.weight,
+          ),
+        );
+      } else {
+        normalized.add(source);
       }
     }
-    return [
-      bqg995Source.copyWith(
-        baseUrl: currentOrigin,
-        searchUrl: '$currentOrigin/api/search?q={keyword}',
-      ),
-    ];
+    normalized.sort((left, right) => right.weight.compareTo(left.weight));
+    return normalized;
   }
 
   Future<List<Novel>> _searchFromSource(
     BookSource source,
     String keyword,
   ) async {
+    if (isWenku8Source(source)) {
+      return _searchWenku8(source, keyword);
+    }
+
     final novels = <Novel>[];
     final seen = <String>{};
 
@@ -1011,6 +1336,52 @@ class BookSourceService {
     }
 
     return novels;
+  }
+
+  Future<List<Novel>> _searchWenku8(BookSource source, String keyword) async {
+    for (final origin in _wenku8OriginCandidates(source.baseUrl)) {
+      try {
+        final response = await _post(
+          Uri.parse('$origin/wap/article/search.php'),
+          headers: _headers('$origin/wap/'),
+          body: <String, String>{
+            'action': 'search',
+            'searchtype': 'articlename',
+            'searchkey': keyword,
+          },
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+
+        final responseOrigin = _originOfResponse(response, fallback: origin);
+        final responseSource = source.copyWith(baseUrl: responseOrigin);
+        final document = html_parser.parse(_decodeBody(response));
+        final novels = <Novel>[];
+        final seen = <String>{};
+        for (final anchor in document.querySelectorAll('a')) {
+          final href = anchor.attributes['href'] ?? '';
+          final bookId = _extractWenku8BookId(href);
+          if (bookId == null || !seen.add(bookId)) continue;
+
+          final label = _cleanHtmlText(anchor.text);
+          final match = RegExp(r'^《(.+?)》(.*)$').firstMatch(label);
+          final title = (match?.group(1) ?? label).trim();
+          final author = (match?.group(2) ?? '').trim();
+          if (!_isNovelTitle(title)) continue;
+          novels.add(
+            _wenku8Novel(
+              responseSource,
+              bookId: bookId,
+              title: title,
+              author: author,
+            ),
+          );
+        }
+        if (novels.isNotEmpty) return novels;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
   }
 
   Map<String, String> _headers(String referer) => {
@@ -1179,7 +1550,15 @@ class BookSourceService {
       if (url.isNotEmpty && !urls.contains(url)) urls.add(url);
     }
 
-    for (final base in await _bqgOriginCandidates(source.baseUrl)) {
+    final bases = _isBqgApiSource(source)
+        ? await _bqgOriginCandidates(source.baseUrl)
+        : <String>[
+            if (_originOf(source.baseUrl).isNotEmpty)
+              _originOf(source.baseUrl)
+            else
+              source.baseUrl,
+          ];
+    for (final base in bases) {
       add('$base/api/search?q=$encoded');
       add(
         source
@@ -1517,11 +1896,23 @@ class BookSourceService {
   }
 
   Future<List<Chapter>> _getChapterListUncached(Novel novel) async {
-    final apiChapters = await _getApiChapterList(novel);
-    if (apiChapters.isNotEmpty) return apiChapters;
+    if (_isWenku8Novel(novel)) {
+      return _getWenku8ChapterList(novel);
+    }
+
+    if (_isBqgNovel(novel)) {
+      final apiChapters = await _getApiChapterList(novel);
+      if (apiChapters.isNotEmpty) return apiChapters;
+    }
 
     final chapters = <Chapter>[];
-    for (final baseUrl in await _bqgOriginCandidates(novel.chapterUrl)) {
+    final chapterOrigins = _isBqgNovel(novel)
+        ? await _bqgOriginCandidates(novel.chapterUrl)
+        : <String>[
+            if (_originOf(novel.chapterUrl).isNotEmpty)
+              _originOf(novel.chapterUrl),
+          ];
+    for (final baseUrl in chapterOrigins) {
       try {
         final url = _replaceUrlOrigin(novel.chapterUrl, baseUrl);
         final response = await _get(
@@ -1548,6 +1939,118 @@ class BookSourceService {
       }
     }
     return chapters;
+  }
+
+  Future<List<Chapter>> _getWenku8ChapterList(Novel novel) async {
+    final bookId =
+        _extractWenku8BookId(novel.chapterUrl) ??
+        _extractWenku8BookId(novel.id);
+    if (bookId == null) return const [];
+
+    for (final origin in _wenku8OriginCandidates(novel.chapterUrl)) {
+      try {
+        final pages = <String>[];
+        final firstResponse = await _get(
+          Uri.parse('$origin/wap/article/readbook.php?aid=$bookId'),
+          headers: _headers('$origin/wap/article/articleinfo.php?id=$bookId'),
+        ).timeout(const Duration(seconds: 15));
+        if (firstResponse.statusCode != 200) continue;
+
+        final firstPage = _decodeBody(firstResponse);
+        pages.add(firstPage);
+        final responseOrigin = _originOfResponse(
+          firstResponse,
+          fallback: origin,
+        );
+        final pageCount = _wenku8PageCount(firstPage).clamp(1, 200).toInt();
+        var complete = true;
+        for (var page = 2; page <= pageCount; page++) {
+          final response = await _get(
+            Uri.parse(
+              '$responseOrigin/wap/article/readbook.php?aid=$bookId&page=$page',
+            ),
+            headers: _headers(
+              '$responseOrigin/wap/article/articleinfo.php?id=$bookId',
+            ),
+          ).timeout(const Duration(seconds: 15));
+          if (response.statusCode != 200) {
+            complete = false;
+            break;
+          }
+          pages.add(_decodeBody(response));
+        }
+        if (!complete) continue;
+
+        final chapters = _parseWenku8Catalog(
+          pages.join('\n'),
+          novel,
+          responseOrigin,
+          bookId,
+        );
+        if (chapters.isNotEmpty) return chapters;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
+  }
+
+  List<Chapter> _parseWenku8Catalog(
+    String wml,
+    Novel novel,
+    String origin,
+    String fallbackBookId,
+  ) {
+    final chapters = <Chapter>[];
+    final seen = <String>{};
+    var currentVolume = '';
+    final tokenPattern = RegExp(
+      r'''〖([^〗]+)〗|<a[^>]*href=["'][^"']*readchapter\.php\?([^"']+)["'][^>]*>(.*?)</a>''',
+      dotAll: true,
+      caseSensitive: false,
+    );
+
+    for (final match in tokenPattern.allMatches(wml)) {
+      final volume = _cleanHtmlText(match.group(1) ?? '');
+      if (volume.isNotEmpty) {
+        currentVolume = volume;
+        continue;
+      }
+
+      final query = match.group(2) ?? '';
+      final bookId =
+          RegExp(r'(?:^|&amp;|&)aid=(\d+)').firstMatch(query)?.group(1) ??
+          fallbackBookId;
+      final chapterId = RegExp(
+        r'(?:^|&amp;|&)cid=(\d+)',
+      ).firstMatch(query)?.group(1);
+      final chapterTitle = _cleanHtmlText(match.group(3) ?? '');
+      if (chapterId == null || chapterTitle.isEmpty) continue;
+      if (!seen.add('$bookId|$chapterId')) continue;
+
+      final title = currentVolume.isEmpty
+          ? chapterTitle
+          : '$currentVolume · $chapterTitle';
+      chapters.add(
+        Chapter(
+          id: '${novel.id}_ch$chapterId',
+          novelId: novel.id,
+          title: title,
+          index: chapters.length,
+          url: '$origin/wap/article/readchapter.php?aid=$bookId&cid=$chapterId',
+        ),
+      );
+    }
+    return chapters;
+  }
+
+  int _wenku8PageCount(String wml) {
+    var pageCount = 1;
+    for (final match in RegExp(r'\[(\d+)\s*/\s*(\d+)\]').allMatches(wml)) {
+      final total = int.tryParse(match.group(2) ?? '') ?? 1;
+      if (total > pageCount) pageCount = total;
+    }
+    return pageCount;
   }
 
   List<Chapter> buildProvisionalChapterList(
@@ -1713,6 +2216,11 @@ class BookSourceService {
   }
 
   Future<String> getChapterContent(Chapter chapter, BookSource source) async {
+    if (isWenku8Source(source) ||
+        _isKnownWenku8Host(Uri.tryParse(chapter.url)?.host ?? '')) {
+      return _getWenku8ChapterContent(chapter, source);
+    }
+
     final apiContent = await _getApiChapterContent(chapter);
     if (apiContent.isNotEmpty) return apiContent;
 
@@ -1736,6 +2244,108 @@ class BookSourceService {
       }
     }
     return '';
+  }
+
+  Future<String> _getWenku8ChapterContent(
+    Chapter chapter,
+    BookSource source,
+  ) async {
+    final bookId = _extractWenku8BookId(chapter.url);
+    final chapterId = RegExp(
+      r'[?&]cid=(\d+)',
+    ).firstMatch(chapter.url)?.group(1);
+    if (bookId == null || chapterId == null) return '';
+
+    final origins = <String>{
+      ..._wenku8OriginCandidates(chapter.url),
+      ..._wenku8OriginCandidates(source.baseUrl),
+    };
+    for (final origin in origins) {
+      try {
+        final firstResponse = await _get(
+          Uri.parse(
+            '$origin/wap/article/readchapter.php?aid=$bookId&cid=$chapterId',
+          ),
+          headers: _headers('$origin/wap/article/readbook.php?aid=$bookId'),
+        ).timeout(const Duration(seconds: 15));
+        if (firstResponse.statusCode != 200) continue;
+
+        final firstPage = _decodeBody(firstResponse);
+        final responseOrigin = _originOfResponse(
+          firstResponse,
+          fallback: origin,
+        );
+        final contentPages = <String>[_parseWenku8ContentPage(firstPage)];
+        final pageCount = _wenku8PageCount(firstPage).clamp(1, 200).toInt();
+        var complete = true;
+        for (var page = 2; page <= pageCount; page++) {
+          final response = await _get(
+            Uri.parse(
+              '$responseOrigin/wap/article/readchapter.php?aid=$bookId&cid=$chapterId&page=$page',
+            ),
+            headers: _headers(
+              '$responseOrigin/wap/article/readbook.php?aid=$bookId',
+            ),
+          ).timeout(const Duration(seconds: 15));
+          if (response.statusCode != 200) {
+            complete = false;
+            break;
+          }
+          contentPages.add(_parseWenku8ContentPage(_decodeBody(response)));
+        }
+        if (!complete) continue;
+
+        final content = contentPages
+            .where((page) => page.isNotEmpty)
+            .join('\n\n')
+            .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+            .trim();
+        if (content.isNotEmpty) return content;
+      } catch (_) {
+        continue;
+      }
+    }
+    return '';
+  }
+
+  String _parseWenku8ContentPage(String wml) {
+    final paragraph = RegExp(
+      r'<p[^>]*>(.*?)</p>',
+      dotAll: true,
+      caseSensitive: false,
+    ).firstMatch(wml)?.group(1);
+    if (paragraph == null || paragraph.isEmpty) return '';
+    final paragraphHtml = paragraph;
+
+    final output = <String>[];
+    var passedFirstPager = false;
+    for (var rawLine in paragraphHtml.split(
+      RegExp(r'<br\s*/?>', caseSensitive: false),
+    )) {
+      final plainLine = _cleanHtmlText(rawLine);
+      final isPager = RegExp(r'\[\d+\s*/\s*\d+\]').hasMatch(plainLine);
+      if (isPager) {
+        if (!passedFirstPager) {
+          passedFirstPager = true;
+          continue;
+        }
+        break;
+      }
+      if (!passedFirstPager) continue;
+
+      rawLine = rawLine.replaceAllMapped(
+        RegExp(
+          r'''<img[^>]*src=["']([^"']+)["'][^>]*>''',
+          caseSensitive: false,
+        ),
+        (match) =>
+            '\n[插图] ${_secureWenku8Url(_wenku8PrimaryOrigin, match.group(1)!)}',
+      );
+      final text = html_parser.parseFragment(rawLine).text ?? '';
+      final normalizedText = text.replaceAll('\u00a0', ' ').trim();
+      output.add(normalizedText);
+    }
+    return output.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
   }
 
   Future<String> _getApiChapterContent(Chapter chapter) async {
@@ -1800,7 +2410,12 @@ class BookSourceService {
       if (url.isNotEmpty && !candidates.contains(url)) candidates.add(url);
     }
 
-    for (final baseUrl in await _bqgOriginCandidates(source.baseUrl)) {
+    final baseUrls = _isBqgApiSource(source)
+        ? await _bqgOriginCandidates(source.baseUrl)
+        : <String>[
+            if (_originOf(source.baseUrl).isNotEmpty) _originOf(source.baseUrl),
+          ];
+    for (final baseUrl in baseUrls) {
       add(_normalizeUrl(baseUrl, rawUrl));
       add(_normalizeHashRouteUrl(baseUrl, rawUrl));
 
