@@ -104,6 +104,17 @@ class MangaPagePipeline {
   final double typicalPageRatio;
   final double tallCompositeRatio;
 
+  int segmentCountForAspectRatio(double aspectRatio) {
+    if (!aspectRatio.isFinite || aspectRatio <= 0) return 1;
+    if (aspectRatio >= widePageRatio) {
+      return (aspectRatio / typicalPageRatio).round().clamp(2, 6).toInt();
+    }
+    if (aspectRatio < tallCompositeRatio) {
+      return (typicalPageRatio / aspectRatio).round().clamp(2, 6).toInt();
+    }
+    return 1;
+  }
+
   bool usesDoublePages({
     required MangaSpreadMode spreadMode,
     required double viewportWidth,
@@ -145,10 +156,7 @@ class MangaPagePipeline {
       final automaticWideSplit =
           spreadMode == MangaSpreadMode.double && isWide;
       if (isWide && (explicitWideSplit || automaticWideSplit)) {
-        final segmentCount = (aspectRatio / typicalPageRatio)
-            .round()
-            .clamp(2, 6)
-            .toInt();
+        final segmentCount = segmentCountForAspectRatio(aspectRatio);
         final swapped = swappedSpreadStartIndexes.contains(pageIndex);
         var segments = List<int>.generate(segmentCount, (index) => index);
         if (direction == MangaPageDirection.rtl) {
@@ -175,10 +183,7 @@ class MangaPagePipeline {
       }
 
       if (aspectRatio < tallCompositeRatio) {
-        final segmentCount = (typicalPageRatio / aspectRatio)
-            .round()
-            .clamp(2, 6)
-            .toInt();
+        final segmentCount = segmentCountForAspectRatio(aspectRatio);
         for (var segment = 0; segment < segmentCount; segment++) {
           result.add(
             MangaPageSpread(

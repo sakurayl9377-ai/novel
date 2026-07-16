@@ -16,6 +16,8 @@ class NovelPagedViewController {
 
   int get currentPage => _state?._currentPage ?? 0;
 
+  int? get currentCharPosition => _state?._currentCharPosition;
+
   Future<bool> nextPage() async => await _state?._turnPage(1) ?? false;
 
   Future<bool> previousPage() async => await _state?._turnPage(-1) ?? false;
@@ -82,6 +84,14 @@ class _NovelPagedViewState extends State<NovelPagedView> {
   int _pageEffectDirection = 0;
   bool _pageEffectRunning = false;
   double _curlTouchYFraction = 0.68;
+
+  int? get _currentCharPosition {
+    final pagination = _pagination;
+    if (pagination == null || pagination.pages.isEmpty) return null;
+    return pagination
+        .pages[_currentPage.clamp(0, pagination.pages.length - 1)]
+        .startOffset;
+  }
 
   @override
   void initState() {

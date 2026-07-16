@@ -61,6 +61,7 @@ class TtsProvider extends ChangeNotifier {
   Object? _completionOwner;
   Future<bool> Function()? _onSpeakingComplete;
   bool _handlingServiceComplete = false;
+  String _speechOwnerKey = '';
 
   bool get isSpeaking => _isSpeaking;
   bool get isPaused => _isPaused;
@@ -74,6 +75,8 @@ class TtsProvider extends ChangeNotifier {
   TtsSettings get settings => _settings;
   Future<void> get settingsLoaded => _settingsLoadFuture;
   TtsMediaControlService get mediaControlService => _mediaControlService;
+  bool isOwnedBy(String ownerKey) =>
+      ownerKey.isNotEmpty && _speechOwnerKey == ownerKey;
   bool get hasSleepTimer => _sleepTimerEndsAt != null;
   DateTime? get sleepTimerEndsAt => _sleepTimerEndsAt;
   Duration get sleepTimerRemaining {
@@ -145,10 +148,33 @@ class TtsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> startSpeaking(String text, {int startOffset = 0}) async {
+  Future<List<TtsSystemVoice>> loadSystemVoices() async {
+    await _settingsLoadFuture;
+    final rawVoices = await _ttsService.voices;
+    final voices = <TtsSystemVoice>[];
+    final seen = <String>{};
+    for (final raw in rawVoices) {
+      if (raw is! Map) continue;
+      final name = raw['name']?.toString().trim() ?? '';
+      final locale = raw['locale']?.toString().trim() ?? '';
+      if (name.isEmpty || locale.isEmpty) continue;
+      if (!locale.toLowerCase().startsWith('zh')) continue;
+      if (!seen.add('$name|$locale')) continue;
+      voices.add(TtsSystemVoice(name: name, locale: locale));
+    }
+    voices.sort((a, b) => a.label.compareTo(b.label));
+    return voices;
+  }
+
+  Future<bool> startSpeaking(
+    String text, {
+    int startOffset = 0,
+    String ownerKey = '',
+  }) async {
     await _settingsLoadFuture;
     if (_isStarting) return false;
     _isStarting = true;
+    _speechOwnerKey = ownerKey;
     _textStartOffset = startOffset;
     _currentStartOffset = startOffset;
     _currentEndOffset = startOffset;
@@ -183,6 +209,7 @@ class TtsProvider extends ChangeNotifier {
     _currentEndOffset = -1;
     _currentWord = '';
     _lastErrorMessage = '';
+    _speechOwnerKey = '';
     if (clearSleepTimer) {
       _clearSleepTimer(notify: false);
     }

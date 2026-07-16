@@ -89,6 +89,12 @@ void main() {
     expect(spreads.last.crops.single.top, closeTo(2 / 3, 0.001));
   });
 
+  test('composite segment counts change when real dimensions arrive', () {
+    expect(pipeline.segmentCountForAspectRatio(0.68), 1);
+    expect(pipeline.segmentCountForAspectRatio(0.22), 3);
+    expect(pipeline.segmentCountForAspectRatio(2.04), 3);
+  });
+
   test('wide page can be split into two cropped visual slots', () {
     final spreads = pipeline.build(
       pageCount: 3,

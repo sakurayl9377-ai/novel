@@ -14,6 +14,9 @@ class ContinuousChapterViewController {
     return await _state?._moveByViewport(direction) ?? false;
   }
 
+  ({int chapterIndex, String content, int charPosition})? captureAnchor() =>
+      _state?._captureAnchor();
+
   void _attach(_ContinuousChapterViewState state) => _state = state;
 
   void _detach(_ContinuousChapterViewState state) {
@@ -101,6 +104,23 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   Duration _lastAutoReadElapsed = Duration.zero;
 
   Iterable<int> get _loadedIndexes => _contents.keys;
+
+  ({int chapterIndex, String content, int charPosition})? _captureAnchor() {
+    if (!_scrollController.hasClients) return null;
+    final chapterIndex = _anchoredChapterIndex();
+    if (chapterIndex == null) return null;
+    final content = _contents[chapterIndex];
+    if (content == null || content.isEmpty) return null;
+    final anchor =
+        _scrollController.position.viewportDimension * _readingAnchorFraction;
+    final charPosition =
+        _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ?? 0;
+    return (
+      chapterIndex: chapterIndex,
+      content: content,
+      charPosition: charPosition.clamp(0, content.length).toInt(),
+    );
+  }
 
   @override
   void initState() {

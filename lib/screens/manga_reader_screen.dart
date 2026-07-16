@@ -751,12 +751,18 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     final crossedWideBoundary =
         ((old ?? _defaultPageAspectRatio) < _pagePipeline.widePageRatio) !=
         (aspectRatio < _pagePipeline.widePageRatio);
+    final oldSegmentCount = _pagePipeline.segmentCountForAspectRatio(
+      old ?? _defaultPageAspectRatio,
+    );
+    final newSegmentCount = _pagePipeline.segmentCountForAspectRatio(
+      aspectRatio,
+    );
     _pageAspectRatios[index] = aspectRatio;
     if (_viewportWidth > 0) {
       _updatePageHeight(index, _viewportWidth / aspectRatio);
     }
     if (_preferences.readingMode == MangaReadingMode.paged &&
-        crossedWideBoundary) {
+        (crossedWideBoundary || oldSegmentCount != newSegmentCount)) {
       _pageGeometryVersion.value += 1;
     }
     _aspectRatioSaveTimer?.cancel();
@@ -1836,6 +1842,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
               PopupMenuItem(
                 value: 'download',
                 child: ListTile(
+                  textColor: Colors.white,
+                  iconColor: Colors.white70,
                   leading: Icon(Icons.download_for_offline_outlined),
                   title: Text('下载漫画'),
                   contentPadding: EdgeInsets.zero,
@@ -1844,6 +1852,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
               PopupMenuItem(
                 value: 'comments',
                 child: ListTile(
+                  textColor: Colors.white,
+                  iconColor: Colors.white70,
                   leading: Icon(Icons.chat_bubble_outline),
                   title: Text('章节评论'),
                   contentPadding: EdgeInsets.zero,
@@ -1852,6 +1862,8 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
               PopupMenuItem(
                 value: 'settings',
                 child: ListTile(
+                  textColor: Colors.white,
+                  iconColor: Colors.white70,
                   leading: Icon(Icons.tune_rounded),
                   title: Text('阅读设置'),
                   contentPadding: EdgeInsets.zero,

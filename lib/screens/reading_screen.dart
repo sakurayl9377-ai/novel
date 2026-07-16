@@ -76,6 +76,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   int _continuousReaderSession = 0;
   TtsMediaControlService? _ttsMediaControlService;
   TtsProvider? _ttsProvider;
+  String get _ttsOwnerKey => 'novel:${widget.novel.id}';
   late ReadingProvider _readingProvider;
   late BookshelfProvider _bookshelfProvider;
   Future<void> _progressSaveChain = Future.value();
@@ -183,6 +184,12 @@ class _ReadingScreenState extends State<ReadingScreen>
       _ttsMediaControlsBound = true;
       final ttsProvider = context.read<TtsProvider>();
       _ttsProvider = ttsProvider;
+      if ((ttsProvider.isSpeaking ||
+              ttsProvider.isPaused ||
+              ttsProvider.isStarting) &&
+          !ttsProvider.isOwnedBy(_ttsOwnerKey)) {
+        unawaited(ttsProvider.stopSpeaking());
+      }
       final mediaControlService = ttsProvider.mediaControlService;
       _ttsMediaControlService = mediaControlService;
       mediaControlService.bindControls(
@@ -402,7 +409,8 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   int _currentProgressPosition([TtsProvider? ttsProvider]) {
     final tts = ttsProvider ?? context.read<TtsProvider>();
-    if ((tts.isSpeaking || tts.isPaused || tts.isStarting) &&
+    if (tts.isOwnedBy(_ttsOwnerKey) &&
+        (tts.isSpeaking || tts.isPaused || tts.isStarting) &&
         tts.currentStartOffset >= 0) {
       return tts.currentStartOffset.clamp(0, _content.length).toInt();
     }
@@ -573,6 +581,10 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!mounted) return;
 
     final readingProvider = context.read<ReadingProvider>();
+    final ttsProvider = context.read<TtsProvider>();
+    await ttsProvider.settingsLoaded;
+    if (!mounted) return;
+    final systemVoices = ttsProvider.loadSystemVoices();
     readingProvider.hideSettings();
     var latest = readingProvider.settings.copyWith();
     await showModalBottomSheet<void>(
@@ -582,7 +594,13 @@ class _ReadingScreenState extends State<ReadingScreen>
       builder: (_) {
         return ReadingSettingsPanel(
           settings: latest,
+          ttsSettings: ttsProvider.settings,
+          systemVoices: systemVoices,
+          onTtsSettingsChanged: (settings) {
+            unawaited(ttsProvider.updateSettings(settings));
+          },
           onPreviewChanged: (settings) {
+            _captureAnchorBeforePageModeChange(latest, settings);
             latest = settings;
             readingProvider.previewSettings(settings);
             _syncPagedAutoReadTimer(settings);
@@ -593,6 +611,40 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!mounted) return;
     await readingProvider.saveSettings(latest);
     _syncPagedAutoReadTimer(latest);
+  }
+
+  void _captureAnchorBeforePageModeChange(
+    ReadingSettings previous,
+    ReadingSettings next,
+  ) {
+    if (previous.pageMode == next.pageMode) return;
+    if (previous.pageMode == NovelPageMode.verticalScroll) {
+      final anchor = _continuousViewController.captureAnchor();
+      if (anchor != null) {
+        _currentChapterIndex = anchor.chapterIndex;
+        _content = anchor.content;
+        _lastCharPosition = anchor.charPosition;
+        _restoreCharPosition = anchor.charPosition;
+        _currentPageIndex = _pageIndexForCharPosition(
+          anchor.content,
+          anchor.charPosition,
+        );
+      }
+    } else {
+      final charPosition = _pagedViewController.currentCharPosition;
+      if (charPosition != null) {
+        _lastCharPosition = charPosition.clamp(0, _content.length).toInt();
+        _restoreCharPosition = _lastCharPosition;
+        _currentPageIndex = _pageIndexForCharPosition(
+          _content,
+          _lastCharPosition,
+        );
+      }
+    }
+    _lastScrollPosition = 0;
+    if (next.pageMode == NovelPageMode.verticalScroll) {
+      _continuousReaderSession++;
+    }
   }
 
   Future<void> _toggleAutoReading() async {
@@ -1123,6 +1175,7 @@ class _ReadingScreenState extends State<ReadingScreen>
       final started = await ttsProvider.startSpeaking(
         textToRead,
         startOffset: speechStartOffset,
+        ownerKey: _ttsOwnerKey,
       );
       if (started) {
         await _showTtsMediaControls(playing: true);
@@ -1225,6 +1278,7 @@ class _ReadingScreenState extends State<ReadingScreen>
       final ttsProvider = _ttsProvider;
       final finalCharPosition =
           ttsProvider != null &&
+              ttsProvider.isOwnedBy(_ttsOwnerKey) &&
               (ttsProvider.isSpeaking ||
                   ttsProvider.isPaused ||
                   ttsProvider.isStarting) &&
@@ -1418,10 +1472,11 @@ class _ReadingScreenState extends State<ReadingScreen>
     final settings = readingProvider.settings;
     _syncReaderPlatformSettings(settings);
     final ttsRenderState = context.select<TtsProvider, (bool, int, int)>((tts) {
-      final range = tts.isSpeaking
+      final ownedSpeaking = tts.isOwnedBy(_ttsOwnerKey) && tts.isSpeaking;
+      final range = ownedSpeaking
           ? paragraphRangeForOffset(_content, tts.currentStartOffset)
           : TextRange.empty;
-      return (tts.isSpeaking, range.start, range.end);
+      return (ownedSpeaking, range.start, range.end);
     });
     final ttsProvider = context.read<TtsProvider>();
     final bgColor = _parseColor(settings.backgroundColor);

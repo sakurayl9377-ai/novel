@@ -60,12 +60,18 @@ void main() {
           ChangeNotifierProvider(create: (_) => TtsProvider()),
         ],
         child: MaterialApp(
-          home: ReadingScreen(novel: novel, chapters: chapters),
+          home: ReadingScreen(
+            novel: novel,
+            chapters: chapters,
+            startChapterIndex: 1,
+            startCharPosition: 36,
+          ),
         ),
       ),
     );
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(ContinuousChapterView), findsOneWidget);
+    expect(find.text(chapters[1].title), findsWidgets);
 
     await tester.drag(find.byType(Scrollable).first, const Offset(0, -420));
     await tester.pump(const Duration(milliseconds: 350));
@@ -91,6 +97,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(ContinuousChapterView), findsOneWidget);
+    expect(find.text(chapters[1].title), findsWidgets);
 
     await tester.tapAt(tester.getCenter(find.byType(ReadingScreen)));
     await tester.pump(const Duration(milliseconds: 300));

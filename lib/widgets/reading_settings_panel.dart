@@ -3,16 +3,23 @@ import 'package:flutter/material.dart';
 import '../config/theme.dart';
 import '../features/reader_core/reader_modes.dart';
 import '../models/reading_settings.dart';
+import '../models/tts_settings.dart';
 
 class ReadingSettingsPanel extends StatefulWidget {
   const ReadingSettingsPanel({
     super.key,
     required this.settings,
     required this.onPreviewChanged,
+    this.ttsSettings,
+    this.systemVoices,
+    this.onTtsSettingsChanged,
   });
 
   final ReadingSettings settings;
   final ValueChanged<ReadingSettings> onPreviewChanged;
+  final TtsSettings? ttsSettings;
+  final Future<List<TtsSystemVoice>>? systemVoices;
+  final ValueChanged<TtsSettings>? onTtsSettingsChanged;
 
   @override
   State<ReadingSettingsPanel> createState() => _ReadingSettingsPanelState();
@@ -20,16 +27,23 @@ class ReadingSettingsPanel extends StatefulWidget {
 
 class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
   late ReadingSettings _settings;
+  TtsSettings? _ttsSettings;
 
   @override
   void initState() {
     super.initState();
     _settings = widget.settings.copyWith();
+    _ttsSettings = widget.ttsSettings?.copyWith();
   }
 
   void _update(ReadingSettings next) {
     setState(() => _settings = next);
     widget.onPreviewChanged(next);
+  }
+
+  void _updateTts(TtsSettings next) {
+    setState(() => _ttsSettings = next);
+    widget.onTtsSettingsChanged?.call(next);
   }
 
   Color _parseColor(String hex) {
@@ -149,6 +163,116 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                           })
                           .toList(growable: false),
                     ),
+                    if (_ttsSettings case final ttsSettings?) ...[
+                      const SizedBox(height: 22),
+                      _SectionTitle('朗读引擎', color: secondaryText),
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(
+                            value: TtsSettings.engineSystem,
+                            label: Text('系统 TTS'),
+                            icon: Icon(Icons.volume_up_outlined),
+                          ),
+                          ButtonSegment(
+                            value: TtsSettings.engineIflytek,
+                            label: Text('科大讯飞'),
+                            icon: Icon(Icons.cloud_outlined),
+                          ),
+                        ],
+                        selected: {ttsSettings.engine},
+                        onSelectionChanged: (values) => _updateTts(
+                          ttsSettings.copyWith(engine: values.first),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _SectionTitle('发音人', color: secondaryText),
+                      if (ttsSettings.useIflytek)
+                        RadioGroup<String>(
+                          groupValue: ttsSettings.iflytekVoiceName,
+                          onChanged: (value) {
+                            if (value == null) return;
+                            final voice = iflytekBasicVoices.firstWhere(
+                              (item) => item.name == value,
+                            );
+                            _updateTts(
+                              ttsSettings.copyWith(
+                                iflytekVoiceName: voice.name,
+                                iflytekVoiceLabel: voice.label,
+                              ),
+                            );
+                          },
+                          child: Column(
+                            children: [
+                              for (final voice in iflytekBasicVoices)
+                                RadioListTile<String>(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(voice.label),
+                                  subtitle: Text(voice.language),
+                                  value: voice.name,
+                                ),
+                            ],
+                          ),
+                        )
+                      else
+                        FutureBuilder<List<TtsSystemVoice>>(
+                          future: widget.systemVoices,
+                          builder: (context, snapshot) {
+                            final voices = snapshot.data ?? const [];
+                            if (snapshot.connectionState !=
+                                    ConnectionState.done &&
+                                voices.isEmpty) {
+                              return const LinearProgressIndicator();
+                            }
+                            if (voices.isEmpty) {
+                              return Text(
+                                '当前系统 TTS 未提供可选中文发音人',
+                                style: TextStyle(color: secondaryText),
+                              );
+                            }
+                            final selected = voices.any(
+                              (voice) =>
+                                  voice.name == ttsSettings.systemVoiceName &&
+                                  voice.locale ==
+                                      ttsSettings.systemVoiceLocale,
+                            )
+                                ? '${ttsSettings.systemVoiceName}|${ttsSettings.systemVoiceLocale}'
+                                : null;
+                            return DropdownButtonFormField<String>(
+                              initialValue: selected,
+                              decoration: const InputDecoration(
+                                labelText: '系统发音人',
+                                border: OutlineInputBorder(),
+                              ),
+                              items: [
+                                for (final voice in voices)
+                                  DropdownMenuItem(
+                                    value: '${voice.name}|${voice.locale}',
+                                    child: Text(
+                                      voice.label,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (value) {
+                                if (value == null) return;
+                                final separator = value.lastIndexOf('|');
+                                _updateTts(
+                                  ttsSettings.copyWith(
+                                    systemVoiceName: value.substring(
+                                      0,
+                                      separator,
+                                    ),
+                                    systemVoiceLocale: value.substring(
+                                      separator + 1,
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                    ],
                     const SizedBox(height: 22),
                     _SectionTitle('字号', color: secondaryText),
                     _ValueSlider(

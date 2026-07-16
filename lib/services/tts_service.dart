@@ -188,6 +188,7 @@ class TtsService {
         }
         return _speakIflytekChunk(token);
       }
+      await _applySelectedSystemVoice();
       return _speakSystemChunk(token);
     } catch (e) {
       if (token == _speakToken) {
@@ -745,6 +746,19 @@ class TtsService {
 
   Future<List<dynamic>> get voices async {
     return await _flutterTts.getVoices;
+  }
+
+  Future<void> _applySelectedSystemVoice() async {
+    final name = settings.systemVoiceName.trim();
+    final locale = settings.systemVoiceLocale.trim();
+    if (name.isEmpty) {
+      await _flutterTts.setLanguage(locale.isEmpty ? 'zh-CN' : locale);
+      return;
+    }
+    await _flutterTts.setVoice({
+      'name': name,
+      'locale': locale.isEmpty ? 'zh-CN' : locale,
+    });
   }
 
   Future<void> dispose() async {
