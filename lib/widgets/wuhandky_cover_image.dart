@@ -50,7 +50,14 @@ class _WuhandkyCoverImageState extends State<WuhandkyCoverImage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_activeUrl.isEmpty) return _placeholder(showError: true);
+    if (_activeUrl.isEmpty) {
+      if (!_resolvedFallbackAttempted && widget.resolveFallback != null) {
+        _resolvedFallbackAttempted = true;
+        _scheduleResolvedFallback();
+        return _placeholder(showProgress: true);
+      }
+      return _placeholder(showError: true);
+    }
     return CachedNetworkImage(
       key: ValueKey(_activeUrl),
       imageUrl: _activeUrl,
@@ -81,7 +88,12 @@ class _WuhandkyCoverImageState extends State<WuhandkyCoverImage> {
     if (_resolvingFallback) return;
     _resolvingFallback = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final resolved = await widget.resolveFallback?.call();
+      String? resolved;
+      try {
+        resolved = await widget.resolveFallback?.call();
+      } catch (_) {
+        resolved = null;
+      }
       if (!mounted) return;
       final next = resolved?.trim() ?? '';
       setState(() {

@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../config/theme.dart';
@@ -150,6 +151,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     } catch (_) {
       _preferences = const MangaReaderPreferences();
     }
+    unawaited(_syncPageOrientation(_preferences));
     _scrollController.addListener(_handleScrollChanged);
     _telemetryTrace = AppTelemetryService.instance.openScreen(
       'manga_reader',
@@ -185,6 +187,11 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
 
   @override
   void dispose() {
+    unawaited(
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+      ]),
+    );
     WidgetsBinding.instance.removeObserver(this);
     _chapterLoadGeneration++;
     _evictTrackedPrefetches();
@@ -1573,6 +1580,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
 
   void _applyPreferences(MangaReaderPreferences next) {
     if (!mounted) return;
+    next = next.copyWith(
+      spreadMode: MangaSpreadMode.single,
+      autoRotateSpread: false,
+    );
     final anchor = _currentSourcePageAnchor();
     final modeChanged = next.readingMode != _preferences.readingMode;
     final qualityChanged = next.imageQuality != _preferences.imageQuality;
@@ -1589,6 +1600,7 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
         next.encode(),
       ),
     );
+    unawaited(_syncPageOrientation(next));
     if (qualityChanged) {
       _evictTrackedPrefetches();
       _pageGeometryVersion.value += 1;
@@ -1606,6 +1618,12 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       }
       if (modeChanged || qualityChanged) _prefetchNearCurrentLocation();
     });
+  }
+
+  Future<void> _syncPageOrientation(MangaReaderPreferences preferences) {
+    return SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+    ]);
   }
 
   Future<void> _showReaderSettings() {
@@ -1644,17 +1662,10 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
                     onSelected: (value) =>
                         update(_preferences.copyWith(pageDirection: value)),
                   ),
-                  _buildPreferenceChoices<MangaSpreadMode>(
-                    title: '单双页',
-                    values: MangaSpreadMode.values,
-                    selected: _preferences.spreadMode,
-                    label: (value) => switch (value) {
-                      MangaSpreadMode.auto => '自动',
-                      MangaSpreadMode.single => '单页',
-                      MangaSpreadMode.double => '双页',
-                    },
-                    onSelected: (value) =>
-                        update(_preferences.copyWith(spreadMode: value)),
+                  const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('双页模式暂时关闭'),
+                    subtitle: Text('当前使用按大面积白色区域识别的页漫切分'),
                   ),
                   _buildManualSpreadControls(
                     onChanged: () => setSheetState(() {}),
@@ -2108,22 +2119,25 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
           swappedSpreadStartIndexes: _swappedSpreadStarts,
           safeBreakAfterIndexes: _safePageBreakAfterIndexes,
         );
-        return MangaPagedView(
-          key: ValueKey('manga-paged-${_currentChapter.url}'),
-          spreads: spreads,
-          direction: _preferences.pageDirection,
-          initialPageIndex: _currentPagedPageIndex,
-          pageBuilder: (context, pageIndex, pageWidth) =>
-              _buildPageWidget(pageIndex, pageWidth: pageWidth, paged: true),
-          endBuilder: (_) => _buildChapterEndSurface(paged: true),
-          onPageChanged: (firstPageIndex, lastPageIndex) {
-            _currentPagedPageIndex = firstPageIndex;
-            _currentPagedLastPageIndex = lastPageIndex;
-            _refreshChapterProgress();
-            _prefetchNearCurrentLocation();
-            unawaited(_saveHistory());
-          },
-          onTap: _toggleBars,
+        return ColoredBox(
+          color: Colors.white,
+          child: MangaPagedView(
+            key: ValueKey('manga-paged-${_currentChapter.url}'),
+            spreads: spreads,
+            direction: _preferences.pageDirection,
+            initialPageIndex: _currentPagedPageIndex,
+            pageBuilder: (context, pageIndex, pageWidth) =>
+                _buildPageWidget(pageIndex, pageWidth: pageWidth, paged: true),
+            endBuilder: (_) => _buildChapterEndSurface(paged: true),
+            onPageChanged: (firstPageIndex, lastPageIndex) {
+              _currentPagedPageIndex = firstPageIndex;
+              _currentPagedLastPageIndex = lastPageIndex;
+              _refreshChapterProgress();
+              _prefetchNearCurrentLocation();
+              unawaited(_saveHistory());
+            },
+            onTap: _toggleBars,
+          ),
         );
       },
     );
@@ -2431,7 +2445,7 @@ class _MangaPageImageState extends State<_MangaPageImage> {
         width: double.infinity,
         height: height,
         fit: BoxFit.contain,
-        alignment: widget.fillViewport ? Alignment.center : Alignment.topCenter,
+        alignment: Alignment.topCenter,
         clearMemoryCacheIfFailed: true,
         clearMemoryCacheWhenDispose: true,
         filterQuality: FilterQuality.low,

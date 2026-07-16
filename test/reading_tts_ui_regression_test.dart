@@ -15,4 +15,18 @@ void main() {
     expect(source, contains('_showTtsMediaControls(playing: true)'));
     expect(source, contains('mediaControlService.stop()'));
   });
+
+  test('voice engine settings live in the reading control panel', () {
+    final reader = File('lib/screens/reading_screen.dart').readAsStringSync();
+    final settings = File(
+      'lib/widgets/reading_settings_panel.dart',
+    ).readAsStringSync();
+
+    expect(reader, contains('_buildTtsEngineControls'));
+    expect(reader, contains("Text('朗读引擎'"));
+    expect(reader, contains("label: Text('系统 TTS')"));
+    expect(reader, contains("label: Text('科大讯飞')"));
+    expect(settings, isNot(contains("_SectionTitle('朗读引擎'")));
+    expect(settings, isNot(contains("_SectionTitle('发音人'")));
+  });
 }

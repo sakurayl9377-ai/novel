@@ -214,15 +214,13 @@ class _MangaPagedViewState extends State<MangaPagedView> {
         ],
       ),
     );
-    if (totalHeight > constraints.maxHeight * 1.25) {
-      return SingleChildScrollView(
-        key: const ValueKey('manga-paged-safe-composite-scroll'),
-        physics: const BouncingScrollPhysics(),
+    return Align(
+      alignment: Alignment.topCenter,
+      child: FittedBox(
+        fit: BoxFit.contain,
+        alignment: Alignment.topCenter,
         child: content,
-      );
-    }
-    return Center(
-      child: FittedBox(fit: BoxFit.contain, child: content),
+      ),
     );
   }
 

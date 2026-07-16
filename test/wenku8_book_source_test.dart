@@ -18,10 +18,38 @@ void main() {
   ) async {
     await _initStorage(tester);
     var searchRequests = 0;
+    var homeRequests = 0;
     var catalogRequests = 0;
     var contentRequests = 0;
 
     final client = MockClient((request) async {
+      if (request.url.path == '/wap/') {
+        homeRequests++;
+        return _response(request, '''
+<wml><card title="轻小说文库"><p>
+【今日热榜】<a href="/wap/article/toplist.php?sort=dayvisit">更多..</a><br/>
+<a href="/wap/article/articleinfo.php?id=98765">文学少女</a><br/>
+【最近更新】<a href="/wap/article/toplist.php?sort=lastupdate">更多..</a><br/>
+<a href="/wap/article/articleinfo.php?id=98766">新作品</a><br/>
+</p></card></wml>
+''');
+      }
+      if (request.url.path.endsWith('/wenku8/toplist')) {
+        expect(request.url.queryParameters['sort'], 'lastupdate');
+        expect(request.url.queryParameters['pages'], '3');
+        return _response(request, '''
+{"sort":"lastupdate","pagesFetched":1,"totalPages":2,"items":[
+  {"bookId":"98766","title":"新作品"},
+  {"bookId":"98767","title":"第二本"},
+  {"bookId":"98768","title":"第三本"},
+  {"bookId":"98769","title":"第四本"},
+  {"bookId":"98770","title":"第五本"},
+  {"bookId":"98771","title":"第六本"},
+  {"bookId":"98772","title":"第七本"},
+  {"bookId":"98773","title":"第八本"}
+]}
+''');
+      }
       if (request.url.path == '/wap/article/search.php') {
         searchRequests++;
         expect(request.method, 'POST');
@@ -102,6 +130,23 @@ void main() {
     final service = BookSourceService(httpClient: client);
     await service.addSource(BookSourceService.wenku8Source);
 
+    final home = await tester.runAsync(
+      () => service.fetchHome(
+        forceRefresh: true,
+        sourceId: BookSourceService.wenku8Source.id,
+      ),
+    );
+    expect(home, isNotNull);
+    expect(home!.featured.single.title, '文学少女');
+    expect(home.sections.single.hasMore, isTrue);
+    expect(home.sections.single.category.url, contains('sort=lastupdate'));
+    final moreItems = await tester.runAsync(
+      () => service.fetchCategory(home.sections.single.category),
+    );
+    expect(moreItems, isNotNull);
+    expect(moreItems, hasLength(8));
+    expect(moreItems!.first.title, '新作品');
+
     final results = await tester.runAsync(
       () => service.searchBooks(
         '文学少女',
@@ -119,7 +164,7 @@ void main() {
     );
     expect(detail!.description, '一段轻小说简介。');
     expect(detail.status, '已完成');
-    expect(detail.coverUrl, startsWith('https://img.wenku8.com/'));
+    expect(detail.coverUrl, contains('/novel-covers/wenku8/98765'));
 
     final chapters = await tester.runAsync(
       () => service.getChapterList(detail),
@@ -139,6 +184,7 @@ void main() {
     expect(content, contains('第一页第二段。'));
     expect(content, contains('第二页正文。'));
     expect(searchRequests, 1);
+    expect(homeRequests, 1);
     expect(catalogRequests, 2);
     expect(contentRequests, 2);
   });

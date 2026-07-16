@@ -157,6 +157,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                     title: detail.title,
                     itemKey: detail.detailUrl,
                     year: detail.year,
+                    candidateUrl: detail.coverUrl,
                   ),
                 ),
               ),

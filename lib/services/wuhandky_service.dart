@@ -16,6 +16,8 @@ class WuhandkyService {
     ('综艺', '/zongyi/'),
   ];
   static final Map<String, String> _resolvedCoverCache = <String, String>{};
+  static final Map<String, Future<String?>> _resolvingCoverRequests =
+      <String, Future<String?>>{};
   static const Set<String> _httpImageHosts = {
     'pic.fzmmx.com',
     'pic.danzhoufdc.com',
@@ -110,11 +112,34 @@ class WuhandkyService {
     required String title,
     required String itemKey,
     String year = '',
+    String candidateUrl = '',
   }) async {
-    final normalizedKey = itemKey.trim();
+    final normalizedKey = _stableItemKey(itemKey);
     if (normalizedKey.isEmpty || title.trim().isEmpty) return null;
     final cached = _resolvedCoverCache[normalizedKey];
-    if (cached != null) return cached.isEmpty ? null : cached;
+    if (cached != null && cached.isNotEmpty) return cached;
+    final pending = _resolvingCoverRequests[normalizedKey];
+    if (pending != null) return pending;
+    final request = _resolveCoverUrl(
+      title: title,
+      itemKey: normalizedKey,
+      year: year,
+      candidateUrl: candidateUrl,
+    );
+    _resolvingCoverRequests[normalizedKey] = request;
+    try {
+      return await request;
+    } finally {
+      _resolvingCoverRequests.remove(normalizedKey);
+    }
+  }
+
+  Future<String?> _resolveCoverUrl({
+    required String title,
+    required String itemKey,
+    required String year,
+    required String candidateUrl,
+  }) async {
     try {
       final uri =
           Uri.parse(
@@ -122,9 +147,11 @@ class WuhandkyService {
           ).replace(
             queryParameters: {
               'source': 'wuhandky',
-              'itemKey': normalizedKey,
+              'itemKey': itemKey,
               'title': title.trim(),
               if (year.trim().isNotEmpty) 'year': year.trim(),
+              if (candidateUrl.trim().isNotEmpty)
+                'candidateUrl': candidateUrl.trim(),
             },
           );
       final response = await http
@@ -138,14 +165,21 @@ class WuhandkyService {
       if (parsed == null ||
           !parsed.hasScheme ||
           !{'http', 'https'}.contains(parsed.scheme)) {
-        _resolvedCoverCache[normalizedKey] = '';
         return null;
       }
-      _resolvedCoverCache[normalizedKey] = coverUrl;
+      _resolvedCoverCache[itemKey] = coverUrl;
       return coverUrl;
     } catch (_) {
       return null;
     }
+  }
+
+  String _stableItemKey(String value) {
+    final normalized = value.trim();
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || uri.host.isEmpty) return normalized;
+    final query = uri.hasQuery ? '?${uri.query}' : '';
+    return '${uri.path}$query';
   }
 
   List<WuhandkyVideoItem> parseList(String html, {Uri? baseUri}) {

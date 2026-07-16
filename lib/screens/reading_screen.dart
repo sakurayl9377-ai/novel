@@ -13,6 +13,7 @@ import '../models/chapter.dart';
 import '../models/novel_bookmark.dart';
 import '../models/reading_progress.dart';
 import '../models/reading_settings.dart';
+import '../models/tts_settings.dart';
 import '../providers/bookshelf_provider.dart';
 import '../providers/reading_provider.dart';
 import '../providers/book_source_provider.dart';
@@ -63,6 +64,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   bool _isLoadingContent = false;
   bool _showControls = false;
   bool _showTtsPanel = false;
+  Future<List<TtsSystemVoice>>? _ttsSystemVoices;
   bool _isLeaving = false;
   int _lastCharPosition = 0;
   double _lastScrollPosition = 0;
@@ -581,10 +583,6 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (!mounted) return;
 
     final readingProvider = context.read<ReadingProvider>();
-    final ttsProvider = context.read<TtsProvider>();
-    await ttsProvider.settingsLoaded;
-    if (!mounted) return;
-    final systemVoices = ttsProvider.loadSystemVoices();
     readingProvider.hideSettings();
     var latest = readingProvider.settings.copyWith();
     await showModalBottomSheet<void>(
@@ -594,11 +592,6 @@ class _ReadingScreenState extends State<ReadingScreen>
       builder: (_) {
         return ReadingSettingsPanel(
           settings: latest,
-          ttsSettings: ttsProvider.settings,
-          systemVoices: systemVoices,
-          onTtsSettingsChanged: (settings) {
-            unawaited(ttsProvider.updateSettings(settings));
-          },
           onPreviewChanged: (settings) {
             _captureAnchorBeforePageModeChange(latest, settings);
             latest = settings;
@@ -1641,19 +1634,10 @@ class _ReadingScreenState extends State<ReadingScreen>
               left: 0,
               right: 0,
               bottom: 0,
-              child:
-                  Selector<TtsProvider, (bool, bool, bool, double, bool, int)>(
-                    selector: (_, tts) => (
-                      tts.isSpeaking,
-                      tts.isPaused,
-                      tts.isStarting,
-                      tts.speed,
-                      tts.hasSleepTimer,
-                      tts.hasSleepTimer ? tts.sleepTimerRemaining.inSeconds : 0,
-                    ),
-                    builder: (context, _, _) =>
-                        _buildTtsPanel(context.read<TtsProvider>()),
-                  ),
+              child: Consumer<TtsProvider>(
+                builder: (context, ttsProvider, _) =>
+                    _buildTtsPanel(ttsProvider),
+              ),
             ),
         ],
       ),
@@ -2179,6 +2163,9 @@ class _ReadingScreenState extends State<ReadingScreen>
     return Container(
       key: const ValueKey('novel-tts-panel'),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+      ),
       decoration: BoxDecoration(
         color: isNight ? AppTheme.nightCard : Colors.white,
         borderRadius: const BorderRadius.only(
@@ -2188,120 +2175,247 @@ class _ReadingScreenState extends State<ReadingScreen>
       ),
       child: SafeArea(
         top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.volume_up,
-                  color: isNight ? Colors.white : AppTheme.textPrimary,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '朗读控制',
-                        style: TextStyle(
-                          color: isNight ? Colors.white : AppTheme.textPrimary,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      if (timerText != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Text(
-                            '定时关闭 $timerText',
-                            style: TextStyle(
-                              color: AppTheme.primaryColor,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.volume_up,
+                    color: isNight ? Colors.white : AppTheme.textPrimary,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '朗读控制',
+                          style: TextStyle(
+                            color: isNight
+                                ? Colors.white
+                                : AppTheme.textPrimary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                    ],
+                        if (timerText != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              '定时关闭 $timerText',
+                              style: TextStyle(
+                                color: AppTheme.primaryColor,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
-                TextButton.icon(
-                  key: const ValueKey('novel-tts-panel-close'),
-                  onPressed: () => setState(() => _showTtsPanel = false),
-                  icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
-                  label: const Text('收起'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isNight
-                        ? Colors.white70
-                        : AppTheme.textSecondary,
-                    minimumSize: const Size(64, 44),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  TextButton.icon(
+                    key: const ValueKey('novel-tts-panel-close'),
+                    onPressed: () => setState(() => _showTtsPanel = false),
+                    icon: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 20,
+                    ),
+                    label: const Text('收起'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: isNight
+                          ? Colors.white70
+                          : AppTheme.textSecondary,
+                      minimumSize: const Size(64, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Text(
-                  '语速',
-                  style: TextStyle(
-                    color: isNight ? Colors.white70 : AppTheme.textSecondary,
-                    fontSize: 13,
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Text(
+                    '语速',
+                    style: TextStyle(
+                      color: isNight ? Colors.white70 : AppTheme.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: ttsProvider.speed,
-                    min: 0.1,
-                    max: 1.0,
-                    divisions: 9,
-                    activeColor: AppTheme.primaryColor,
-                    inactiveColor: isNight
-                        ? Colors.white24
-                        : AppTheme.dividerColor,
-                    onChanged: (v) => ttsProvider.setSpeed(v),
+                  Expanded(
+                    child: Slider(
+                      value: ttsProvider.speed,
+                      min: 0.1,
+                      max: 1.0,
+                      divisions: 9,
+                      activeColor: AppTheme.primaryColor,
+                      inactiveColor: isNight
+                          ? Colors.white24
+                          : AppTheme.dividerColor,
+                      onChanged: (v) => ttsProvider.setSpeed(v),
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            _buildSleepTimerControl(ttsProvider, isNight),
-            const SizedBox(height: 10),
-            Divider(
-              height: 1,
-              color: isNight ? Colors.white12 : AppTheme.dividerColor,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _ttsActionButton(
-                  icon: ttsProvider.isPaused ? Icons.play_arrow : Icons.pause,
-                  label: ttsProvider.isPaused ? '继续' : '暂停',
-                  isNight: isNight,
-                  onPressed: () {
-                    if (ttsProvider.isPaused) {
-                      _resumeTtsFromCurrentPosition();
-                    } else {
-                      _pauseTts();
-                    }
-                  },
-                ),
-                const SizedBox(width: 24),
-                _ttsActionButton(
-                  icon: Icons.stop,
-                  label: '结束朗读',
-                  isNight: isNight,
-                  onPressed: _stopTts,
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+              const SizedBox(height: 4),
+              _buildTtsEngineControls(ttsProvider, isNight),
+              const SizedBox(height: 8),
+              _buildSleepTimerControl(ttsProvider, isNight),
+              const SizedBox(height: 10),
+              Divider(
+                height: 1,
+                color: isNight ? Colors.white12 : AppTheme.dividerColor,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _ttsActionButton(
+                    icon: ttsProvider.isPaused ? Icons.play_arrow : Icons.pause,
+                    label: ttsProvider.isPaused ? '继续' : '暂停',
+                    isNight: isNight,
+                    onPressed: () {
+                      if (ttsProvider.isPaused) {
+                        _resumeTtsFromCurrentPosition();
+                      } else {
+                        _pauseTts();
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 24),
+                  _ttsActionButton(
+                    icon: Icons.stop,
+                    label: '结束朗读',
+                    isNight: isNight,
+                    onPressed: _stopTts,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTtsEngineControls(TtsProvider ttsProvider, bool isNight) {
+    final settings = ttsProvider.settings;
+    final secondary = isNight ? Colors.white70 : AppTheme.textSecondary;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('朗读引擎', style: TextStyle(color: secondary, fontSize: 13)),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(
+                value: TtsSettings.engineSystem,
+                label: Text('系统 TTS'),
+                icon: Icon(Icons.volume_up_outlined),
+              ),
+              ButtonSegment(
+                value: TtsSettings.engineIflytek,
+                label: Text('科大讯飞'),
+                icon: Icon(Icons.cloud_outlined),
+              ),
+            ],
+            selected: {settings.engine},
+            onSelectionChanged: (values) => unawaited(
+              ttsProvider.updateSettings(
+                settings.copyWith(engine: values.first),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (settings.useIflytek)
+          DropdownButtonFormField<String>(
+            initialValue: settings.iflytekVoiceName,
+            decoration: const InputDecoration(
+              labelText: '讯飞发音人',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              for (final voice in iflytekBasicVoices)
+                DropdownMenuItem(
+                  value: voice.name,
+                  child: Text('${voice.label} · ${voice.language}'),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              final voice = iflytekBasicVoices.firstWhere(
+                (item) => item.name == value,
+              );
+              unawaited(
+                ttsProvider.updateSettings(
+                  settings.copyWith(
+                    iflytekVoiceName: voice.name,
+                    iflytekVoiceLabel: voice.label,
+                  ),
+                ),
+              );
+            },
+          )
+        else
+          FutureBuilder<List<TtsSystemVoice>>(
+            future: _ttsSystemVoices ??= ttsProvider.loadSystemVoices(),
+            builder: (context, snapshot) {
+              final voices = snapshot.data ?? const <TtsSystemVoice>[];
+              if (snapshot.connectionState != ConnectionState.done &&
+                  voices.isEmpty) {
+                return const LinearProgressIndicator();
+              }
+              if (voices.isEmpty) {
+                return Text(
+                  '当前系统 TTS 未提供可选中文发音人',
+                  style: TextStyle(color: secondary, fontSize: 12),
+                );
+              }
+              final selected =
+                  voices.any(
+                    (voice) =>
+                        voice.name == settings.systemVoiceName &&
+                        voice.locale == settings.systemVoiceLocale,
+                  )
+                  ? '${settings.systemVoiceName}|${settings.systemVoiceLocale}'
+                  : null;
+              return DropdownButtonFormField<String>(
+                initialValue: selected,
+                decoration: const InputDecoration(
+                  labelText: '系统发音人',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: [
+                  for (final voice in voices)
+                    DropdownMenuItem(
+                      value: '${voice.name}|${voice.locale}',
+                      child: Text(voice.label, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  final separator = value.lastIndexOf('|');
+                  unawaited(
+                    ttsProvider.updateSettings(
+                      settings.copyWith(
+                        systemVoiceName: value.substring(0, separator),
+                        systemVoiceLocale: value.substring(separator + 1),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+      ],
     );
   }
 

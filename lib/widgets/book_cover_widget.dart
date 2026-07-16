@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../config/theme.dart';
 import '../../models/novel.dart';
+import '../../services/novel_cover_service.dart';
 
 class BookCoverWidget extends StatelessWidget {
   final Novel novel;
@@ -31,15 +32,25 @@ class BookCoverWidget extends StatelessWidget {
   }
 
   Widget _buildCover() {
-    if (novel.coverUrl.isNotEmpty) {
+    final coverUrl = normalizeNovelCoverUrl(novel.coverUrl);
+    if (coverUrl.isNotEmpty) {
       return Stack(
         fit: StackFit.expand,
         children: [
           Image.network(
-            novel.coverUrl,
+            coverUrl,
             fit: BoxFit.cover,
-            headers: _imageHeaders(novel.coverUrl),
-            errorBuilder: (_, _, _) => _buildPlaceholder(),
+            headers: _imageHeaders(coverUrl),
+            errorBuilder: (_, _, _) {
+              final fallback = wenku8ExternalCoverFallbackUrl(coverUrl);
+              if (fallback == null) return _buildPlaceholder();
+              return Image.network(
+                fallback,
+                fit: BoxFit.cover,
+                headers: _imageHeaders(fallback),
+                errorBuilder: (_, _, _) => _buildPlaceholder(),
+              );
+            },
             loadingBuilder: (_, child, loadingProgress) {
               if (loadingProgress == null) return child;
               return _buildPlaceholder();

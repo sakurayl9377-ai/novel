@@ -15,7 +15,7 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  testWidgets('paged mode automatically renders a double spread at 720dp', (
+  testWidgets('paged mode stays single-page while double mode is disabled', (
     tester,
   ) async {
     final testDirectory = Directory.systemTemp.createTempSync(
@@ -33,7 +33,7 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{
       MangaReaderPreferences.storageKey: const MangaReaderPreferences(
         readingMode: MangaReadingMode.paged,
-        spreadMode: MangaSpreadMode.auto,
+        spreadMode: MangaSpreadMode.double,
       ).encode(),
     });
     await tester.runAsync(() => StorageService().init());
@@ -66,7 +66,7 @@ void main() {
 
     expect(find.byType(PageView), findsOneWidget);
     expect(find.text('page-0'), findsOneWidget);
-    expect(find.text('page-1'), findsOneWidget);
+    expect(find.text('page-1'), findsNothing);
     expect(find.text('page-2'), findsNothing);
     expect(find.byKey(const Key('reader-shell-content-layer')), findsOneWidget);
   });

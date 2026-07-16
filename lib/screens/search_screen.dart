@@ -39,11 +39,13 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _errorMessage;
   String _searchedKeyword = '';
   NovelHomeData _homeData = const NovelHomeData.empty();
+  final Map<String, NovelHomeData> _homeDataBySource = {};
   List<Novel> _results = [];
   List<Novel> _aiNovels = const [];
   bool _searchAllSources = false;
   bool _autoOpenedInitial = false;
   int _searchGeneration = 0;
+  int _homeLoadGeneration = 0;
 
   bool get _showingSearchResults => _searchedKeyword.isNotEmpty;
 
@@ -60,36 +62,59 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _initialize() async {
     await context.read<BookSourceProvider>().loadSources();
     if (!mounted) return;
+    unawaited(_loadAiNovels());
     await _loadHome();
     if (!mounted) return;
     final initial = widget.initialKeyword.trim();
     if (initial.isNotEmpty) await _search(initial);
   }
 
-  Future<void> _loadHome({bool forceRefresh = false}) async {
+  Future<void> _loadAiNovels() async {
+    final novels = await _aiCreationService.fetchNovels().catchError(
+      (_) => <Novel>[],
+    );
+    if (!mounted) return;
+    setState(() => _aiNovels = novels);
+  }
+
+  Future<void> _loadHome({bool forceRefresh = false, String? sourceId}) async {
+    final provider = context.read<BookSourceProvider>();
+    final requestedSourceId = sourceId ?? provider.selectedSourceId;
+    final loadGeneration = ++_homeLoadGeneration;
+    final cached = _homeDataBySource[requestedSourceId];
+    final selectedSourceName = _sourceName(provider, requestedSourceId);
     setState(() {
-      _isLoadingHome = true;
+      _homeData =
+          cached ??
+          NovelHomeData(
+            sourceName: selectedSourceName,
+            featured: const [],
+            sections: const [],
+            categories: const [],
+          );
+      _isLoadingHome = cached == null || forceRefresh;
       _errorMessage = null;
     });
+    if (cached != null && !forceRefresh) return;
 
     try {
-      final aiNovelsFuture = _aiCreationService.fetchNovels().catchError(
-        (_) => <Novel>[],
-      );
-      final sourceId = context.read<BookSourceProvider>().selectedSourceId;
       final data = await _service.fetchHome(
         forceRefresh: forceRefresh,
-        sourceId: sourceId,
+        sourceId: requestedSourceId,
       );
-      final aiNovels = await aiNovelsFuture;
-      if (!mounted) return;
+      if (!mounted ||
+          loadGeneration != _homeLoadGeneration ||
+          context.read<BookSourceProvider>().selectedSourceId !=
+              requestedSourceId) {
+        return;
+      }
+      _homeDataBySource[requestedSourceId] = data;
       setState(() {
         _homeData = data;
-        _aiNovels = aiNovels;
         _isLoadingHome = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || loadGeneration != _homeLoadGeneration) return;
       setState(() {
         _errorMessage = '小说首页加载失败，请稍后重试';
         _isLoadingHome = false;
@@ -101,22 +126,32 @@ class _SearchScreenState extends State<SearchScreen> {
     final query = keyword.trim();
     if (query.isEmpty) return;
     final searchGeneration = ++_searchGeneration;
+    final localResults = _localHomeSearchResults(query);
 
     setState(() {
       _isSearching = true;
       _errorMessage = null;
       _searchedKeyword = query;
-      _results = [];
+      _results = localResults;
     });
 
     try {
       await context.read<BookSourceProvider>().searchBooks(
         query,
         allSources: _searchAllSources,
+        onResults: (results) {
+          if (!mounted || searchGeneration != _searchGeneration) return;
+          setState(() {
+            _results = _mergeSearchResults(localResults, results);
+          });
+        },
       );
       if (!mounted || searchGeneration != _searchGeneration) return;
       setState(() {
-        _results = context.read<BookSourceProvider>().searchResults;
+        _results = _mergeSearchResults(
+          localResults,
+          context.read<BookSourceProvider>().searchResults,
+        );
         _isSearching = false;
       });
       if (widget.autoOpenFirst &&
@@ -139,6 +174,28 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  List<Novel> _localHomeSearchResults(String keyword) {
+    final normalizedKeyword = keyword.toLowerCase();
+    final candidates = <Novel>[
+      ..._homeData.featured,
+      for (final section in _homeData.sections) ...section.items,
+    ];
+    return candidates.where((novel) {
+      return novel.title.toLowerCase().contains(normalizedKeyword) ||
+          novel.author.toLowerCase().contains(normalizedKeyword);
+    }).toList();
+  }
+
+  List<Novel> _mergeSearchResults(List<Novel> first, List<Novel> second) {
+    final merged = <Novel>[];
+    final seen = <String>{};
+    for (final novel in [...first, ...second]) {
+      final key = '${novel.sourceId}|${novel.id}|${novel.title}';
+      if (seen.add(key)) merged.add(novel);
+    }
+    return merged;
+  }
+
   void _clearSearch() {
     _searchGeneration++;
     _searchController.clear();
@@ -158,11 +215,38 @@ class _SearchScreenState extends State<SearchScreen> {
     if (!value.startsWith('source:')) return;
 
     final sourceId = value.substring('source:'.length);
-    await context.read<BookSourceProvider>().selectSource(sourceId);
+    final provider = context.read<BookSourceProvider>();
+    final sourceName = _sourceName(provider, sourceId);
+    _homeLoadGeneration++;
+    setState(() {
+      _searchAllSources = false;
+      _homeData =
+          _homeDataBySource[sourceId] ??
+          NovelHomeData(
+            sourceName: sourceName,
+            featured: const [],
+            sections: const [],
+            categories: const [],
+          );
+      _isLoadingHome = !_homeDataBySource.containsKey(sourceId);
+      _errorMessage = null;
+    });
+    await provider.selectSource(sourceId);
     if (!mounted) return;
-    setState(() => _searchAllSources = false);
-    await _loadHome();
-    if (_showingSearchResults) await _search(_searchedKeyword);
+    final homeLoad = _loadHome(sourceId: sourceId);
+    if (_showingSearchResults) {
+      await _search(_searchedKeyword);
+      unawaited(homeLoad);
+    } else {
+      await homeLoad;
+    }
+  }
+
+  String _sourceName(BookSourceProvider provider, String sourceId) {
+    for (final source in provider.sources) {
+      if (source.id == sourceId) return source.name;
+    }
+    return '';
   }
 
   void _openNovel(Novel novel) {
@@ -192,6 +276,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   void dispose() {
     _searchGeneration++;
+    _homeLoadGeneration++;
     _searchController.dispose();
     super.dispose();
   }
@@ -219,7 +304,9 @@ class _SearchScreenState extends State<SearchScreen> {
               for (final source in enabledSources)
                 CheckedPopupMenuItem<String>(
                   value: 'source:${source.id}',
-                  checked: source.id == sourceProvider.selectedSourceId,
+                  checked:
+                      !_searchAllSources &&
+                      source.id == sourceProvider.selectedSourceId,
                   child: Text(source.name),
                 ),
               if (enabledSources.isNotEmpty) const PopupMenuDivider(),
@@ -327,7 +414,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildSearchBody(bool isNight) {
-    if (_isSearching) {
+    if (_isSearching && _results.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -362,10 +449,17 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    return _NovelList(
+    final results = _NovelList(
       novels: _results,
       onTap: _openNovel,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    );
+    if (!_isSearching) return results;
+    return Column(
+      children: [
+        const LinearProgressIndicator(minHeight: 2),
+        Expanded(child: results),
+      ],
     );
   }
 
@@ -430,8 +524,9 @@ class _SearchScreenState extends State<SearchScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _SectionHeader(
-          title: '笔趣阁推荐',
-          subtitle: _homeData.sourceName.isEmpty ? null : _homeData.sourceName,
+          title: _homeData.sourceName.isEmpty
+              ? '小说推荐'
+              : '${_homeData.sourceName}推荐',
         ),
         SizedBox(
           height: 216,

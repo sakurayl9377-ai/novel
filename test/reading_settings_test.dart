@@ -6,7 +6,7 @@ void main() {
   test('new readers use the calibrated comfortable paper layout', () {
     final settings = ReadingSettings();
 
-    expect(settings.fontSize, 24);
+    expect(settings.fontSize, 23);
     expect(settings.fontFamily, ReadingSettings.wenKaiFont);
     expect(settings.lineHeight, 2.2);
     expect(settings.paragraphSpacing, 0.85);
@@ -33,7 +33,7 @@ void main() {
     final settings = ReadingSettings.fromJson(legacy);
 
     expect(ReadingSettings.needsLayoutPresetMigration(legacy), isTrue);
-    expect(settings.fontSize, 24);
+    expect(settings.fontSize, 23);
     expect(settings.fontFamily, ReadingSettings.wenKaiFont);
     expect(settings.lineHeight, 2.2);
     expect(settings.paragraphSpacing, 0.85);
@@ -65,7 +65,7 @@ void main() {
     expect(settings.backgroundColor, '#F6E7C5');
   });
 
-  test('untouched beta 9 defaults migrate to 24sp WenKai', () {
+  test('untouched beta 9 defaults migrate to 23sp WenKai', () {
     final settings = ReadingSettings.fromJson({
       'schemaVersion': 3,
       'layoutPresetVersion': 2,
@@ -78,7 +78,7 @@ void main() {
       'horizontalPadding': 26.0,
     });
 
-    expect(settings.fontSize, 24);
+    expect(settings.fontSize, 23);
     expect(settings.fontFamily, ReadingSettings.wenKaiFont);
     expect(settings.toJson()['layoutPresetVersion'], 3);
   });

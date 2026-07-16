@@ -220,6 +220,7 @@ class _VideoScreenState extends State<VideoScreen>
                 resolveCover: (item) => _service.resolveCoverUrl(
                   title: item.title,
                   itemKey: item.detailUrl,
+                  candidateUrl: item.coverUrl,
                 ),
               )
             : GridView.builder(
@@ -237,6 +238,7 @@ class _VideoScreenState extends State<VideoScreen>
                   resolveCover: () => _service.resolveCoverUrl(
                     title: _items[index].title,
                     itemKey: _items[index].detailUrl,
+                    candidateUrl: _items[index].coverUrl,
                   ),
                 ),
               ),
@@ -580,6 +582,7 @@ class _VideoCategoryScreenState extends State<_VideoCategoryScreen> {
                       resolveCover: () => widget.service.resolveCoverUrl(
                         title: item.title,
                         itemKey: item.detailUrl,
+                        candidateUrl: item.coverUrl,
                       ),
                     );
                   },

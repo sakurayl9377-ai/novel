@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -49,8 +51,8 @@ class SiteDomainService {
       if (!origins.contains(normalized)) origins.add(normalized);
     }
 
-    add(preferredOrigin);
     add(await currentOrigin(config));
+    add(preferredOrigin);
     add(config.primaryOrigin);
     for (final origin in config.fallbackOrigins) {
       add(origin);
@@ -83,31 +85,84 @@ class SiteDomainService {
       config,
       preferredOrigin: originOf(uri),
     );
-    http.Response? lastResponse;
-    Object? lastError;
+    if (candidates.isEmpty) throw Exception('Request failed: $uri');
 
-    for (final origin in candidates) {
-      final requestUri = replaceOrigin(uri, origin);
-      try {
-        final response = await _getFollowingRedirects(
-          config,
-          requestUri,
-          headers: headers,
-          timeout: timeout,
-        );
-        lastResponse = response;
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-          final finalUri = response.request?.url ?? requestUri;
-          await rememberOrigin(config, finalUri);
-          return response;
-        }
-      } catch (error) {
-        lastError = error;
-      }
+    final preferred = await _attempt(
+      uri,
+      candidates.first,
+      headers: headers,
+      timeout: _boundedTimeout(timeout, const Duration(seconds: 3)),
+    );
+    if (preferred.isSuccess) {
+      await rememberOrigin(
+        config,
+        preferred.response!.request?.url ??
+            replaceOrigin(uri, candidates.first),
+      );
+      return preferred.response!;
     }
 
-    if (lastResponse != null) return lastResponse;
-    throw lastError ?? Exception('Request failed: $uri');
+    final remaining = candidates.skip(1).toList(growable: false);
+    if (remaining.isEmpty) {
+      if (preferred.response != null) return preferred.response!;
+      throw preferred.error ?? Exception('Request failed: $uri');
+    }
+
+    final completer = Completer<http.Response>();
+    http.Response? lastResponse = preferred.response;
+    Object? lastError = preferred.error;
+    var completed = 0;
+    for (final origin in remaining) {
+      _attempt(
+        uri,
+        origin,
+        headers: headers,
+        timeout: _boundedTimeout(timeout, const Duration(seconds: 4)),
+      ).then((attempt) {
+        completed += 1;
+        lastResponse = attempt.response ?? lastResponse;
+        lastError = attempt.error ?? lastError;
+        if (attempt.isSuccess && !completer.isCompleted) {
+          completer.complete(attempt.response!);
+          unawaited(
+            rememberOrigin(
+              config,
+              attempt.response!.request?.url ?? replaceOrigin(uri, origin),
+            ),
+          );
+          return;
+        }
+        if (completed == remaining.length && !completer.isCompleted) {
+          if (lastResponse != null) {
+            completer.complete(lastResponse!);
+          } else {
+            completer.completeError(
+              lastError ?? Exception('Request failed: $uri'),
+            );
+          }
+        }
+      });
+    }
+    return completer.future;
+  }
+
+  Future<_DomainAttempt> _attempt(
+    Uri uri,
+    String origin, {
+    required Map<String, String> headers,
+    required Duration timeout,
+  }) async {
+    final requestUri = replaceOrigin(uri, origin);
+    try {
+      final response = await _getFollowingRedirects(
+        requestUri,
+        headers: headers,
+        timeout: timeout,
+      ).timeout(timeout);
+      return _DomainAttempt(response: response);
+    } catch (error) {
+      return _DomainAttempt(error: error);
+    }
   }
 
   static String originOf(Uri uri) {
@@ -126,7 +181,6 @@ class SiteDomainService {
   }
 
   Future<http.Response> _getFollowingRedirects(
-    SiteDomainConfig config,
     Uri uri, {
     required Map<String, String> headers,
     required Duration timeout,
@@ -147,7 +201,6 @@ class SiteDomainService {
           location.isNotEmpty;
       if (isRedirect) {
         final next = current.resolve(location);
-        await rememberOrigin(config, next);
         current = next;
         continue;
       }
@@ -178,4 +231,20 @@ class SiteDomainService {
     final port = uri.hasPort ? ':${uri.port}' : '';
     return '${uri.scheme}://${uri.host}$port';
   }
+
+  static Duration _boundedTimeout(Duration requested, Duration maximum) {
+    return requested < maximum ? requested : maximum;
+  }
+}
+
+class _DomainAttempt {
+  const _DomainAttempt({this.response, this.error});
+
+  final http.Response? response;
+  final Object? error;
+
+  bool get isSuccess =>
+      response != null &&
+      response!.statusCode >= 200 &&
+      response!.statusCode < 300;
 }

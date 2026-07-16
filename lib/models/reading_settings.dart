@@ -7,7 +7,7 @@ class ReadingSettings {
   static const String systemFont = 'system';
   static const String notoSerifFont = 'NotoSerifSC';
   static const String wenKaiFont = 'LXGWWenKaiScreen';
-  static const double defaultFontSize = 24.0;
+  static const double defaultFontSize = 23.0;
   static const double defaultLineHeight = 2.2;
   static const double defaultParagraphSpacing = 0.85;
   static const double defaultHorizontalPadding = 26.0;
@@ -156,7 +156,8 @@ class ReadingSettings {
         (json['layoutPresetVersion'] as num?)?.toInt() ?? 1;
     final hasCurrentLayoutPreset =
         layoutPresetVersion >= currentLayoutPresetVersion;
-    final migrateUntouchedLegacyLayout = !hasCurrentLayoutPreset &&
+    final migrateUntouchedLegacyLayout =
+        !hasCurrentLayoutPreset &&
         (_matchesUntouchedLegacyLayout(json) ||
             _matchesUntouchedPreviousLayout(json));
     final useCurrentDefaults =

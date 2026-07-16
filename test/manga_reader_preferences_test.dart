@@ -9,6 +9,7 @@ void main() {
       pageDirection: MangaPageDirection.rtl,
       spreadMode: MangaSpreadMode.double,
       imageQuality: MangaImageQuality.high,
+      autoRotateSpread: false,
       nightMode: true,
     );
 
@@ -16,8 +17,9 @@ void main() {
 
     expect(restored.readingMode, MangaReadingMode.paged);
     expect(restored.pageDirection, MangaPageDirection.rtl);
-    expect(restored.spreadMode, MangaSpreadMode.double);
+    expect(restored.spreadMode, MangaSpreadMode.single);
     expect(restored.imageQuality, MangaImageQuality.high);
+    expect(restored.autoRotateSpread, isFalse);
     expect(restored.nightMode, isTrue);
   });
 
@@ -37,11 +39,12 @@ void main() {
 
     expect(legacy.readingMode, MangaReadingMode.paged);
     expect(legacy.pageDirection, MangaPageDirection.rtl);
-    expect(legacy.spreadMode, MangaSpreadMode.double);
+    expect(legacy.spreadMode, MangaSpreadMode.single);
     expect(legacy.imageQuality, MangaImageQuality.high);
     expect(unknown.readingMode, MangaReadingMode.longStrip);
     expect(unknown.pageDirection, MangaPageDirection.ltr);
-    expect(unknown.spreadMode, MangaSpreadMode.auto);
+    expect(unknown.spreadMode, MangaSpreadMode.single);
     expect(unknown.imageQuality, MangaImageQuality.auto);
+    expect(unknown.autoRotateSpread, isFalse);
   });
 }

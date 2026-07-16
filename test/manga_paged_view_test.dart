@@ -103,7 +103,7 @@ void main() {
     expect(find.text('slice-2'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('manga-paged-safe-composite-scroll')),
-      findsOneWidget,
+      findsNothing,
     );
   });
 

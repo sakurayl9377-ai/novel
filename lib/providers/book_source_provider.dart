@@ -23,6 +23,20 @@ class BookSourceProvider extends ChangeNotifier {
        _sourceService = sourceService ?? BookSourceService(),
        _aiCreationService = aiCreationService ?? AiCreationService();
 
+  @visibleForTesting
+  BookSourceProvider.forTesting({
+    required List<BookSource> sources,
+    required String selectedSourceId,
+    required BookSourceService sourceService,
+  }) : _storage = StorageService(),
+       // Public test seam keeps the private field out of the named API.
+       // ignore: prefer_initializing_formals
+       _sourceService = sourceService,
+       _aiCreationService = AiCreationService() {
+    _sources = List<BookSource>.of(sources);
+    _selectedSourceId = selectedSourceId;
+  }
+
   final StorageService _storage;
   final BookSourceService _sourceService;
   final AiCreationService _aiCreationService;
@@ -38,6 +52,7 @@ class BookSourceProvider extends ChangeNotifier {
   final Map<String, DateTime> _chapterLastRefreshAttempt = {};
   final Map<String, Set<String>> _cacheIdentitiesByNovelId = {};
   bool _isSearching = false;
+  int _searchRequestId = 0;
 
   List<BookSource> get sources => _sources;
   List<Novel> get searchResults => _searchResults;
@@ -98,8 +113,8 @@ class BookSourceProvider extends ChangeNotifier {
     );
     if (!selectable || sourceId == _selectedSourceId) return;
     _selectedSourceId = sourceId;
-    await _storage.setString(_selectedSourceKey, sourceId);
     notifyListeners();
+    await _storage.setString(_selectedSourceKey, sourceId);
   }
 
   Future<void> _ensureSelectedSource() async {
@@ -122,27 +137,55 @@ class BookSourceProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> searchBooks(String keyword, {bool allSources = false}) async {
+  Future<void> searchBooks(
+    String keyword, {
+    bool allSources = false,
+    ValueChanged<List<Novel>>? onResults,
+  }) async {
     if (keyword.trim().isEmpty) return;
+    final requestId = ++_searchRequestId;
 
     _isSearching = true;
     _searchResults = [];
     notifyListeners();
 
     try {
-      final results = await _sourceService.searchBooks(
-        keyword,
-        sourceId: allSources ? null : _selectedSourceId,
-      );
-
       final seen = <String>{};
-      for (final novel in results) {
-        final key = '${novel.sourceId}|${novel.title}|${novel.author}';
-        if (seen.add(key)) _searchResults.add(novel);
+      void merge(List<Novel> results) {
+        if (requestId != _searchRequestId) return;
+        for (final novel in results) {
+          final key = '${novel.sourceId}|${novel.title}|${novel.author}';
+          if (seen.add(key)) _searchResults.add(novel);
+        }
+        onResults?.call(List<Novel>.unmodifiable(_searchResults));
+        notifyListeners();
       }
+
+      Future<List<Novel>> searchSource(String sourceId) {
+        if (sourceId.isEmpty) return Future.value(const <Novel>[]);
+        return _sourceService
+            .searchBooks(keyword, sourceId: sourceId)
+            .timeout(const Duration(seconds: 6), onTimeout: () => const []);
+      }
+
+      if (!allSources) {
+        merge(await searchSource(_selectedSourceId));
+        return;
+      }
+
+      final otherSourceIds = _sources
+          .where((source) => source.enabled && source.id != _selectedSourceId)
+          .map((source) => source.id)
+          .toList();
+      await Future.wait(<Future<void>>[
+        searchSource(_selectedSourceId).then(merge),
+        ...otherSourceIds.map((sourceId) => searchSource(sourceId).then(merge)),
+      ]);
     } finally {
-      _isSearching = false;
-      notifyListeners();
+      if (requestId == _searchRequestId) {
+        _isSearching = false;
+        notifyListeners();
+      }
     }
   }
 

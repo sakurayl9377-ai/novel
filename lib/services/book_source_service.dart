@@ -12,6 +12,8 @@ import '../models/book_source.dart';
 import '../models/chapter.dart';
 import '../models/content_progress.dart';
 import '../models/novel.dart';
+import 'interaction_auth_service.dart';
+import 'novel_cover_service.dart';
 import 'site_domain_service.dart';
 import 'storage_service.dart';
 import 'swr_cache.dart';
@@ -254,6 +256,10 @@ class BookSourceService {
   }
 
   Future<List<Novel>> _fetchCategoryUncached(NovelCategory category) async {
+    if (category.sourceId == wenku8Source.id ||
+        category.apiSort.startsWith('wenku8-home:')) {
+      return _fetchWenku8HomeCategory(category);
+    }
     if (category.apiSort.isNotEmpty) {
       return _fetchBqgApiCategory(category);
     }
@@ -310,6 +316,8 @@ class BookSourceService {
 
   NovelHomeData _parseWenku8Home(String wml, BookSource source) {
     final grouped = <String, List<Novel>>{};
+    final categoryUrls = <String, String>{};
+    final categorySorts = <String, String>{};
     var currentSection = '';
 
     for (final rawLine in wml.split(
@@ -326,6 +334,17 @@ class BookSourceService {
       final fragment = html_parser.parseFragment(rawLine);
       for (final anchor in fragment.querySelectorAll('a')) {
         final href = anchor.attributes['href'] ?? '';
+        final categorySort = Uri.tryParse(
+          _normalizeUrl(source.baseUrl, href),
+        )?.queryParameters['sort'];
+        if (currentSection.isNotEmpty &&
+            href.contains('toplist.php') &&
+            categorySort != null &&
+            categorySort.isNotEmpty) {
+          categoryUrls[currentSection] = _normalizeUrl(source.baseUrl, href);
+          categorySorts[currentSection] = categorySort;
+          continue;
+        }
         final bookId = _extractWenku8BookId(href);
         final title = _cleanHtmlText(anchor.text);
         if (bookId == null || !_isNovelTitle(title)) continue;
@@ -342,7 +361,24 @@ class BookSourceService {
     final sections = <NovelHomeSection>[];
     for (final entry in grouped.entries) {
       if (entry.value.isEmpty) continue;
-      sections.add(NovelHomeSection(title: entry.key, items: entry.value));
+      final categorySort = categorySorts[entry.key] ?? '';
+      sections.add(
+        NovelHomeSection(
+          title: entry.key,
+          items: entry.value,
+          category: NovelCategory(
+            title: entry.key,
+            url: categoryUrls[entry.key] ?? '${source.baseUrl}/wap/',
+            icon: 'menu_book',
+            sourceId: source.id,
+            sourceName: source.name,
+            sourceBaseUrl: source.baseUrl,
+            apiSort: categorySort.isEmpty
+                ? 'wenku8-home:${entry.key}'
+                : 'wenku8-toplist:$categorySort',
+          ),
+        ),
+      );
     }
     if (sections.isEmpty) return const NovelHomeData.empty();
 
@@ -352,6 +388,116 @@ class BookSourceService {
       sections: sections.skip(1).toList(),
       categories: const [],
     );
+  }
+
+  Future<List<Novel>> _fetchWenku8HomeCategory(NovelCategory category) async {
+    if (category.apiSort.startsWith('wenku8-toplist:')) {
+      final sort = category.apiSort.substring('wenku8-toplist:'.length);
+      final backendItems = await _fetchWenku8BackendToplist(category, sort);
+      if (backendItems.isNotEmpty) return backendItems;
+    }
+
+    final targetTitle = category.apiSort.startsWith('wenku8-home:')
+        ? category.apiSort.substring('wenku8-home:'.length)
+        : category.title;
+    final source = BookSource(
+      id: category.sourceId,
+      name: category.sourceName,
+      baseUrl: category.sourceBaseUrl,
+    );
+    for (final origin in _wenku8OriginCandidates(source.baseUrl)) {
+      try {
+        final response = await _get(
+          Uri.parse('$origin/wap/'),
+          headers: _headers('$origin/wap/'),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
+        final responseSource = source.copyWith(
+          baseUrl: _originOfResponse(response, fallback: origin),
+        );
+        final items = _parseWenku8HomeCategoryItems(
+          _decodeBody(response),
+          responseSource,
+          targetTitle,
+        );
+        if (items.isNotEmpty) return items;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const [];
+  }
+
+  Future<List<Novel>> _fetchWenku8BackendToplist(
+    NovelCategory category,
+    String sort,
+  ) async {
+    if (!RegExp(r'^[a-z]+$').hasMatch(sort)) return const [];
+    try {
+      final uri = Uri.parse(
+        '${InteractionAuthService.baseUrl}/wenku8/toplist',
+      ).replace(queryParameters: {'sort': sort, 'pages': '3'});
+      final response = await _get(
+        uri,
+        headers: _headers(InteractionAuthService.baseUrl),
+      ).timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return const [];
+      final decoded = jsonDecode(_decodeBody(response));
+      if (decoded is! Map || decoded['items'] is! List) return const [];
+      final source = BookSource(
+        id: category.sourceId,
+        name: category.sourceName,
+        baseUrl: category.sourceBaseUrl,
+      );
+      final seen = <String>{};
+      return (decoded['items'] as List)
+          .whereType<Map>()
+          .map((item) {
+            final bookId = item['bookId']?.toString() ?? '';
+            final title = _cleanHtmlText(item['title']?.toString() ?? '');
+            if (!RegExp(r'^\d+$').hasMatch(bookId) ||
+                !_isNovelTitle(title) ||
+                !seen.add(bookId)) {
+              return null;
+            }
+            return _wenku8Novel(source, bookId: bookId, title: title);
+          })
+          .whereType<Novel>()
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  List<Novel> _parseWenku8HomeCategoryItems(
+    String wml,
+    BookSource source,
+    String targetTitle,
+  ) {
+    final novels = <Novel>[];
+    final seen = <String>{};
+    var currentSection = '';
+    for (final rawLine in wml.split(
+      RegExp(r'<br\s*/?>', caseSensitive: false),
+    )) {
+      final sectionMatch = RegExp(
+        r'【([^】]+)】',
+      ).firstMatch(_cleanHtmlText(rawLine));
+      if (sectionMatch != null) {
+        currentSection = sectionMatch.group(1)!.trim();
+      }
+      if (currentSection != targetTitle) continue;
+      final fragment = html_parser.parseFragment(rawLine);
+      for (final anchor in fragment.querySelectorAll('a')) {
+        final bookId = _extractWenku8BookId(anchor.attributes['href'] ?? '');
+        final title = _cleanHtmlText(anchor.text);
+        if (bookId == null || !_isNovelTitle(title) || !seen.add(bookId)) {
+          continue;
+        }
+        novels.add(_wenku8Novel(source, bookId: bookId, title: title));
+      }
+    }
+    return novels;
   }
 
   Future<Novel> _fetchWenku8BookDetail(Novel novel) async {
@@ -380,12 +526,6 @@ class BookSourceService {
         final status = _firstWenku8Match(body, [
           RegExp(r'状态:\s*([^<]+)<br', dotAll: true, caseSensitive: false),
         ]);
-        final cover = _firstWenku8Match(body, [
-          RegExp(
-            r'''<img[^>]*src=["']([^"']*/image/[^"']+)["']''',
-            caseSensitive: false,
-          ),
-        ]);
         final description = _firstWenku8Match(body, [
           RegExp(
             r'\[作品简介\]\s*<br\s*/?>(.*?)(?:<br\s*/?>\s*<p\s+align=|</p>)',
@@ -397,9 +537,7 @@ class BookSourceService {
         return novel.copyWith(
           title: title.isEmpty ? novel.title : title,
           author: author.isEmpty ? novel.author : author,
-          coverUrl: cover.isEmpty
-              ? _wenku8CoverUrl(bookId)
-              : _secureWenku8Url(responseOrigin, cover),
+          coverUrl: _wenku8CoverUrl(bookId),
           description: description.isEmpty ? novel.description : description,
           chapterUrl: '$responseOrigin/wap/article/readbook.php?aid=$bookId',
           sourceId: novel.sourceId.isEmpty ? wenku8Source.id : novel.sourceId,
@@ -445,8 +583,7 @@ class BookSourceService {
   }
 
   String _wenku8CoverUrl(String bookId) {
-    final numericId = int.tryParse(bookId) ?? 0;
-    return 'https://img.wenku8.com/image/${numericId ~/ 1000}/$bookId/${bookId}s.jpg';
+    return wenku8CoverProxyUrl(bookId);
   }
 
   String _secureWenku8Url(String baseUrl, String rawUrl) {
@@ -476,7 +613,7 @@ class BookSourceService {
         final response = await _get(
           Uri.parse('$baseUrl/api/book?id=$bookId'),
           headers: _headers(baseUrl),
-        ).timeout(const Duration(seconds: 10));
+        ).timeout(const Duration(seconds: 6));
         if (response.statusCode != 200) continue;
         await _rememberBqgResponseOrigin(response);
         final responseOrigin = _originOfResponse(response, fallback: baseUrl);
@@ -538,30 +675,27 @@ class BookSourceService {
   }
 
   Future<NovelHomeData> _fetchBqgApiHome(BookSource source) async {
-    Map<dynamic, dynamic>? decoded;
-    String base = _originOf(source.baseUrl).isEmpty
-        ? _bqgPrimaryOrigin
-        : _originOf(source.baseUrl);
-
-    for (final candidate in await _bqgOriginCandidates(source.baseUrl)) {
-      try {
-        final response = await _get(
-          Uri.parse('$candidate/api/index?sort=index'),
-          headers: _headers(candidate),
-        ).timeout(const Duration(seconds: 15));
-        if (response.statusCode != 200) continue;
-        final data = jsonDecode(_decodeBody(response));
-        if (data is! Map) continue;
-        await _rememberBqgResponseOrigin(response);
-        decoded = data;
-        base = _originOfResponse(response, fallback: candidate);
-        break;
-      } catch (_) {
-        continue;
-      }
+    final candidates = await _bqgOriginCandidates(source.baseUrl);
+    if (candidates.isEmpty) return const NovelHomeData.empty();
+    var winner = await _fetchBqgHomeCandidate(
+      candidates.first,
+      timeout: const Duration(seconds: 3),
+    );
+    if (winner == null && candidates.length > 1) {
+      winner = await _firstSuccessful(
+        candidates
+            .skip(1)
+            .map(
+              (candidate) => _fetchBqgHomeCandidate(
+                candidate,
+                timeout: const Duration(seconds: 4),
+              ),
+            ),
+      );
     }
-
-    if (decoded == null) return const NovelHomeData.empty();
+    if (winner == null) return const NovelHomeData.empty();
+    final decoded = winner.data;
+    final base = winner.baseUrl;
     final normalizedSource = source.copyWith(baseUrl: base);
 
     final sections = <NovelHomeSection>[];
@@ -572,7 +706,7 @@ class BookSourceService {
     );
 
     void addSection(String key, String title) {
-      final items = _parseBqgApiNovels(decoded![key], normalizedSource);
+      final items = _parseBqgApiNovels(decoded[key], normalizedSource);
       if (items.isEmpty) return;
       sections.add(
         NovelHomeSection(
@@ -599,6 +733,48 @@ class BookSourceService {
       sections: sections,
       categories: _bqgCategories(normalizedSource),
     );
+  }
+
+  Future<({Map<dynamic, dynamic> data, String baseUrl})?>
+  _fetchBqgHomeCandidate(String candidate, {required Duration timeout}) async {
+    try {
+      final response = await _get(
+        Uri.parse('$candidate/api/index?sort=index'),
+        headers: _headers(candidate),
+      ).timeout(timeout);
+      if (response.statusCode != 200) return null;
+      final data = jsonDecode(_decodeBody(response));
+      if (data is! Map) return null;
+      await _rememberBqgResponseOrigin(response);
+      return (
+        data: data,
+        baseUrl: _originOfResponse(response, fallback: candidate),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<T?> _firstSuccessful<T>(Iterable<Future<T?>> attempts) {
+    final futures = attempts.toList();
+    if (futures.isEmpty) return Future<T?>.value();
+    final completer = Completer<T?>();
+    var remaining = futures.length;
+
+    void finishAttempt(T? value) {
+      if (completer.isCompleted) return;
+      if (value != null) {
+        completer.complete(value);
+        return;
+      }
+      remaining--;
+      if (remaining == 0) completer.complete(null);
+    }
+
+    for (final future in futures) {
+      future.then(finishAttempt, onError: (_) => finishAttempt(null));
+    }
+    return completer.future;
   }
 
   NovelCategory _bqgCategoryForSection(BookSource source, String title) {
@@ -1560,12 +1736,8 @@ class BookSourceService {
           ];
     for (final base in bases) {
       add('$base/api/search?q=$encoded');
-      add(
-        source
-            .copyWith(baseUrl: base, searchUrl: '$base/api/search?q={keyword}')
-            .searchUrl
-            .replaceAll('{keyword}', encoded),
-      );
+      add(source.searchUrl.replaceAll('{keyword}', encoded));
+      if (_isBqgApiSource(source)) continue;
       add('$base/search?q=$encoded');
       add('$base/search?keyword=$encoded');
       add('$base/search.html?q=$encoded');
@@ -1574,7 +1746,7 @@ class BookSourceService {
       add('$base/modules/article/search.php?searchkey=$encoded');
       add('$base/s.php?ie=utf-8&s=$encoded');
     }
-    return urls;
+    return urls.take(12).toList();
   }
 
   List<Novel> _parseSearchResults(

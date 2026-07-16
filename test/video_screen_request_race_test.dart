@@ -91,6 +91,7 @@ class _ControlledVideoService extends WuhandkyService {
     required String title,
     required String itemKey,
     String year = '',
+    String candidateUrl = '',
   }) async {
     return null;
   }

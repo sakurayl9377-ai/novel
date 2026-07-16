@@ -57,13 +57,14 @@ void main() {
     expect(pipeline.spreadIndexForPage(spreads, 4), 2);
   });
 
-  test('three-page horizontal composites become complete virtual pages', () {
+  test('wide pages are only segmented after an explicit split request', () {
     final spreads = pipeline.build(
       pageCount: 1,
       viewportWidth: 900,
       spreadMode: MangaSpreadMode.double,
       direction: MangaPageDirection.ltr,
       aspectRatioAt: (_) => 2.04,
+      splitWidePageIndexes: const {0},
     );
 
     expect(spreads.map((spread) => spread.pageIndexes).toList(), [
@@ -89,27 +90,25 @@ void main() {
     expect(spreads.single.aspectRatioAt(0), 0.22);
   });
 
-  test(
-    'consecutive horizontal slices assemble into vertical logical pages',
-    () {
-      final spreads = pipeline.build(
-        pageCount: 5,
-        viewportWidth: 400,
-        viewportHeight: 800,
-        spreadMode: MangaSpreadMode.single,
-        direction: MangaPageDirection.ltr,
-        aspectRatioAt: (index) => index < 4 ? 1.25 : 0.68,
-        safeBreakAfterIndexes: const {2},
-      );
+  test('consecutive horizontal slices assemble at white-safe breaks', () {
+    final spreads = pipeline.build(
+      pageCount: 5,
+      viewportWidth: 400,
+      viewportHeight: 800,
+      spreadMode: MangaSpreadMode.single,
+      direction: MangaPageDirection.ltr,
+      aspectRatioAt: (index) => index < 4 ? 1.25 : 0.68,
+      safeBreakAfterIndexes: const {2},
+    );
 
-      expect(spreads, hasLength(3));
-      expect(spreads[0].pageIndexes, [0, 1, 2]);
-      expect(spreads[0].isVerticalComposite, isTrue);
-      expect(spreads[1].pageIndexes, [3]);
-      expect(spreads[1].isVerticalComposite, isTrue);
-      expect(spreads[2].pageIndexes, [4]);
-    },
-  );
+    expect(spreads, hasLength(3));
+    expect(spreads.map((spread) => spread.pageIndexes).toList(), [
+      [0, 1, 2],
+      [3],
+      [4],
+    ]);
+    expect(spreads[0].isVerticalComposite, isTrue);
+  });
 
   test('composite segment counts change when real dimensions arrive', () {
     expect(pipeline.segmentCountForAspectRatio(0.68), 1);
@@ -128,7 +127,9 @@ void main() {
     );
 
     expect(spreads, hasLength(1));
-    expect(spreads.single.pageIndexes, [0, 1, 2, 3]);
+    expect(spreads.map((spread) => spread.pageIndexes).toList(), [
+      [0, 1, 2, 3],
+    ]);
     expect(spreads.single.isVerticalComposite, isTrue);
   });
 

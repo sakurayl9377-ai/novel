@@ -6,8 +6,9 @@ class MangaReaderPreferences {
   const MangaReaderPreferences({
     this.readingMode = MangaReadingMode.longStrip,
     this.pageDirection = MangaPageDirection.ltr,
-    this.spreadMode = MangaSpreadMode.auto,
+    this.spreadMode = MangaSpreadMode.single,
     this.imageQuality = MangaImageQuality.auto,
+    this.autoRotateSpread = false,
     this.nightMode = false,
   });
 
@@ -17,6 +18,7 @@ class MangaReaderPreferences {
   final MangaPageDirection pageDirection;
   final MangaSpreadMode spreadMode;
   final MangaImageQuality imageQuality;
+  final bool autoRotateSpread;
   final bool nightMode;
 
   MangaReaderPreferences copyWith({
@@ -24,6 +26,7 @@ class MangaReaderPreferences {
     MangaPageDirection? pageDirection,
     MangaSpreadMode? spreadMode,
     MangaImageQuality? imageQuality,
+    bool? autoRotateSpread,
     bool? nightMode,
   }) {
     return MangaReaderPreferences(
@@ -31,6 +34,7 @@ class MangaReaderPreferences {
       pageDirection: pageDirection ?? this.pageDirection,
       spreadMode: spreadMode ?? this.spreadMode,
       imageQuality: imageQuality ?? this.imageQuality,
+      autoRotateSpread: autoRotateSpread ?? this.autoRotateSpread,
       nightMode: nightMode ?? this.nightMode,
     );
   }
@@ -41,6 +45,7 @@ class MangaReaderPreferences {
       'pageDirection': pageDirection.code,
       'spreadMode': spreadMode.code,
       'imageQuality': imageQuality.code,
+      'autoRotateSpread': autoRotateSpread,
       'nightMode': nightMode,
     };
   }
@@ -68,12 +73,11 @@ class MangaReaderPreferences {
       pageDirection: MangaPageDirection.fromStorage(
         json['pageDirection'] ?? json['direction'],
       ),
-      spreadMode: MangaSpreadMode.fromStorage(
-        json['spreadMode'] ?? json['spread'],
-      ),
+      spreadMode: MangaSpreadMode.single,
       imageQuality: MangaImageQuality.fromStorage(
         json['imageQuality'] ?? json['quality'],
       ),
+      autoRotateSpread: false,
       nightMode: json['nightMode'] == true || json['night'] == true,
     );
   }
