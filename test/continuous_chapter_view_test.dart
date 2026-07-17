@@ -207,6 +207,23 @@ void main() {
         visibleAnchor?.charPosition,
         greaterThan(previousContent.length * 0.7),
       );
+
+      positions.clear();
+      for (var attempt = 0; attempt < 8; attempt++) {
+        await tester.drag(find.byType(Scrollable), const Offset(0, -360));
+        await tester.pumpAndSettle();
+        if (positions.any((position) => position.$1 == 1)) break;
+      }
+      final currentChapterPositions = positions
+          .where((position) => position.$1 == 1)
+          .toList();
+      expect(currentChapterPositions, isNotEmpty);
+      expect(
+        currentChapterPositions.last.$2,
+        lessThan(
+          List<String>.filled(400, 'current chapter').join(' ').length * 0.3,
+        ),
+      );
     },
   );
 
