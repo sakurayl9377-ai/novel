@@ -20,8 +20,13 @@ import 'reading_screen.dart';
 
 class BookDetailScreen extends StatefulWidget {
   final Novel novel;
+  final ReadingProgress? initialProgress;
 
-  const BookDetailScreen({super.key, required this.novel});
+  const BookDetailScreen({
+    super.key,
+    required this.novel,
+    this.initialProgress,
+  });
 
   @override
   State<BookDetailScreen> createState() => _BookDetailScreenState();
@@ -44,6 +49,7 @@ class _BookDetailScreenState extends State<BookDetailScreen>
   void initState() {
     super.initState();
     _novel = widget.novel;
+    _readingProgress = widget.initialProgress;
     _tabController = TabController(length: 2, vsync: this);
     _loadChapters();
   }
@@ -60,7 +66,7 @@ class _BookDetailScreenState extends State<BookDetailScreen>
           : sourceProvider.getBookDetail(_novel);
       final detailedNovel = await detailFuture;
       final chaptersFuture = sourceProvider.getChapterList(detailedNovel);
-      final savedProgress = await progressFuture;
+      final savedProgress = await progressFuture ?? widget.initialProgress;
       final chapters = await chaptersFuture;
       if (!mounted) return;
       final updatedNovel = detailedNovel.copyWith(

@@ -336,7 +336,10 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
       onTap: () {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => BookDetailScreen(novel: novel)),
+          MaterialPageRoute(
+            builder: (_) =>
+                BookDetailScreen(novel: novel, initialProgress: progress),
+          ),
         );
       },
       child: Column(
