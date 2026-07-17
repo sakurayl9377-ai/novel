@@ -78,6 +78,7 @@ class AppUpdateService {
 
   static const String updateJsonUrl =
       'https://novel.kxhub.xyz/app3/version.json';
+  static const String directApkHost = '49.232.137.85';
   static const bool isReaderBetaBuild = bool.fromEnvironment('READER_BETA');
   static const Duration _responseIdleTimeout = Duration(seconds: 30);
   static const Duration _progressNotificationInterval = Duration(
@@ -844,9 +845,11 @@ class AppUpdateService {
   Uri? _trustedApkUri(String value) {
     final uri = Uri.tryParse(value);
     final metadataUri = Uri.parse(updateJsonUrl);
+    final trustedHosts = {metadataUri.host.toLowerCase(), directApkHost};
     if (uri == null ||
         uri.scheme != 'https' ||
-        uri.host.toLowerCase() != metadataUri.host.toLowerCase() ||
+        !trustedHosts.contains(uri.host.toLowerCase()) ||
+        !uri.path.startsWith('/app3/') ||
         !uri.path.toLowerCase().endsWith('.apk')) {
       return null;
     }

@@ -747,6 +747,29 @@ void main() {
     );
   });
 
+  test('accepts the dedicated direct APK host', () async {
+    final service = AppUpdateService(
+      httpClient: MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'versionName': '2.0.0',
+            'versionCode': 2,
+            'apkUrl':
+                'https://${AppUpdateService.directApkHost}/app3/app-release-2.0.0+2.apk',
+            'sha256': List.filled(64, '0').join(),
+          }),
+          200,
+          request: request,
+        );
+      }),
+    );
+
+    final result = await service.checkForUpdate();
+
+    expect(result.hasUpdate, isTrue);
+    expect(result.update?.apkUrl, contains(AppUpdateService.directApkHost));
+  });
+
   test('rejects update metadata without a full SHA-256 digest', () async {
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
