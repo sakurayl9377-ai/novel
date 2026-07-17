@@ -445,16 +445,19 @@ class _ReadingScreenState extends State<ReadingScreen>
         anchor.chapterIndex >= 0 &&
         anchor.chapterIndex < _chapters.length &&
         anchor.content.isNotEmpty) {
+      final capturedPosition = anchor.chapterIndex == _currentChapterIndex
+          ? anchor.charPosition.clamp(_lastCharPosition, anchor.content.length)
+          : anchor.charPosition.clamp(0, anchor.content.length);
       _currentChapterIndex = anchor.chapterIndex;
       _content = anchor.content;
-      _restoreCharPosition = anchor.charPosition;
-      _lastCharPosition = anchor.charPosition;
+      _restoreCharPosition = capturedPosition;
+      _lastCharPosition = capturedPosition;
       _lastScrollPosition = 0;
       _currentPageIndex = _pageIndexForCharPosition(
         anchor.content,
-        anchor.charPosition,
+        capturedPosition,
       );
-      return anchor.charPosition;
+      return capturedPosition;
     }
     return _currentProgressPosition(tts);
   }

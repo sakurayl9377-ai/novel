@@ -7,6 +7,17 @@ import 'package:flutter/scheduler.dart';
 
 import '../models/chapter.dart';
 
+int estimateTextOffsetFromSection({
+  required int contentLength,
+  required double sectionTop,
+  required double sectionHeight,
+  required double viewportAnchor,
+}) {
+  if (contentLength <= 0 || sectionHeight <= 0) return 0;
+  final ratio = ((viewportAnchor - sectionTop) / sectionHeight).clamp(0.0, 1.0);
+  return (contentLength * ratio).round().clamp(0, contentLength).toInt();
+}
+
 class ContinuousChapterViewController {
   _ContinuousChapterViewState? _state;
 
@@ -113,8 +124,18 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     if (content == null || content.isEmpty) return null;
     final anchor =
         _scrollController.position.viewportDimension * _readingAnchorFraction;
+    final top = _sectionTopFor(chapterIndex);
+    final height = _sectionHeightFor(chapterIndex);
     final charPosition =
-        _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ?? 0;
+        _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ??
+        (top != null && height != null
+            ? estimateTextOffsetFromSection(
+                contentLength: content.length,
+                sectionTop: top,
+                sectionHeight: height,
+                viewportAnchor: anchor,
+              )
+            : (_lastReportedCharPosition ?? 0));
     return (
       chapterIndex: chapterIndex,
       content: content,
@@ -678,10 +699,14 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     final anchor =
         _scrollController.position.viewportDimension * _readingAnchorFraction;
-    final ratio = ((anchor - top) / height).clamp(0.0, 1.0);
     final charPosition =
         _textOffsetAtViewportAnchor(chapterIndex, content, anchor) ??
-        (content.length * ratio).round();
+        estimateTextOffsetFromSection(
+          contentLength: content.length,
+          sectionTop: top,
+          sectionHeight: height,
+          viewportAnchor: anchor,
+        );
     final changed =
         chapterIndex != _lastReportedChapterIndex ||
         charPosition != _lastReportedCharPosition;
