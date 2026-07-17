@@ -99,7 +99,20 @@ class _NovelHistoryScreenState extends State<NovelHistoryScreen> {
     );
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => BookDetailScreen(novel: novel)),
+      MaterialPageRoute(
+        builder: (_) => BookDetailScreen(
+          novel: novel,
+          initialProgress: ReadingProgress(
+            novelId: history.novelId,
+            chapterIndex: history.chapterIndex,
+            chapterTitle: history.chapterTitle,
+            chapterUrl: history.chapterUrl,
+            charPosition: history.charPosition,
+            scrollPosition: history.scrollPosition,
+            lastReadAt: history.lastReadAt,
+          ),
+        ),
+      ),
     );
     if (mounted) await _refresh();
   }

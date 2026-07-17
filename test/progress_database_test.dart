@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/content_progress.dart';
 import 'package:novel_app/models/novel.dart';
+import 'package:novel_app/models/reading_progress.dart';
 import 'package:novel_app/services/legacy_progress_migrator.dart';
 import 'package:novel_app/services/progress_database.dart';
 import 'package:novel_app/services/progress_sync_service.dart';
@@ -15,6 +16,31 @@ void main() {
   sqfliteFfiInit();
 
   group('ContentIdentity', () {
+    test('all entry points keep the furthest intra-chapter position', () {
+      final saved = ReadingProgress(
+        novelId: 'builtin_bqg995_bqg_5678',
+        chapterIndex: 10,
+        charPosition: 500,
+      );
+      final staleHome = ReadingProgress(
+        novelId: 'builtin_bqg995_bqg_5678',
+        chapterIndex: 10,
+        charPosition: 0,
+      );
+      final staleHistory = ReadingProgress(
+        novelId: 'old_bqg_source_bqg_5678',
+        chapterIndex: 10,
+        charPosition: 120,
+      );
+
+      final merged = furthestReadingProgress(
+        furthestReadingProgress(saved, staleHome),
+        staleHistory,
+      );
+      expect(merged?.chapterIndex, 10);
+      expect(merged?.charPosition, 500);
+    });
+
     test(
       'uses stable source and item identities instead of temporary URLs',
       () {

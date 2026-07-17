@@ -66,7 +66,11 @@ class _BookDetailScreenState extends State<BookDetailScreen>
           : sourceProvider.getBookDetail(_novel);
       final detailedNovel = await detailFuture;
       final chaptersFuture = sourceProvider.getChapterList(detailedNovel);
-      final savedProgress = await progressFuture ?? widget.initialProgress;
+      final storedProgress = await progressFuture;
+      final savedProgress = furthestReadingProgress(
+        storedProgress,
+        widget.initialProgress,
+      );
       final chapters = await chaptersFuture;
       if (!mounted) return;
       final updatedNovel = detailedNovel.copyWith(
