@@ -61,18 +61,12 @@ class ReadingProgress {
       );
 }
 
-ReadingProgress? furthestReadingProgress(
+ReadingProgress? latestReadingProgress(
   ReadingProgress? first,
   ReadingProgress? second,
 ) {
   if (first == null) return second;
   if (second == null) return first;
-  if (first.chapterIndex != second.chapterIndex) {
-    return first.chapterIndex > second.chapterIndex ? first : second;
-  }
-  if (first.charPosition != second.charPosition) {
-    return first.charPosition > second.charPosition ? first : second;
-  }
   return first.lastReadAt.isAfter(second.lastReadAt) ? first : second;
 }
 

@@ -49,7 +49,7 @@ class _BookDetailScreenState extends State<BookDetailScreen>
   void initState() {
     super.initState();
     _novel = widget.novel;
-    _readingProgress = furthestReadingProgress(
+    _readingProgress = latestReadingProgress(
       widget.initialProgress,
       context.read<BookshelfProvider>().progressForNovel(_novel),
     );
@@ -70,7 +70,7 @@ class _BookDetailScreenState extends State<BookDetailScreen>
       final detailedNovel = await detailFuture;
       final chaptersFuture = sourceProvider.getChapterList(detailedNovel);
       final storedProgress = await progressFuture;
-      final savedProgress = furthestReadingProgress(
+      final savedProgress = latestReadingProgress(
         storedProgress,
         _readingProgress,
       );

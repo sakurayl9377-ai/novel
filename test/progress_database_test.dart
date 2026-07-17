@@ -16,29 +16,24 @@ void main() {
   sqfliteFfiInit();
 
   group('ContentIdentity', () {
-    test('all entry points keep the furthest intra-chapter position', () {
-      final saved = ReadingProgress(
-        novelId: 'builtin_bqg995_bqg_5678',
-        chapterIndex: 10,
+    test('latest reading position can move back to an earlier chapter', () {
+      final laterChapter = ReadingProgress(
+        novelId: 'book',
+        chapterIndex: 20,
         charPosition: 500,
+        lastReadAt: DateTime(2026, 7, 17, 10),
       );
-      final staleHome = ReadingProgress(
-        novelId: 'builtin_bqg995_bqg_5678',
-        chapterIndex: 10,
-        charPosition: 0,
-      );
-      final staleHistory = ReadingProgress(
-        novelId: 'old_bqg_source_bqg_5678',
-        chapterIndex: 10,
-        charPosition: 120,
+      final latestPosition = ReadingProgress(
+        novelId: 'book',
+        chapterIndex: 19,
+        charPosition: 900,
+        lastReadAt: DateTime(2026, 7, 17, 11),
       );
 
-      final merged = furthestReadingProgress(
-        furthestReadingProgress(saved, staleHome),
-        staleHistory,
+      expect(
+        latestReadingProgress(laterChapter, latestPosition),
+        same(latestPosition),
       );
-      expect(merged?.chapterIndex, 10);
-      expect(merged?.charPosition, 500);
     });
 
     test(

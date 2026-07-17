@@ -464,7 +464,7 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _saveVisibleProgressNow([TtsProvider? ttsProvider]) {
     return _saveProgressNow(
-      charPosition: _captureVisibleProgressPosition(ttsProvider),
+      charPosition: _currentProgressPosition(ttsProvider),
     );
   }
 
@@ -878,6 +878,8 @@ class _ReadingScreenState extends State<ReadingScreen>
 
     final safePosition = charPosition.clamp(0, content.length).toInt();
     final chapterChanged = chapterIndex != _currentChapterIndex;
+    final chapterDelta = (chapterIndex - _currentChapterIndex).abs();
+    if (chapterChanged && (!settled || chapterDelta > 1)) return;
     // While a finger is moving, rebuilding the entire reader for every
     // position change only introduces jank. Keep the
     // position current in memory, then rebuild once when the gesture settles

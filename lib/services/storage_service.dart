@@ -430,18 +430,6 @@ class StorageService {
       }
       if (candidates.isNotEmpty) {
         final winner = candidates.reduce((best, candidate) {
-          final bestProgress = best.progress;
-          final candidateProgress = candidate.progress;
-          if (candidateProgress.chapterIndex != bestProgress.chapterIndex) {
-            return candidateProgress.chapterIndex > bestProgress.chapterIndex
-                ? candidate
-                : best;
-          }
-          if (candidateProgress.charPosition != bestProgress.charPosition) {
-            return candidateProgress.charPosition > bestProgress.charPosition
-                ? candidate
-                : best;
-          }
           return candidate.row.clientUpdatedAtMs > best.row.clientUpdatedAtMs
               ? candidate
               : best;
@@ -505,27 +493,7 @@ class StorageService {
     required Map<String, dynamic> metadata,
   }) async {
     await init();
-    var effectiveProgress = Map<String, dynamic>.of(progress);
-    if (ContentIdentity.canonicalOnlineNovelToken(identity) != null) {
-      final previousJson = await _getNovelProgress(identity);
-      if (previousJson != null) {
-        try {
-          final previous = ReadingProgress.fromJson(previousJson);
-          final incoming = ReadingProgress.fromJson(progress);
-          final previousIsAhead =
-              previous.chapterIndex > incoming.chapterIndex ||
-              (previous.chapterIndex == incoming.chapterIndex &&
-                  previous.charPosition > incoming.charPosition);
-          if (previousIsAhead) {
-            effectiveProgress = previous
-                .copyWith(lastReadAt: incoming.lastReadAt)
-                .toJson();
-          }
-        } catch (_) {
-          // Keep the new valid payload when an older row is malformed.
-        }
-      }
-    }
+    final effectiveProgress = Map<String, dynamic>.of(progress);
     final updatedAtMs =
         DateTime.tryParse(
           effectiveProgress['lastReadAt']?.toString() ?? '',
