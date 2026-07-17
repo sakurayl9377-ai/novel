@@ -553,6 +553,74 @@ void main() {
     expect(requestedRanges, containsAllInOrder(['bytes=0-19', 'bytes=10-19']));
   });
 
+  test('restarts a persistently slow range from saved bytes', () async {
+    final testDir = Directory.systemTemp.createTempSync(
+      'app_update_slow_range_',
+    );
+    addTearDown(() {
+      if (testDir.existsSync()) testDir.deleteSync(recursive: true);
+    });
+    final apkBytes = List<int>.generate(80, (index) => index % 251);
+    final sha256 = crypto.sha256.convert(apkBytes).toString();
+    final update = AppUpdateInfo(
+      versionName: '15.1.0',
+      versionCode: 151,
+      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-15.1.0+151.apk',
+      sha256: sha256,
+      notes: const [],
+    );
+    final requestedRanges = <String>[];
+    var servedSlowRange = false;
+    final service = AppUpdateService(
+      temporaryDirectoryProvider: () async => testDir,
+      parallelDownloadThresholdBytes: 1,
+      minimumParallelPartBytes: 1,
+      slowRangeWindow: const Duration(milliseconds: 10),
+      minimumHealthyRangeBytesPerSecond: 1000,
+      minimumSlowRangeRemainingBytes: 1,
+      httpClient: MockClient.streaming((request, _) async {
+        final range = request.headers['Range']!;
+        if (range == 'bytes=0-0') {
+          return _streamedRangeResponse(apkBytes, request);
+        }
+        requestedRanges.add(range);
+        if (range == 'bytes=0-19' && !servedSlowRange) {
+          servedSlowRange = true;
+          final stream = () async* {
+            for (var index = 0; index <= 19; index++) {
+              await Future<void>.delayed(const Duration(milliseconds: 6));
+              yield [apkBytes[index]];
+            }
+          }();
+          return http.StreamedResponse(
+            stream,
+            206,
+            contentLength: 20,
+            headers: {
+              'content-length': '20',
+              'content-range': 'bytes 0-19/${apkBytes.length}',
+            },
+            request: request,
+          );
+        }
+        return _streamedRangeResponse(apkBytes, request);
+      }),
+    );
+
+    final apk = await service.downloadApk(update);
+
+    expect(await apk.readAsBytes(), apkBytes);
+    expect(requestedRanges.first, 'bytes=0-19');
+    expect(
+      requestedRanges.skip(1),
+      contains(
+        predicate<String>(
+          (range) => RegExp(r'^bytes=[1-9]\d*-19$').hasMatch(range),
+        ),
+      ),
+    );
+  });
+
   test('rejects a wrong range total and resumes safe parts later', () async {
     final testDir = Directory.systemTemp.createTempSync(
       'app_update_bad_range_',
@@ -745,29 +813,6 @@ void main() {
         ),
       ),
     );
-  });
-
-  test('accepts the dedicated direct APK host', () async {
-    final service = AppUpdateService(
-      httpClient: MockClient((request) async {
-        return http.Response(
-          jsonEncode({
-            'versionName': '2.0.0',
-            'versionCode': 2,
-            'apkUrl':
-                'https://${AppUpdateService.directApkHost}/app3/app-release-2.0.0+2.apk',
-            'sha256': List.filled(64, '0').join(),
-          }),
-          200,
-          request: request,
-        );
-      }),
-    );
-
-    final result = await service.checkForUpdate();
-
-    expect(result.hasUpdate, isTrue);
-    expect(result.update?.apkUrl, contains(AppUpdateService.directApkHost));
   });
 
   test('rejects update metadata without a full SHA-256 digest', () async {

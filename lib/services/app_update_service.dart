@@ -62,6 +62,9 @@ class AppUpdateService {
     int minimumParallelPartBytes = 8 * 1024 * 1024,
     Duration requestHeaderTimeout = const Duration(seconds: 20),
     Duration requestAbortSettleTimeout = const Duration(seconds: 2),
+    Duration slowRangeWindow = const Duration(seconds: 10),
+    int minimumHealthyRangeBytesPerSecond = 160 * 1024,
+    int minimumSlowRangeRemainingBytes = 2 * 1024 * 1024,
   }) : _updatesEnabled = updatesEnabled ?? !isReaderBetaBuild,
        _temporaryDirectoryProvider =
            temporaryDirectoryProvider ?? getTemporaryDirectory,
@@ -70,15 +73,20 @@ class AppUpdateService {
        _minimumParallelPartBytes = minimumParallelPartBytes,
        _requestHeaderTimeout = requestHeaderTimeout,
        _requestAbortSettleTimeout = requestAbortSettleTimeout,
+       _slowRangeWindow = slowRangeWindow,
+       _minimumHealthyRangeBytesPerSecond = minimumHealthyRangeBytesPerSecond,
+       _minimumSlowRangeRemainingBytes = minimumSlowRangeRemainingBytes,
        assert(parallelDownloadParts >= 2),
        assert(parallelDownloadThresholdBytes > 0),
        assert(minimumParallelPartBytes > 0),
        assert(requestHeaderTimeout > Duration.zero),
-       assert(requestAbortSettleTimeout > Duration.zero);
+       assert(requestAbortSettleTimeout > Duration.zero),
+       assert(slowRangeWindow > Duration.zero),
+       assert(minimumHealthyRangeBytesPerSecond > 0),
+       assert(minimumSlowRangeRemainingBytes >= 0);
 
   static const String updateJsonUrl =
       'https://novel.kxhub.xyz/app3/version.json';
-  static const String directApkHost = '49.232.137.85';
   static const bool isReaderBetaBuild = bool.fromEnvironment('READER_BETA');
   static const Duration _responseIdleTimeout = Duration(seconds: 30);
   static const Duration _progressNotificationInterval = Duration(
@@ -86,7 +94,7 @@ class AppUpdateService {
   );
   static const int _maxUpdateMetadataBytes = 64 * 1024;
   static const int _maxApkBytes = 256 * 1024 * 1024;
-  static const int _parallelRequestAttempts = 2;
+  static const int _parallelRequestAttempts = 3;
   static const MethodChannel _channel = MethodChannel(
     'com.novel.novel_app/app_update',
   );
@@ -101,6 +109,9 @@ class AppUpdateService {
   final int _minimumParallelPartBytes;
   final Duration _requestHeaderTimeout;
   final Duration _requestAbortSettleTimeout;
+  final Duration _slowRangeWindow;
+  final int _minimumHealthyRangeBytesPerSecond;
+  final int _minimumSlowRangeRemainingBytes;
 
   Future<AppUpdateCheckResult> checkForUpdate() async {
     final packageInfo = await PackageInfo.fromPlatform();
@@ -426,6 +437,7 @@ class AppUpdateService {
           totalBytes: totalBytes,
           progress: progress,
           cancellation: cancellation,
+          restartIfSlow: attempt + 1 < _parallelRequestAttempts,
         );
         return;
       } catch (error, stackTrace) {
@@ -438,7 +450,8 @@ class AppUpdateService {
             error is TimeoutException ||
             error is SocketException ||
             error is http.ClientException ||
-            error is _IncompleteRangeResponse;
+            error is _IncompleteRangeResponse ||
+            error is _SlowRangeResponse;
         if (!retryable || attempt + 1 >= _parallelRequestAttempts) {
           Error.throwWithStackTrace(error, stackTrace);
         }
@@ -455,6 +468,7 @@ class AppUpdateService {
     required int totalBytes,
     required _ParallelDownloadProgress progress,
     required _DownloadCancellation cancellation,
+    required bool restartIfSlow,
   }) async {
     var existingBytes = await partFile.exists() ? await partFile.length() : 0;
     if (existingBytes > range.length) {
@@ -499,6 +513,8 @@ class AppUpdateService {
       mode: existingBytes > 0 ? FileMode.append : FileMode.write,
     );
     var bodyBytes = 0;
+    var speedWindowBytes = 0;
+    final speedWindow = Stopwatch()..start();
     try {
       await for (final chunk in response.stream.timeout(_responseIdleTimeout)) {
         if (cancellation.isCancelled) {
@@ -509,7 +525,23 @@ class AppUpdateService {
         }
         sink.add(chunk);
         bodyBytes += chunk.length;
+        speedWindowBytes += chunk.length;
         progress.addPartBytes(partIndex, chunk.length);
+        if (restartIfSlow && speedWindow.elapsed >= _slowRangeWindow) {
+          final remainingBytes = expectedBodyBytes - bodyBytes;
+          final bytesPerSecond =
+              speedWindowBytes *
+              Duration.microsecondsPerSecond /
+              speedWindow.elapsedMicroseconds;
+          if (remainingBytes >= _minimumSlowRangeRemainingBytes &&
+              bytesPerSecond < _minimumHealthyRangeBytesPerSecond) {
+            throw const _SlowRangeResponse();
+          }
+          speedWindow
+            ..reset()
+            ..start();
+          speedWindowBytes = 0;
+        }
       }
     } finally {
       await sink.close();
@@ -845,10 +877,9 @@ class AppUpdateService {
   Uri? _trustedApkUri(String value) {
     final uri = Uri.tryParse(value);
     final metadataUri = Uri.parse(updateJsonUrl);
-    final trustedHosts = {metadataUri.host.toLowerCase(), directApkHost};
     if (uri == null ||
         uri.scheme != 'https' ||
-        !trustedHosts.contains(uri.host.toLowerCase()) ||
+        uri.host.toLowerCase() != metadataUri.host.toLowerCase() ||
         !uri.path.startsWith('/app3/') ||
         !uri.path.toLowerCase().endsWith('.apk')) {
       return null;
@@ -1022,6 +1053,10 @@ class _ParallelRangeUnsupported implements Exception {
 
 class _IncompleteRangeResponse implements Exception {
   const _IncompleteRangeResponse();
+}
+
+class _SlowRangeResponse implements Exception {
+  const _SlowRangeResponse();
 }
 
 class _RequestAbortDidNotSettle implements Exception {

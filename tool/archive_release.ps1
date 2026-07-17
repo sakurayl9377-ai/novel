@@ -26,17 +26,17 @@ try {
 
     $expectedApkPath = "/app3/app-release-$VersionName+$VersionCode.apk"
     if (-not $ApkUrl) {
-        $ApkUrl = "https://49.232.137.85$expectedApkPath"
+        $ApkUrl = "https://novel.kxhub.xyz$expectedApkPath"
     }
 
     $apkUri = $null
     if (-not [Uri]::TryCreate($ApkUrl, [UriKind]::Absolute, [ref]$apkUri) -or
         $apkUri.Scheme -ne "https" -or
-        $apkUri.Host -notin @("novel.kxhub.xyz", "49.232.137.85") -or
+        $apkUri.Host -ne "novel.kxhub.xyz" -or
         $apkUri.AbsolutePath -ne $expectedApkPath -or
         $apkUri.Query -or
         $apkUri.Fragment) {
-        throw "ApkUrl must use the versioned HTTPS path $expectedApkPath on an approved download host."
+        throw "ApkUrl must be the versioned HTTPS URL https://novel.kxhub.xyz$expectedApkPath."
     }
 
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
