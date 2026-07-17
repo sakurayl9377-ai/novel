@@ -36,6 +36,46 @@ void main() {
         );
 
         expect(first.contentKey, second.contentKey);
+        final wenku8Home = ContentIdentity.novel(
+          Novel(
+            id: 'builtin_wenku8_wenku8_1234',
+            title: 'Wenku8 home',
+            sourceId: 'builtin_wenku8',
+            chapterUrl:
+                'https://www.wenku8.cc/wap/article/articleinfo.php?id=1234',
+          ),
+        );
+        final wenku8Shelf = ContentIdentity.novel(
+          Novel(
+            id: 'old_source_wenku8_1234',
+            title: 'Wenku8 shelf',
+            sourceId: 'old_source',
+            chapterUrl:
+                'https://www.wenku8.net/wap/article/readbook.php?aid=1234',
+          ),
+        );
+        expect(wenku8Home.contentKey, wenku8Shelf.contentKey);
+        expect(wenku8Home.sourceKey, ContentIdentity.wenku8NovelSourceKey);
+        expect(wenku8Home.itemId, 'wenku8:1234');
+        final bqgHome = ContentIdentity.novel(
+          Novel(
+            id: 'builtin_bqg995_bqg_5678',
+            title: 'BQG home',
+            sourceId: 'builtin_bqg995',
+            chapterUrl: 'https://example.com/#/book/5678/',
+          ),
+        );
+        final bqgShelf = ContentIdentity.novel(
+          Novel(
+            id: 'old_bqg_source_bqg_5678',
+            title: 'BQG shelf',
+            sourceId: 'old_bqg_source',
+            chapterUrl: 'https://fallback.example/book/5678/',
+          ),
+        );
+        expect(bqgHome.contentKey, bqgShelf.contentKey);
+        expect(bqgHome.sourceKey, ContentIdentity.bqgNovelSourceKey);
+        expect(bqgHome.itemId, 'bqg:5678');
         expect(ContentIdentity.manga('m-1').sourceKey, 'manga_baozi');
         expect(ContentIdentity.anime(8).sourceKey, 'anime_yinhua');
         expect(ContentIdentity.normalizeSubItemId('  第  01 集  '), '第 01 集');

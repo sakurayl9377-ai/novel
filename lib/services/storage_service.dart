@@ -345,32 +345,54 @@ class StorageService {
       ContentType.novel,
       ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
     );
-    return rows
-        .map((row) {
-          try {
-            final payload = ReadingProgress.fromJson(row.payload);
-            final title = row.metadata['title']?.toString() ?? '';
-            if (payload.novelId.isEmpty || title.isEmpty) return null;
-            return NovelReadingHistory(
-              novelId: payload.novelId,
-              title: title,
-              author: row.metadata['author']?.toString() ?? '',
-              coverUrl: row.metadata['coverUrl']?.toString() ?? '',
-              sourceId: row.metadata['sourceId']?.toString() ?? '',
-              sourceName: row.metadata['sourceName']?.toString() ?? '',
-              chapterIndex: payload.chapterIndex,
-              chapterTitle: payload.chapterTitle,
-              chapterUrl: payload.chapterUrl,
-              charPosition: payload.charPosition,
-              scrollPosition: payload.scrollPosition,
-              lastReadAt: payload.lastReadAt,
-            );
-          } catch (_) {
-            return null;
-          }
-        })
-        .whereType<NovelReadingHistory>()
-        .toList(growable: false);
+    final historiesByContentKey = <String, NovelReadingHistory>{};
+    for (final row in rows) {
+      try {
+        final payload = ReadingProgress.fromJson(row.payload);
+        final title = row.metadata['title']?.toString() ?? '';
+        if (payload.novelId.isEmpty || title.isEmpty) continue;
+        final sourceId = row.metadata['sourceId']?.toString() ?? '';
+        final canonicalKey = ContentIdentity.novel(
+          Novel(
+            id: payload.novelId,
+            title: title,
+            sourceId: sourceId,
+            chapterUrl: payload.chapterUrl,
+          ),
+        ).contentKey;
+        final candidate = NovelReadingHistory(
+          novelId: payload.novelId,
+          title: title,
+          author: row.metadata['author']?.toString() ?? '',
+          coverUrl: row.metadata['coverUrl']?.toString() ?? '',
+          sourceId: sourceId,
+          sourceName: row.metadata['sourceName']?.toString() ?? '',
+          chapterIndex: payload.chapterIndex,
+          chapterTitle: payload.chapterTitle,
+          chapterUrl: payload.chapterUrl,
+          charPosition: payload.charPosition,
+          scrollPosition: payload.scrollPosition,
+          lastReadAt: payload.lastReadAt,
+        );
+        final existing = historiesByContentKey[canonicalKey];
+        final candidateIsAhead =
+            existing == null ||
+            candidate.chapterIndex > existing.chapterIndex ||
+            (candidate.chapterIndex == existing.chapterIndex &&
+                candidate.charPosition > existing.charPosition) ||
+            (candidate.chapterIndex == existing.chapterIndex &&
+                candidate.charPosition == existing.charPosition &&
+                candidate.lastReadAt.isAfter(existing.lastReadAt));
+        if (candidateIsAhead) {
+          historiesByContentKey[canonicalKey] = candidate;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    final histories = historiesByContentKey.values.toList(growable: false);
+    histories.sort((a, b) => b.lastReadAt.compareTo(a.lastReadAt));
+    return histories;
   }
 
   Future<Map<String, dynamic>?> _getNovelProgress(
@@ -379,12 +401,74 @@ class StorageService {
     await init();
     final owner = ProgressSyncService.instance.activeOwnerUserId;
     final exact = await appProgressDatabase.get(identity, ownerUserId: owner);
+    final canonicalToken = ContentIdentity.canonicalOnlineNovelToken(identity);
+    if (canonicalToken != null) {
+      final rows = await appProgressDatabase.list(
+        ContentType.novel,
+        ownerUserId: owner,
+      );
+      final candidates =
+          <({ContentProgressRecord row, ReadingProgress progress})>[];
+      for (final row in rows) {
+        var matches = row.contentKey == identity.contentKey;
+        final payloadNovelId = row.payload['novelId']?.toString() ?? '';
+        matches =
+            matches ||
+            ContentIdentity.canonicalOnlineNovelTokenFromLegacyId(
+                  payloadNovelId,
+                ) ==
+                canonicalToken;
+        if (!matches) continue;
+        try {
+          candidates.add((
+            row: row,
+            progress: ReadingProgress.fromJson(row.payload),
+          ));
+        } catch (_) {
+          continue;
+        }
+      }
+      if (candidates.isNotEmpty) {
+        final winner = candidates.reduce((best, candidate) {
+          final bestProgress = best.progress;
+          final candidateProgress = candidate.progress;
+          if (candidateProgress.chapterIndex != bestProgress.chapterIndex) {
+            return candidateProgress.chapterIndex > bestProgress.chapterIndex
+                ? candidate
+                : best;
+          }
+          if (candidateProgress.charPosition != bestProgress.charPosition) {
+            return candidateProgress.charPosition > bestProgress.charPosition
+                ? candidate
+                : best;
+          }
+          return candidate.row.clientUpdatedAtMs > best.row.clientUpdatedAtMs
+              ? candidate
+              : best;
+        });
+        if (exact?.contentKey != winner.row.contentKey ||
+            exact?.payload.toString() != winner.row.payload.toString()) {
+          await appProgressDatabase.saveLocal(
+            ownerUserId: owner,
+            identity: identity,
+            subItemId: winner.row.subItemId,
+            payload: winner.row.payload,
+            metadata: winner.row.metadata,
+            deviceId: await ProgressSyncService.instance.getDeviceId(),
+            clientUpdatedAtMs: winner.row.clientUpdatedAtMs,
+          );
+          ProgressSyncService.instance.notifyLocalMutation();
+        }
+        return winner.row.payload;
+      }
+    }
     if (exact != null) return exact.payload;
     final fallback = await appProgressDatabase.promoteLegacyNovel(
       identity,
       ownerUserId: owner,
     );
-    return fallback?.payload;
+    if (fallback != null) return fallback.payload;
+    return null;
   }
 
   Future<void> saveReadingProgress(
@@ -421,16 +505,37 @@ class StorageService {
     required Map<String, dynamic> metadata,
   }) async {
     await init();
+    var effectiveProgress = Map<String, dynamic>.of(progress);
+    if (ContentIdentity.canonicalOnlineNovelToken(identity) != null) {
+      final previousJson = await _getNovelProgress(identity);
+      if (previousJson != null) {
+        try {
+          final previous = ReadingProgress.fromJson(previousJson);
+          final incoming = ReadingProgress.fromJson(progress);
+          final previousIsAhead =
+              previous.chapterIndex > incoming.chapterIndex ||
+              (previous.chapterIndex == incoming.chapterIndex &&
+                  previous.charPosition > incoming.charPosition);
+          if (previousIsAhead) {
+            effectiveProgress = previous
+                .copyWith(lastReadAt: incoming.lastReadAt)
+                .toJson();
+          }
+        } catch (_) {
+          // Keep the new valid payload when an older row is malformed.
+        }
+      }
+    }
     final updatedAtMs =
         DateTime.tryParse(
-          progress['lastReadAt']?.toString() ?? '',
+          effectiveProgress['lastReadAt']?.toString() ?? '',
         )?.millisecondsSinceEpoch ??
         DateTime.now().millisecondsSinceEpoch;
     await appProgressDatabase.saveLocal(
       ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
       identity: identity,
-      subItemId: 'chapter:${_asInt(progress['chapterIndex'])}',
-      payload: progress,
+      subItemId: 'chapter:${_asInt(effectiveProgress['chapterIndex'])}',
+      payload: effectiveProgress,
       metadata: metadata,
       deviceId: await ProgressSyncService.instance.getDeviceId(),
       clientUpdatedAtMs: updatedAtMs,

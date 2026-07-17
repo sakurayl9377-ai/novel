@@ -33,6 +33,8 @@ class ContentIdentity {
   static const String animeSourceKey = 'anime_yinhua';
   static const String legacyNovelSourceKey = 'legacy';
   static const String localNovelSourceKey = 'local';
+  static const String wenku8NovelSourceKey = 'builtin_wenku8';
+  static const String bqgNovelSourceKey = 'builtin_bqg995';
 
   final ContentType contentType;
   final String sourceKey;
@@ -41,16 +43,84 @@ class ContentIdentity {
 
   factory ContentIdentity.novel(Novel novel) {
     final isLocal = novel.isLocal;
+    final wenku8BookId = isLocal ? null : extractWenku8BookId(novel);
+    final bqgBookId = isLocal || wenku8BookId != null
+        ? null
+        : extractBqgBookId(novel);
     return ContentIdentity(
       contentType: ContentType.novel,
       sourceKey: isLocal
           ? localNovelSourceKey
+          : wenku8BookId != null
+          ? wenku8NovelSourceKey
+          : bqgBookId != null
+          ? bqgNovelSourceKey
           : normalizeSourceKey(novel.sourceId).isEmpty
           ? legacyNovelSourceKey
           : normalizeSourceKey(novel.sourceId),
-      itemId: normalizeItemId(novel.id),
+      itemId: wenku8BookId != null
+          ? 'wenku8:$wenku8BookId'
+          : bqgBookId != null
+          ? 'bqg:$bqgBookId'
+          : normalizeItemId(novel.id),
       syncEligible: !isLocal,
     );
+  }
+
+  static String? extractWenku8BookId(Novel novel) {
+    final idMatch = RegExp(r'_wenku8_(\d+)$').firstMatch(novel.id);
+    if (idMatch != null) return idMatch.group(1);
+
+    final sourceKey = normalizeSourceKey(novel.sourceId);
+    final looksLikeWenku8 =
+        sourceKey == wenku8NovelSourceKey ||
+        novel.chapterUrl.toLowerCase().contains('wenku8.');
+    if (!looksLikeWenku8) return null;
+    return RegExp(
+      r'(?:[?&](?:aid|id)=)(\d+)',
+    ).firstMatch(novel.chapterUrl)?.group(1);
+  }
+
+  static String? wenku8BookIdFromIdentity(ContentIdentity identity) {
+    if (identity.contentType != ContentType.novel ||
+        identity.sourceKey != wenku8NovelSourceKey) {
+      return null;
+    }
+    return RegExp(r'^wenku8:(\d+)$').firstMatch(identity.itemId)?.group(1);
+  }
+
+  static String? extractBqgBookId(Novel novel) {
+    final idMatch = RegExp(r'_bqg_(\d+)$').firstMatch(novel.id);
+    if (idMatch != null) return idMatch.group(1);
+
+    final sourceKey = normalizeSourceKey(novel.sourceId);
+    final looksLikeBqg =
+        sourceKey == bqgNovelSourceKey ||
+        novel.chapterUrl.contains('/#/book/') ||
+        novel.chapterUrl.contains('/book/');
+    if (!looksLikeBqg) return null;
+    return RegExp(r'/#?/book/(\d+)').firstMatch(novel.chapterUrl)?.group(1) ??
+        RegExp(r'[?&]id=(\d+)').firstMatch(novel.chapterUrl)?.group(1);
+  }
+
+  static String? canonicalOnlineNovelToken(ContentIdentity identity) {
+    if (identity.contentType != ContentType.novel) return null;
+    if (identity.sourceKey == wenku8NovelSourceKey &&
+        RegExp(r'^wenku8:\d+$').hasMatch(identity.itemId)) {
+      return identity.itemId;
+    }
+    if (identity.sourceKey == bqgNovelSourceKey &&
+        RegExp(r'^bqg:\d+$').hasMatch(identity.itemId)) {
+      return identity.itemId;
+    }
+    return null;
+  }
+
+  static String? canonicalOnlineNovelTokenFromLegacyId(String novelId) {
+    final wenku8 = RegExp(r'_wenku8_(\d+)$').firstMatch(novelId)?.group(1);
+    if (wenku8 != null) return 'wenku8:$wenku8';
+    final bqg = RegExp(r'_bqg_(\d+)$').firstMatch(novelId)?.group(1);
+    return bqg == null ? null : 'bqg:$bqg';
   }
 
   factory ContentIdentity.legacyNovel(String novelId) => ContentIdentity(
