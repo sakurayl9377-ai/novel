@@ -250,9 +250,13 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _openNovel(Novel novel) {
+    final progress = context.read<BookshelfProvider>().progressForNovel(novel);
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => BookDetailScreen(novel: novel)),
+      MaterialPageRoute(
+        builder: (_) =>
+            BookDetailScreen(novel: novel, initialProgress: progress),
+      ),
     );
   }
 
@@ -653,9 +657,13 @@ class _NovelCategoryScreenState extends State<NovelCategoryScreen> {
   }
 
   void _openNovel(Novel novel) {
+    final progress = context.read<BookshelfProvider>().progressForNovel(novel);
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => BookDetailScreen(novel: novel)),
+      MaterialPageRoute(
+        builder: (_) =>
+            BookDetailScreen(novel: novel, initialProgress: progress),
+      ),
     );
   }
 

@@ -1,8 +1,43 @@
 import 'package:flutter/material.dart';
 
+import '../models/content_progress.dart';
 import '../models/novel.dart';
 import '../models/reading_progress.dart';
 import '../services/storage_service.dart';
+
+ReadingProgress? findBookshelfProgressForNovel(
+  Novel novel,
+  Iterable<Novel> books,
+  Map<String, ReadingProgress> progressByNovelId,
+) {
+  final direct = progressByNovelId[novel.id];
+  if (direct != null) return direct;
+
+  final targetIdentity = ContentIdentity.novel(novel);
+  for (final book in books) {
+    if (ContentIdentity.novel(book).contentKey == targetIdentity.contentKey) {
+      final progress = progressByNovelId[book.id];
+      if (progress != null) return progress;
+    }
+  }
+
+  final normalizedTitle = _normalizeNovelTitle(novel.title);
+  if (normalizedTitle.isEmpty) return null;
+  for (final book in books) {
+    final bookIdentity = ContentIdentity.novel(book);
+    if (bookIdentity.sourceKey == targetIdentity.sourceKey &&
+        _normalizeNovelTitle(book.title) == normalizedTitle) {
+      final progress = progressByNovelId[book.id];
+      if (progress != null) return progress;
+    }
+  }
+  return null;
+}
+
+String _normalizeNovelTitle(String value) => value.toLowerCase().replaceAll(
+  RegExp(r'[\s\p{P}\p{S}]+', unicode: true),
+  '',
+);
 
 class BookshelfProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
@@ -13,6 +48,9 @@ class BookshelfProvider extends ChangeNotifier {
   List<Novel> get books => _books;
   bool get isLoading => _isLoading;
   ReadingProgress? progressFor(String novelId) => _progressByNovelId[novelId];
+
+  ReadingProgress? progressForNovel(Novel novel) =>
+      findBookshelfProgressForNovel(novel, _books, _progressByNovelId);
 
   Future<void> loadBookshelf() async {
     _isLoading = true;
