@@ -23,144 +23,145 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  testWidgets(
-    'route disposal completes its final progress write without BuildContext',
-    (tester) async {
-      final testDirectory = Directory.systemTemp.createTempSync(
-        'reading_screen_lifecycle_',
-      );
-      final pathProviderChannel = const MethodChannel(
-        'plugins.flutter.io/path_provider',
-      );
+  testWidgets('back navigation freezes one final progress snapshot', (
+    tester,
+  ) async {
+    final testDirectory = Directory.systemTemp.createTempSync(
+      'reading_screen_lifecycle_',
+    );
+    final pathProviderChannel = const MethodChannel(
+      'plugins.flutter.io/path_provider',
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      pathProviderChannel,
+      (call) async => call.method == 'getApplicationDocumentsDirectory'
+          ? testDirectory.path
+          : null,
+    );
+    const flutterTtsChannel = MethodChannel('flutter_tts');
+    const audioPlayerChannel = MethodChannel('xyz.luan/audioplayers');
+    const audioGlobalChannel = MethodChannel('xyz.luan/audioplayers.global');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      flutterTtsChannel,
+      (_) async => 1,
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      audioPlayerChannel,
+      (_) async => null,
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      audioGlobalChannel,
+      (_) async => null,
+    );
+    addTearDown(() {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         pathProviderChannel,
-        (call) async => call.method == 'getApplicationDocumentsDirectory'
-            ? testDirectory.path
-            : null,
+        null,
       );
-      const flutterTtsChannel = MethodChannel('flutter_tts');
-      const audioPlayerChannel = MethodChannel('xyz.luan/audioplayers');
-      const audioGlobalChannel = MethodChannel('xyz.luan/audioplayers.global');
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         flutterTtsChannel,
-        (_) async => 1,
+        null,
       );
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         audioPlayerChannel,
-        (_) async => null,
+        null,
       );
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         audioGlobalChannel,
-        (_) async => null,
+        null,
       );
-      addTearDown(() {
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          pathProviderChannel,
-          null,
-        );
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          flutterTtsChannel,
-          null,
-        );
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          audioPlayerChannel,
-          null,
-        );
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          audioGlobalChannel,
-          null,
-        );
-        if (testDirectory.existsSync()) {
-          testDirectory.deleteSync(recursive: true);
-        }
-      });
-      SharedPreferences.setMockInitialValues(const <String, Object>{});
-      await tester.runAsync(() => StorageService().init());
+      if (testDirectory.existsSync()) {
+        testDirectory.deleteSync(recursive: true);
+      }
+    });
+    SharedPreferences.setMockInitialValues(const <String, Object>{});
+    await tester.runAsync(() => StorageService().init());
 
-      final saveGate = Completer<void>();
-      final readingProvider = _DelayedReadingProvider(saveGate);
-      final bookshelfProvider = _RecordingBookshelfProvider();
-      final bookSourceProvider = BookSourceProvider();
-      final authProvider = InteractionAuthProvider();
-      final ttsProvider = _RecordingTtsProvider();
-      final navigatorKey = GlobalKey<NavigatorState>();
-      addTearDown(readingProvider.dispose);
-      addTearDown(bookshelfProvider.dispose);
-      addTearDown(bookSourceProvider.dispose);
-      addTearDown(authProvider.dispose);
-      addTearDown(ttsProvider.dispose);
+    final saveGate = Completer<void>();
+    final readingProvider = _DelayedReadingProvider(saveGate);
+    final bookshelfProvider = _RecordingBookshelfProvider();
+    final bookSourceProvider = BookSourceProvider();
+    final authProvider = InteractionAuthProvider();
+    final ttsProvider = _RecordingTtsProvider();
+    final navigatorKey = GlobalKey<NavigatorState>();
+    addTearDown(readingProvider.dispose);
+    addTearDown(bookshelfProvider.dispose);
+    addTearDown(bookSourceProvider.dispose);
+    addTearDown(authProvider.dispose);
+    addTearDown(ttsProvider.dispose);
 
-      final novel = Novel(
-        id: 'reader-dispose-regression',
-        title: '退出保存回归',
-        sourceId: 'local',
-        isLocal: true,
-        totalChapters: 1,
-      );
-      final chapter = Chapter(
-        id: 'reader-dispose-regression-0',
-        novelId: 'reader-dispose-regression',
-        title: '第一章',
-        index: 0,
-        content: '　　第一段正文。\n\n　　第二段正文，用于验证路由销毁后的异步保存。',
-      );
+    final novel = Novel(
+      id: 'reader-dispose-regression',
+      title: '退出保存回归',
+      sourceId: 'local',
+      isLocal: true,
+      totalChapters: 1,
+    );
+    final chapter = Chapter(
+      id: 'reader-dispose-regression-0',
+      novelId: 'reader-dispose-regression',
+      title: '第一章',
+      index: 0,
+      content: '　　第一段正文。\n\n　　第二段正文，用于验证路由销毁后的异步保存。',
+    );
 
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            ChangeNotifierProvider<ReadingProvider>.value(
-              value: readingProvider,
-            ),
-            ChangeNotifierProvider<BookshelfProvider>.value(
-              value: bookshelfProvider,
-            ),
-            ChangeNotifierProvider<BookSourceProvider>.value(
-              value: bookSourceProvider,
-            ),
-            ChangeNotifierProvider<InteractionAuthProvider>.value(
-              value: authProvider,
-            ),
-            ChangeNotifierProvider<TtsProvider>.value(value: ttsProvider),
-          ],
-          child: MaterialApp(
-            navigatorKey: navigatorKey,
-            home: const SizedBox.shrink(),
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<ReadingProvider>.value(value: readingProvider),
+          ChangeNotifierProvider<BookshelfProvider>.value(
+            value: bookshelfProvider,
           ),
-        ),
-      );
-      navigatorKey.currentState!.push(
-        MaterialPageRoute<void>(
-          builder: (_) => ReadingScreen(
-            novel: novel,
-            chapters: [chapter],
-            startCharPosition: 9,
+          ChangeNotifierProvider<BookSourceProvider>.value(
+            value: bookSourceProvider,
           ),
+          ChangeNotifierProvider<InteractionAuthProvider>.value(
+            value: authProvider,
+          ),
+          ChangeNotifierProvider<TtsProvider>.value(value: ttsProvider),
+        ],
+        child: MaterialApp(
+          navigatorKey: navigatorKey,
+          home: const SizedBox.shrink(),
         ),
-      );
-      await tester.pumpAndSettle();
-      expect(readingProvider.saveCalls, 0);
-      expect(tester.takeException(), isNull);
+      ),
+    );
+    navigatorKey.currentState!.push(
+      MaterialPageRoute<void>(
+        builder: (_) => ReadingScreen(
+          novel: novel,
+          chapters: [chapter],
+          startCharPosition: 9,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(readingProvider.saveCalls, 0);
+    expect(tester.takeException(), isNull);
 
-      // TTS owns the visible reading position while speech is active. The
-      // final route save must persist that exact offset rather than the stale
-      // page/scroll anchor.
-      ttsProvider.activate(novel.id, 17);
+    // TTS owns the visible reading position while speech is active. The
+    // final route save must persist that exact offset rather than the stale
+    // page/scroll anchor.
+    ttsProvider.activate(novel.id, 17);
 
-      // Remove both the route and its inherited providers. The delayed write
-      // must still finish from the references captured while the route lived.
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump();
-      expect(readingProvider.saveCalls, 1);
-      expect(readingProvider.lastProgress?.charPosition, 17);
+    final popFuture = navigatorKey.currentState!.maybePop();
+    await tester.pump();
+    expect(readingProvider.saveCalls, 1);
+    expect(readingProvider.lastProgress?.charPosition, 17);
 
-      saveGate.complete();
-      await tester.pump();
-      await tester.pump();
+    // A late scroll/layout callback while the final database write is still
+    // pending must not enqueue a second stale (often zero) progress write.
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -80));
+    await tester.pump();
+    expect(readingProvider.saveCalls, 1);
 
-      expect(bookshelfProvider.updateCalls, 1);
-      expect(tester.takeException(), isNull);
-    },
-  );
+    saveGate.complete();
+    await popFuture;
+    await tester.pumpAndSettle();
+
+    expect(bookshelfProvider.updateCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _DelayedReadingProvider extends ReadingProvider {

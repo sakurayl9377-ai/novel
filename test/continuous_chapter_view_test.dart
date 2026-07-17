@@ -143,6 +143,7 @@ void main() {
     'a manual upward swipe enters the previous chapter near its end',
     (tester) async {
       final positions = <(int, int)>[];
+      final controller = ContinuousChapterViewController();
       final chapters = List<Chapter>.generate(3, chapter);
       final previousContent = List<String>.filled(
         500,
@@ -155,6 +156,7 @@ void main() {
             body: SizedBox(
               height: 420,
               child: ContinuousChapterView(
+                controller: controller,
                 chapters: chapters,
                 initialChapterIndex: 1,
                 initialContent: List<String>.filled(
@@ -197,6 +199,12 @@ void main() {
       expect(previousPositions, isNotEmpty);
       expect(
         previousPositions.first.$2,
+        greaterThan(previousContent.length * 0.7),
+      );
+      final visibleAnchor = controller.captureAnchor();
+      expect(visibleAnchor?.chapterIndex, 0);
+      expect(
+        visibleAnchor?.charPosition,
         greaterThan(previousContent.length * 0.7),
       );
     },
@@ -477,10 +485,7 @@ void main() {
       for (
         var gesture = 0;
         gesture < 6 &&
-            find
-                .byKey(const ValueKey('eviction-section-0'))
-                .evaluate()
-                .isEmpty;
+            find.byKey(const ValueKey('eviction-section-0')).evaluate().isEmpty;
         gesture++
       ) {
         await tester.drag(find.byType(Scrollable), const Offset(0, 120));

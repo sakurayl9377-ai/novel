@@ -451,14 +451,24 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         if (revealPreviousEnding) {
           final previousTop = _sectionTopFor(chapterIndex);
           final previousHeight = _sectionHeightFor(chapterIndex);
-          if (previousTop != null && previousHeight != null) {
+          final previousContent = _contents[chapterIndex];
+          if (previousContent != null && previousContent.isNotEmpty) {
             final target =
-                (position.pixels +
-                        previousTop +
-                        previousHeight -
-                        position.viewportDimension * 0.65)
-                    .clamp(0.0, position.maxScrollExtent)
-                    .toDouble();
+                _scrollTargetForTextOffset(
+                  chapterIndex,
+                  previousContent,
+                  previousContent.length,
+                  position,
+                ) ??
+                (previousTop != null && previousHeight != null
+                    ? (position.pixels +
+                              previousTop +
+                              previousHeight -
+                              position.viewportDimension * 0.65)
+                          .clamp(0.0, position.maxScrollExtent)
+                          .toDouble()
+                    : null);
+            if (target == null) return;
             _scrollController.jumpTo(target);
           }
         } else {

@@ -465,16 +465,22 @@ class _ReadingScreenState extends State<ReadingScreen>
     return _currentProgressPosition(tts);
   }
 
-  Future<void> _saveVisibleProgressNow([TtsProvider? ttsProvider]) {
+  Future<void> _saveVisibleProgressNow([
+    TtsProvider? ttsProvider,
+    bool allowWhileLeaving = false,
+  ]) {
     return _saveProgressNow(
       charPosition: _captureVisibleProgressPosition(ttsProvider),
+      allowWhileLeaving: allowWhileLeaving,
     );
   }
 
   Future<void> _saveProgressNow({
     int? charPosition,
     double? scrollPosition,
+    bool allowWhileLeaving = false,
   }) async {
+    if (_isLeaving && !allowWhileLeaving) return;
     if (_content.isEmpty) return;
 
     final position = (charPosition ?? _lastCharPosition)
@@ -1462,10 +1468,10 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _handleBack() async {
     final ttsProvider = context.read<TtsProvider>();
-    await _saveVisibleProgressNow(ttsProvider);
+    _isLeaving = true;
+    await _saveVisibleProgressNow(ttsProvider, true);
     await ttsProvider.stopSpeaking();
     if (!mounted) return;
-    _isLeaving = true;
     Navigator.pop(context);
   }
 
