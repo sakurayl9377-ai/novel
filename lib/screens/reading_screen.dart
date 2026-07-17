@@ -53,6 +53,23 @@ class ReadingScreen extends StatefulWidget {
   State<ReadingScreen> createState() => _ReadingScreenState();
 }
 
+int resolveNovelRestorePosition({
+  required int contentLength,
+  required int charPosition,
+  required double chapterFraction,
+  required bool verticalScroll,
+}) {
+  if (contentLength <= 0) return 0;
+  final charAnchor = charPosition.clamp(0, contentLength).toInt();
+  if (!verticalScroll || chapterFraction <= 0 || chapterFraction > 1) {
+    return charAnchor;
+  }
+  return (contentLength * chapterFraction)
+      .round()
+      .clamp(0, contentLength)
+      .toInt();
+}
+
 class _ReadingScreenState extends State<ReadingScreen>
     with WidgetsBindingObserver {
   int _currentChapterIndex = 0;
@@ -282,9 +299,14 @@ class _ReadingScreenState extends State<ReadingScreen>
     if (widget.novel.isLocal) {
       if (_chapters.isNotEmpty && chapterIndex < _chapters.length) {
         final chapter = _chapters[chapterIndex];
-        final restorePosition = _restoreCharPosition
-            .clamp(0, chapter.content.length)
-            .toInt();
+        final restorePosition = resolveNovelRestorePosition(
+          contentLength: chapter.content.length,
+          charPosition: _restoreCharPosition,
+          chapterFraction: _lastScrollPosition,
+          verticalScroll:
+              context.read<ReadingProvider>().settings.pageMode ==
+              NovelPageMode.verticalScroll,
+        );
         final pageIndex = _pageIndexForCharPosition(
           chapter.content,
           restorePosition,
@@ -341,9 +363,14 @@ class _ReadingScreenState extends State<ReadingScreen>
 
         if (!mounted || !loadToken.isCurrent) return;
 
-        final restorePosition = _restoreCharPosition
-            .clamp(0, formattedContent.length)
-            .toInt();
+        final restorePosition = resolveNovelRestorePosition(
+          contentLength: formattedContent.length,
+          charPosition: _restoreCharPosition,
+          chapterFraction: _lastScrollPosition,
+          verticalScroll:
+              context.read<ReadingProvider>().settings.pageMode ==
+              NovelPageMode.verticalScroll,
+        );
         final pageIndex = _pageIndexForCharPosition(
           formattedContent,
           restorePosition,
@@ -455,7 +482,9 @@ class _ReadingScreenState extends State<ReadingScreen>
       _content = anchor.content;
       _restoreCharPosition = capturedPosition;
       _lastCharPosition = capturedPosition;
-      _lastScrollPosition = 0;
+      _lastScrollPosition = anchor.content.isEmpty
+          ? 0
+          : capturedPosition / anchor.content.length;
       _currentPageIndex = _pageIndexForCharPosition(
         anchor.content,
         capturedPosition,
@@ -487,7 +516,12 @@ class _ReadingScreenState extends State<ReadingScreen>
         .clamp(0, _content.length)
         .toInt();
     _lastCharPosition = position;
-    _lastScrollPosition = (scrollPosition ?? _lastScrollPosition).clamp(
+    final inferredChapterFraction =
+        _readingProvider.settings.pageMode == NovelPageMode.verticalScroll &&
+            _content.isNotEmpty
+        ? position / _content.length
+        : _lastScrollPosition;
+    _lastScrollPosition = (scrollPosition ?? inferredChapterFraction).clamp(
       0.0,
       double.infinity,
     );
@@ -900,9 +934,7 @@ class _ReadingScreenState extends State<ReadingScreen>
       _content = content;
       _restoreCharPosition = safePosition;
       _lastCharPosition = safePosition;
-      // A continuous scroll offset spans several chapters and must not be
-      // reused when this chapter is opened on a later app launch.
-      _lastScrollPosition = 0;
+      _lastScrollPosition = safePosition / content.length;
       _currentPageIndex = _pageIndexForCharPosition(content, safePosition);
     }
 
@@ -934,9 +966,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     }
 
     if (settled) {
-      unawaited(
-        _saveProgressNow(charPosition: safePosition, scrollPosition: 0),
-      );
+      unawaited(_saveProgressNow(charPosition: safePosition));
     }
   }
 

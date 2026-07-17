@@ -23,6 +23,21 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
+  test(
+    'vertical restore uses the persisted chapter fraction as redundancy',
+    () {
+      expect(
+        resolveNovelRestorePosition(
+          contentLength: 10000,
+          charPosition: 18,
+          chapterFraction: 0.18,
+          verticalScroll: true,
+        ),
+        1800,
+      );
+    },
+  );
+
   testWidgets('all novel page modes preserve a non-zero exit position', (
     tester,
   ) async {
@@ -152,6 +167,41 @@ void main() {
         readingProvider.lastProgress!.charPosition,
         greaterThan(0),
         reason: mode.name,
+      );
+      if (mode == NovelPageMode.verticalScroll) {
+        expect(
+          readingProvider.lastProgress!.charPosition,
+          closeTo(180, 40),
+          reason: 'vertical restore anchor: ${mode.name}',
+        );
+      }
+
+      final firstExit = readingProvider.lastProgress!;
+      readingProvider.lastProgress = null;
+      navigatorKey.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => ReadingScreen(
+            novel: novel,
+            chapters: chapters,
+            startChapterIndex: firstExit.chapterIndex,
+            startCharPosition: firstExit.charPosition,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await navigatorKey.currentState!.maybePop();
+      await tester.pumpAndSettle();
+
+      expect(readingProvider.lastProgress, isNotNull, reason: mode.name);
+      expect(
+        readingProvider.lastProgress!.chapterIndex,
+        firstExit.chapterIndex,
+        reason: 're-entry chapter: ${mode.name}',
+      );
+      expect(
+        readingProvider.lastProgress!.charPosition,
+        closeTo(firstExit.charPosition, 40),
+        reason: 're-entry anchor: ${mode.name}',
       );
 
       readingProvider.dispose();

@@ -107,6 +107,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   bool _isUserScrollGesture = false;
   bool _allowPreviousChapterLoad = false;
   bool _revealPreviousEndingAfterLoad = false;
+  bool _previousChapterLoadedInGesture = false;
   bool _postLayoutEdgeCheckScheduled = false;
   int? _lastReportedChapterIndex;
   int? _lastReportedCharPosition;
@@ -413,6 +414,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
           chapterIndex < anchorIndex && _revealPreviousEndingAfterLoad;
       if (revealPreviousEnding) {
         _revealPreviousEndingAfterLoad = false;
+        _allowPreviousChapterLoad = false;
       }
       final evictedIndexes = _indexesToEvict(
         anchorIndex: anchorIndex,
@@ -753,8 +755,11 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         _safeChapterIndex(widget.initialChapterIndex);
     final previousIndex = loaded.first - 1;
     if (_allowPreviousChapterLoad &&
+        !_previousChapterLoadedInGesture &&
         metrics.pixels <= _loadAheadExtent &&
         previousIndex >= anchorIndex - _retainedChapterRadius) {
+      _previousChapterLoadedInGesture = true;
+      _allowPreviousChapterLoad = false;
       unawaited(_loadChapter(previousIndex));
     }
     final nextIndex = loaded.last + 1;
@@ -765,10 +770,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   }
 
   void _requestPreviousFromUserGesture(ScrollMetrics metrics) {
+    if (_previousChapterLoadedInGesture || metrics.pixels > 24) return;
     _allowPreviousChapterLoad = true;
-    if (metrics.pixels <= 24) {
-      _revealPreviousEndingAfterLoad = true;
-    }
+    _revealPreviousEndingAfterLoad = true;
   }
 
   void _schedulePostLayoutEdgeCheck() {
@@ -802,6 +806,9 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         }
         _isUserScrollGesture = false;
       } else {
+        if (!_isUserScrollGesture) {
+          _previousChapterLoadedInGesture = false;
+        }
         _isUserScrollGesture = true;
         if (notification.direction == ScrollDirection.forward) {
           _requestPreviousFromUserGesture(notification.metrics);

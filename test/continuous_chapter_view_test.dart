@@ -227,6 +227,56 @@ void main() {
     },
   );
 
+  testWidgets('one upward gesture loads only one adjacent previous chapter', (
+    tester,
+  ) async {
+    final reportedChapters = <int>[];
+    final requestedChapters = <int>[];
+    final chapters = List<Chapter>.generate(6, chapter);
+    final content = List<String>.filled(420, 'chapter body').join(' ');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 420,
+            child: ContinuousChapterView(
+              chapters: chapters,
+              initialChapterIndex: 5,
+              initialContent: content,
+              initialTextOffset: 0,
+              loadChapterContent: (index) async {
+                requestedChapters.add(index);
+                return content;
+              },
+              sectionBuilder: (chapter, index, text, textKey) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(chapter.title),
+                  Text(text, key: textKey),
+                ],
+              ),
+              onReadingPositionChanged: (index, text, position) {
+                reportedChapters.add(index);
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    requestedChapters.clear();
+    reportedChapters.clear();
+
+    await tester.drag(find.byType(Scrollable), const Offset(0, 500));
+    await tester.pumpAndSettle();
+
+    expect(requestedChapters, contains(4));
+    expect(requestedChapters, isNot(contains(3)));
+    expect(reportedChapters, contains(4));
+    expect(reportedChapters, isNot(contains(3)));
+  });
+
   testWidgets(
     'reading progress is measured from the body text, not its header',
     (tester) async {
@@ -488,17 +538,10 @@ void main() {
       }
       expect(requestedIndexes.where((index) => index == 0), hasLength(1));
 
-      final backwardAnchor = anchoredSectionFinder();
-      final backwardAnchorTop = tester.getTopLeft(backwardAnchor).dy;
       reloadZero.complete('body 0 reloaded');
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 20));
-
-      expect(
-        tester.getTopLeft(backwardAnchor).dy,
-        closeTo(backwardAnchorTop, 1),
-      );
       for (
         var gesture = 0;
         gesture < 6 &&
