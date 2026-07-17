@@ -28,6 +28,9 @@ class ContinuousChapterViewController {
   ({int chapterIndex, String content, int charPosition})? captureAnchor() =>
       _state?._captureAnchor();
 
+  ({int chapterIndex, String content, int charPosition})?
+  captureRenderedAnchor() => _state?._captureActualAnchor();
+
   void _attach(_ContinuousChapterViewState state) => _state = state;
 
   void _detach(_ContinuousChapterViewState state) {
@@ -104,6 +107,10 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   final Set<int> _failedIndexes = <int>{};
 
   bool _didRestoreInitialPosition = false;
+  bool _restoringInitialPosition = false;
+  int _restoreAttempt = 0;
+  bool _hasUserInteracted = false;
+  bool _restoreCallbackScheduled = false;
   bool _isUserScrollGesture = false;
   bool _allowPreviousChapterLoad = false;
   bool _revealPreviousEndingAfterLoad = false;
@@ -118,6 +125,24 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   Iterable<int> get _loadedIndexes => _contents.keys;
 
   ({int chapterIndex, String content, int charPosition})? _captureAnchor() {
+    if (_restoringInitialPosition && widget.initialTextOffset > 0) {
+      final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
+      final content = _contents[initialIndex];
+      if (content != null && content.isNotEmpty) {
+        return (
+          chapterIndex: initialIndex,
+          content: content,
+          charPosition: widget.initialTextOffset
+              .clamp(0, content.length)
+              .toInt(),
+        );
+      }
+    }
+    return _captureActualAnchor();
+  }
+
+  ({int chapterIndex, String content, int charPosition})?
+  _captureActualAnchor() {
     if (!_scrollController.hasClients) return null;
     final chapterIndex = _anchoredChapterIndex();
     if (chapterIndex == null) return null;
@@ -149,6 +174,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     super.initState();
     widget.controller?._attach(this);
     _autoReadTicker = Ticker(_handleAutoReadTick);
+    _restoringInitialPosition = widget.initialTextOffset > 0;
     final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
     _contents[initialIndex] = widget.initialContent;
     _sectionKeys[initialIndex] = GlobalKey();
@@ -156,11 +182,12 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _restoreInitialPosition();
-      // A fresh chapter should start cleanly at its own heading.  The
-      // previous chapter is loaded only after the reader intentionally swipes
-      // upward toward it; otherwise its ending appears above every new start.
-      _preloadNextChapter(initialIndex);
+      if (_restoringInitialPosition) {
+        _restoreInitialPosition();
+      } else {
+        _didRestoreInitialPosition = true;
+        _preloadNextChapter(initialIndex);
+      }
       _syncAutoReadTicker();
     });
   }
@@ -190,7 +217,14 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       _syncAutoReadTicker();
     }
     if (oldWidget.layoutKey != widget.layoutKey) {
-      _preserveAnchorAcrossLayoutChange();
+      if (widget.initialTextOffset > 0 && !_hasUserInteracted) {
+        _didRestoreInitialPosition = false;
+        _restoringInitialPosition = true;
+        _restoreAttempt = 0;
+        _scheduleInitialRestore();
+      } else {
+        _preserveAnchorAcrossLayoutChange();
+      }
     }
   }
 
@@ -501,10 +535,13 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   }
 
   void _restoreInitialPosition() {
-    if (_didRestoreInitialPosition ||
-        !_scrollController.hasClients ||
-        widget.initialTextOffset <= 0) {
+    if (_didRestoreInitialPosition || widget.initialTextOffset <= 0) {
       _didRestoreInitialPosition = true;
+      _restoringInitialPosition = false;
+      return;
+    }
+    if (!_scrollController.hasClients) {
+      _scheduleInitialRestore();
       return;
     }
 
@@ -513,9 +550,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     final sectionHeight = _sectionHeightFor(initialIndex);
     final content = _contents[initialIndex];
     if (sectionTop == null || sectionHeight == null || content == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _restoreInitialPosition();
-      });
+      _scheduleInitialRestore();
       return;
     }
 
@@ -535,7 +570,48 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
             .clamp(0.0, position.maxScrollExtent)
             .toDouble();
     _scrollController.jumpTo(target);
+    _restoreAttempt++;
+    _scheduleInitialRestore(verify: true);
+  }
+
+  void _scheduleInitialRestore({bool verify = false}) {
+    if (_restoreCallbackScheduled) return;
+    _restoreCallbackScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restoreCallbackScheduled = false;
+      if (!mounted) return;
+      if (verify) {
+        _verifyInitialPosition();
+      } else {
+        _restoreInitialPosition();
+      }
+    });
+  }
+
+  void _verifyInitialPosition() {
+    if (_didRestoreInitialPosition || !mounted) return;
+    final initialIndex = _safeChapterIndex(widget.initialChapterIndex);
+    final content = _contents[initialIndex];
+    final actual = _captureActualAnchor();
+    final desired = content == null
+        ? 0
+        : widget.initialTextOffset.clamp(0, content.length).toInt();
+    final tolerance = content == null
+        ? 24
+        : (content.length * 0.01).round().clamp(24, 160).toInt();
+    final restored =
+        actual != null &&
+        actual.chapterIndex == initialIndex &&
+        (actual.charPosition - desired).abs() <= tolerance;
+    if (!restored && _restoreAttempt < 8) {
+      _restoreInitialPosition();
+      return;
+    }
     _didRestoreInitialPosition = true;
+    _restoringInitialPosition = false;
+    _lastReportedChapterIndex = initialIndex;
+    _lastReportedCharPosition = desired;
+    _preloadNextChapter(initialIndex);
   }
 
   void _scrollToActiveText() {
@@ -695,6 +771,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   }
 
   void _reportReadingPosition({required bool settled}) {
+    if (_restoringInitialPosition) return;
     final chapterIndex = _anchoredChapterIndex();
     if (chapterIndex == null) return;
     final content = _contents[chapterIndex];
@@ -806,6 +883,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
         }
         _isUserScrollGesture = false;
       } else {
+        _hasUserInteracted = true;
         if (!_isUserScrollGesture) {
           _previousChapterLoadedInGesture = false;
         }
@@ -816,6 +894,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       }
     } else if (notification is ScrollUpdateNotification &&
         notification.dragDetails != null) {
+      _hasUserInteracted = true;
       _isUserScrollGesture = true;
       if ((notification.scrollDelta ?? 0) < 0) {
         _requestPreviousFromUserGesture(notification.metrics);
@@ -823,6 +902,7 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
       _reportLiveReadingPosition();
     } else if (notification is OverscrollNotification &&
         notification.overscroll < 0) {
+      _hasUserInteracted = true;
       _isUserScrollGesture = true;
       _requestPreviousFromUserGesture(notification.metrics);
     } else if (notification is ScrollEndNotification &&

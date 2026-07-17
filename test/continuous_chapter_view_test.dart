@@ -384,6 +384,84 @@ void main() {
   });
 
   testWidgets(
+    'keeps restoring the persisted text offset while the layout changes',
+    (tester) async {
+      final content = List<String>.generate(
+        220,
+        (index) => 'line $index body text',
+      ).join('\n');
+      final initialOffset = content.indexOf('line 120 body text');
+      final controller = ContinuousChapterViewController();
+      Key? bodyTextKey;
+      var fontSize = 16.0;
+      var layoutChangeScheduled = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              height: 420,
+              child: StatefulBuilder(
+                builder: (context, setState) {
+                  if (!layoutChangeScheduled) {
+                    layoutChangeScheduled = true;
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      setState(() => fontSize = 24);
+                    });
+                  }
+                  return ContinuousChapterView(
+                    controller: controller,
+                    layoutKey: fontSize,
+                    chapters: [chapter(0)],
+                    initialChapterIndex: 0,
+                    initialContent: content,
+                    initialTextOffset: initialOffset,
+                    loadChapterContent: (_) async => '',
+                    sectionBuilder: (chapter, index, body, textKey) {
+                      bodyTextKey = textKey;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 96),
+                          Text(
+                            body,
+                            key: textKey,
+                            style: TextStyle(fontSize: fontSize, height: 1.5),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final paragraph = tester.renderObject<RenderParagraph>(
+        find.byKey(bodyTextKey!),
+      );
+      final caret = paragraph.getOffsetForCaret(
+        TextPosition(offset: initialOffset),
+        Rect.zero,
+      );
+      final caretY = paragraph.localToGlobal(caret).dy;
+      final viewport = tester.getRect(find.byType(ContinuousChapterView));
+      final anchor = controller.captureAnchor();
+      final renderedAnchor = controller.captureRenderedAnchor();
+
+      expect(anchor, isNotNull);
+      expect(anchor!.chapterIndex, 0);
+      expect(anchor.charPosition, closeTo(initialOffset, 24));
+      expect(renderedAnchor, isNotNull);
+      expect(renderedAnchor!.charPosition, closeTo(initialOffset, 24));
+      expect(caretY, closeTo(viewport.top + viewport.height * 0.38, 1));
+    },
+  );
+
+  testWidgets(
     'keeps five chapters while scrolling forward across a long novel',
     (tester) async {
       final chapters = List<Chapter>.generate(30, chapter);
