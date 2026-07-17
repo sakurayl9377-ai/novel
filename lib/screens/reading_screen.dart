@@ -445,9 +445,12 @@ class _ReadingScreenState extends State<ReadingScreen>
         anchor.chapterIndex >= 0 &&
         anchor.chapterIndex < _chapters.length &&
         anchor.content.isNotEmpty) {
-      final capturedPosition = anchor.chapterIndex == _currentChapterIndex
-          ? anchor.charPosition.clamp(_lastCharPosition, anchor.content.length)
-          : anchor.charPosition.clamp(0, anchor.content.length);
+      if ((anchor.chapterIndex - _currentChapterIndex).abs() > 1) {
+        return _currentProgressPosition(tts);
+      }
+      final capturedPosition = anchor.charPosition
+          .clamp(0, anchor.content.length)
+          .toInt();
       _currentChapterIndex = anchor.chapterIndex;
       _content = anchor.content;
       _restoreCharPosition = capturedPosition;
@@ -464,7 +467,7 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _saveVisibleProgressNow([TtsProvider? ttsProvider]) {
     return _saveProgressNow(
-      charPosition: _currentProgressPosition(ttsProvider),
+      charPosition: _captureVisibleProgressPosition(ttsProvider),
     );
   }
 

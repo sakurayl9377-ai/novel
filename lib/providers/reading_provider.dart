@@ -109,12 +109,14 @@ class ReadingProvider extends ChangeNotifier {
   Future<ReadingProgress?> loadProgress(Novel novel) async {
     final progressData = await _storage.getNovelReadingProgress(novel);
     if (progressData != null) {
-      _currentProgress = ReadingProgress.fromJson(progressData);
+      final loadedProgress = ReadingProgress.fromJson(progressData);
+      _currentProgress = loadedProgress;
       notifyListeners();
+      return loadedProgress;
     } else {
       _currentProgress = null;
     }
-    return _currentProgress;
+    return null;
   }
 
   Future<void> saveProgress(Novel novel, ReadingProgress progress) async {

@@ -70,6 +70,16 @@ ReadingProgress? latestReadingProgress(
   return first.lastReadAt.isAfter(second.lastReadAt) ? first : second;
 }
 
+ReadingProgress? resolveNovelEntryProgress(
+  Iterable<ReadingProgress?> candidates,
+) {
+  ReadingProgress? latest;
+  for (final candidate in candidates) {
+    latest = latestReadingProgress(latest, candidate);
+  }
+  return latest;
+}
+
 class NovelReadingHistory {
   const NovelReadingHistory({
     required this.novelId,
@@ -81,6 +91,7 @@ class NovelReadingHistory {
     required this.chapterIndex,
     required this.chapterTitle,
     required this.chapterUrl,
+    required this.bookUrl,
     required this.charPosition,
     required this.scrollPosition,
     required this.lastReadAt,
@@ -95,7 +106,17 @@ class NovelReadingHistory {
   final int chapterIndex;
   final String chapterTitle;
   final String chapterUrl;
+  final String bookUrl;
   final int charPosition;
   final double scrollPosition;
   final DateTime lastReadAt;
+}
+
+NovelReadingHistory? latestNovelReadingHistory(
+  NovelReadingHistory? first,
+  NovelReadingHistory? second,
+) {
+  if (first == null) return second;
+  if (second == null) return first;
+  return first.lastReadAt.isAfter(second.lastReadAt) ? first : second;
 }

@@ -352,12 +352,13 @@ class StorageService {
         final title = row.metadata['title']?.toString() ?? '';
         if (payload.novelId.isEmpty || title.isEmpty) continue;
         final sourceId = row.metadata['sourceId']?.toString() ?? '';
+        final bookUrl = row.metadata['bookUrl']?.toString() ?? '';
         final canonicalKey = ContentIdentity.novel(
           Novel(
             id: payload.novelId,
             title: title,
             sourceId: sourceId,
-            chapterUrl: payload.chapterUrl,
+            chapterUrl: bookUrl.isNotEmpty ? bookUrl : payload.chapterUrl,
           ),
         ).contentKey;
         final candidate = NovelReadingHistory(
@@ -370,22 +371,16 @@ class StorageService {
           chapterIndex: payload.chapterIndex,
           chapterTitle: payload.chapterTitle,
           chapterUrl: payload.chapterUrl,
+          bookUrl: bookUrl,
           charPosition: payload.charPosition,
           scrollPosition: payload.scrollPosition,
           lastReadAt: payload.lastReadAt,
         );
         final existing = historiesByContentKey[canonicalKey];
-        final candidateIsAhead =
-            existing == null ||
-            candidate.chapterIndex > existing.chapterIndex ||
-            (candidate.chapterIndex == existing.chapterIndex &&
-                candidate.charPosition > existing.charPosition) ||
-            (candidate.chapterIndex == existing.chapterIndex &&
-                candidate.charPosition == existing.charPosition &&
-                candidate.lastReadAt.isAfter(existing.lastReadAt));
-        if (candidateIsAhead) {
-          historiesByContentKey[canonicalKey] = candidate;
-        }
+        historiesByContentKey[canonicalKey] = latestNovelReadingHistory(
+          existing,
+          candidate,
+        )!;
       } catch (_) {
         continue;
       }
@@ -483,6 +478,7 @@ class StorageService {
         'coverUrl': novel.coverUrl,
         'sourceId': novel.sourceId,
         'sourceName': novel.sourceName,
+        'bookUrl': novel.chapterUrl,
       },
     );
   }

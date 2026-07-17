@@ -82,7 +82,7 @@ void main() {
       final bookshelfProvider = _RecordingBookshelfProvider();
       final bookSourceProvider = BookSourceProvider();
       final authProvider = InteractionAuthProvider();
-      final ttsProvider = TtsProvider();
+      final ttsProvider = _RecordingTtsProvider();
       final navigatorKey = GlobalKey<NavigatorState>();
       addTearDown(readingProvider.dispose);
       addTearDown(bookshelfProvider.dispose);
@@ -141,12 +141,17 @@ void main() {
       expect(readingProvider.saveCalls, 0);
       expect(tester.takeException(), isNull);
 
+      // TTS owns the visible reading position while speech is active. The
+      // final route save must persist that exact offset rather than the stale
+      // page/scroll anchor.
+      ttsProvider.activate(novel.id, 17);
+
       // Remove both the route and its inherited providers. The delayed write
       // must still finish from the references captured while the route lived.
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
       expect(readingProvider.saveCalls, 1);
-      expect(readingProvider.lastProgress?.charPosition, 9);
+      expect(readingProvider.lastProgress?.charPosition, 17);
 
       saveGate.complete();
       await tester.pump();
@@ -179,5 +184,31 @@ class _RecordingBookshelfProvider extends BookshelfProvider {
   @override
   Future<void> updateNovel(Novel novel) async {
     updateCalls += 1;
+  }
+}
+
+class _RecordingTtsProvider extends TtsProvider {
+  bool _active = false;
+  String _owner = '';
+  int _offset = -1;
+
+  void activate(String novelId, int offset) {
+    _active = true;
+    _owner = 'novel:$novelId';
+    _offset = offset;
+  }
+
+  @override
+  bool get isSpeaking => _active;
+
+  @override
+  int get currentStartOffset => _offset;
+
+  @override
+  bool isOwnedBy(String ownerKey) => _active && ownerKey == _owner;
+
+  @override
+  Future<void> stopSpeaking({bool clearSleepTimer = true}) async {
+    _active = false;
   }
 }

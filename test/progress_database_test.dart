@@ -36,6 +36,41 @@ void main() {
       );
     });
 
+    test('history entry follows the latest position instead of furthest', () {
+      NovelReadingHistory history({
+        required int chapter,
+        required int position,
+        required DateTime readAt,
+      }) => NovelReadingHistory(
+        novelId: 'builtin_wenku8_wenku8_1234',
+        title: '测试轻小说',
+        author: '',
+        coverUrl: '',
+        sourceId: 'builtin_wenku8',
+        sourceName: 'Wenku8',
+        chapterIndex: chapter,
+        chapterTitle: '章节',
+        chapterUrl: 'https://www.wenku8.cc/read/1234/$chapter',
+        bookUrl: 'https://www.wenku8.cc/wap/article/articleinfo.php?id=1234',
+        charPosition: position,
+        scrollPosition: 0,
+        lastReadAt: readAt,
+      );
+
+      final oldFurthest = history(
+        chapter: 20,
+        position: 900,
+        readAt: DateTime(2026, 7, 17, 10),
+      );
+      final latest = history(
+        chapter: 19,
+        position: 300,
+        readAt: DateTime(2026, 7, 17, 11),
+      );
+
+      expect(latestNovelReadingHistory(oldFurthest, latest), same(latest));
+    });
+
     test(
       'uses stable source and item identities instead of temporary URLs',
       () {

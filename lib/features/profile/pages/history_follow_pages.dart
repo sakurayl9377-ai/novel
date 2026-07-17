@@ -93,7 +93,9 @@ class _NovelHistoryScreenState extends State<NovelHistoryScreen> {
       coverUrl: history.coverUrl,
       sourceId: history.sourceId,
       sourceName: history.sourceName,
-      chapterUrl: history.chapterUrl,
+      chapterUrl: history.bookUrl.isNotEmpty
+          ? history.bookUrl
+          : history.chapterUrl,
       currentChapterIndex: history.chapterIndex,
       lastReadAt: history.lastReadAt,
     );

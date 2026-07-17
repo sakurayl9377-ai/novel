@@ -322,7 +322,7 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
 
   Widget _buildBookItem(Novel novel) {
     final provider = context.read<BookshelfProvider>();
-    final progress = provider.progressFor(novel.id);
+    final progress = provider.progressForNovel(novel);
     final chapterIndex = progress?.chapterIndex ?? novel.currentChapterIndex;
     final hasProgress =
         progress != null &&
