@@ -664,6 +664,10 @@ class _BookDetailScreenState extends State<BookDetailScreen>
         context.read<ReadingProvider>().setCurrentNovel(_novel);
         context.read<ReadingProvider>().setCurrentChapter(chapter);
         context.read<ReadingProvider>().setChapters(_chapters);
+        final savedProgress = _readingProgress;
+        final restoresSavedChapter =
+            savedProgress != null &&
+            savedProgress.chapterIndex == selectedChapterIndex;
         await Navigator.push(
           context,
           MaterialPageRoute(
@@ -672,8 +676,12 @@ class _BookDetailScreenState extends State<BookDetailScreen>
               novel: _novel,
               chapters: _chapters,
               startChapterIndex: selectedChapterIndex,
-              startCharPosition: 0,
-              startScrollPosition: 0,
+              startCharPosition: restoresSavedChapter
+                  ? savedProgress.charPosition
+                  : 0,
+              startScrollPosition: restoresSavedChapter
+                  ? savedProgress.scrollPosition
+                  : 0,
             ),
           ),
         );

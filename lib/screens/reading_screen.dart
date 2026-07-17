@@ -164,6 +164,10 @@ class _ReadingScreenState extends State<ReadingScreen>
         state != AppLifecycleState.hidden) {
       return;
     }
+    // Persist the exact visible anchor whenever Android backgrounds the app.
+    // Relying only on scroll-end callbacks loses the intra-chapter position
+    // when the process is reclaimed before the reader route is popped.
+    unawaited(_saveVisibleProgressNow());
     final ttsProvider = _ttsProvider;
     if (ttsProvider == null) return;
     final ttsActive =
@@ -425,6 +429,40 @@ class _ReadingScreenState extends State<ReadingScreen>
       settings.fontSize,
       settings.lineHeight,
     ).clamp(0, _content.length).toInt();
+  }
+
+  int _captureVisibleProgressPosition([TtsProvider? ttsProvider]) {
+    final tts = ttsProvider ?? _ttsProvider;
+    if (tts != null &&
+        tts.isOwnedBy(_ttsOwnerKey) &&
+        (tts.isSpeaking || tts.isPaused || tts.isStarting) &&
+        tts.currentStartOffset >= 0) {
+      return tts.currentStartOffset.clamp(0, _content.length).toInt();
+    }
+
+    final anchor = _continuousViewController.captureAnchor();
+    if (anchor != null &&
+        anchor.chapterIndex >= 0 &&
+        anchor.chapterIndex < _chapters.length &&
+        anchor.content.isNotEmpty) {
+      _currentChapterIndex = anchor.chapterIndex;
+      _content = anchor.content;
+      _restoreCharPosition = anchor.charPosition;
+      _lastCharPosition = anchor.charPosition;
+      _lastScrollPosition = 0;
+      _currentPageIndex = _pageIndexForCharPosition(
+        anchor.content,
+        anchor.charPosition,
+      );
+      return anchor.charPosition;
+    }
+    return _currentProgressPosition(tts);
+  }
+
+  Future<void> _saveVisibleProgressNow([TtsProvider? ttsProvider]) {
+    return _saveProgressNow(
+      charPosition: _captureVisibleProgressPosition(ttsProvider),
+    );
   }
 
   Future<void> _saveProgressNow({
@@ -1284,7 +1322,7 @@ class _ReadingScreenState extends State<ReadingScreen>
                   ttsProvider.isStarting) &&
               ttsProvider.currentStartOffset >= 0
           ? ttsProvider.currentStartOffset.clamp(0, _content.length).toInt()
-          : _lastCharPosition;
+          : _captureVisibleProgressPosition(ttsProvider);
       // _saveProgressNow publishes to the live ValueNotifiers synchronously,
       // then finishes through the provider references captured above. This
       // must be started before the notifiers are disposed.
@@ -1416,7 +1454,7 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _handleBack() async {
     final ttsProvider = context.read<TtsProvider>();
-    await _saveProgressNow(charPosition: _currentProgressPosition(ttsProvider));
+    await _saveVisibleProgressNow(ttsProvider);
     await ttsProvider.stopSpeaking();
     if (!mounted) return;
     _isLeaving = true;
