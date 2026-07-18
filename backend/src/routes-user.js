@@ -928,7 +928,7 @@ export async function userRoutes(app) {
         }
         const user = one("SELECT * FROM users WHERE id = ?", [request.user.id]);
         if (!user) throw badRequest("user not found");
-        if ((user.level || 0) < item.min_level) {
+        if (levelFromPoints(user.points || 0) < item.min_level) {
           throw badRequest("level_required");
         }
 
@@ -949,6 +949,17 @@ export async function userRoutes(app) {
           if ((debit.changes ?? 0) !== 1) {
             throw badRequest("coins_not_enough");
           }
+          run(
+            `INSERT INTO user_reward_events
+               (user_id, action, coins_delta, description, related_type, related_id)
+             VALUES (?, 'shop_redeem', ?, ?, 'shop_item', ?)`,
+            [
+              request.user.id,
+              -Number(item.price_coins || 0),
+              `兑换商品：${item.name}`,
+              item.id,
+            ],
+          );
         }
         db.exec("COMMIT");
       } catch (error) {

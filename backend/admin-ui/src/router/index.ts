@@ -8,13 +8,13 @@ const ModerationView = () => import('@/views/ModerationView.vue');
 const DanmakuView = () => import('@/views/DanmakuView.vue');
 const ChatView = () => import('@/views/ChatView.vue');
 const UsersView = () => import('@/views/UsersView.vue');
+const FinanceView = () => import('@/views/FinanceView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['finance', '资金流水', '积分和樱花币账变'],
   ['shop', '商店与装扮', '商品、素材与用户库存'],
   ['growth-rules', '成长规则', '等级、积分与权益规则'],
   ['race', '赛马运营', '轮次、下注、赛季与公平审计'],
@@ -114,6 +114,17 @@ export const router = createRouter({
           meta: {
             title: '用户管理',
             hint: '账号、权限、设备、风险与资产操作工作台',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'finance',
+          name: 'finance',
+          component: FinanceView,
+          meta: {
+            title: '资金流水',
+            hint: '成长值与樱花币的不可变账本、来源核对和人工账变',
             requiresAuth: true,
             requiresAdmin: true,
           },

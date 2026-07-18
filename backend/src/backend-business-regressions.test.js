@@ -75,6 +75,22 @@ test('backend business consistency regressions', async (t) => {
         ).count,
         1,
       );
+      const shopLedger = one(
+        `SELECT * FROM user_reward_events
+         WHERE user_id = ? AND action = 'shop_redeem' AND related_id = ?`,
+        [shopper.id, item.id],
+      );
+      assert.equal(shopLedger.coins_delta, -item.price_coins);
+      assert.equal(shopLedger.related_type, 'shop_item');
+      assert.equal(
+        one(
+          `SELECT COUNT(*) AS count FROM user_reward_events
+           WHERE user_id = ? AND action = 'shop_redeem' AND related_id = ?`,
+          [shopper.id, item.id],
+        ).count,
+        1,
+        'an idempotent replay must not duplicate the ledger debit',
+      );
 
       const poorShopper = insertUser({
         email: 'poor-shopper@example.test',
@@ -92,6 +108,15 @@ test('backend business consistency regressions', async (t) => {
         ).count,
         0,
         'a failed debit must roll back the provisional inventory row',
+      );
+      assert.equal(
+        one(
+          `SELECT COUNT(*) AS count FROM user_reward_events
+           WHERE user_id = ? AND action = 'shop_redeem'`,
+          [poorShopper.id],
+        ).count,
+        0,
+        'a failed debit must not leave a ledger event',
       );
     });
 

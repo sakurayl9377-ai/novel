@@ -58,6 +58,7 @@ declare module 'vue' {
     ElTimeline: typeof import('element-plus/es')['ElTimeline']
     ElTimelineItem: typeof import('element-plus/es')['ElTimelineItem']
     ElUpload: typeof import('element-plus/es')['ElUpload']
+    FinanceEventDrawer: typeof import('./components/finance/FinanceEventDrawer.vue')['default']
     MetricCard: typeof import('./components/MetricCard.vue')['default']
     NovelEditorDrawer: typeof import('./components/ai-novels/NovelEditorDrawer.vue')['default']
     NovelReviewDrawer: typeof import('./components/ai-novels/NovelReviewDrawer.vue')['default']

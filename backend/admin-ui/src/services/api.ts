@@ -130,6 +130,9 @@ function friendlyApiError(code: string): string {
     user_adjustment_reason_invalid: '请选择有效的账变原因',
     insufficient_user_balance: '用户余额不足，整笔操作已取消',
     cannot_revoke_own_sessions: '不能在用户工作台撤销当前账号自身的登录会话',
+    finance_period_invalid: '请选择有效的账本时间范围',
+    finance_currency_invalid: '请选择成长值、樱花币或同时变化',
+    finance_direction_invalid: '请选择发放或扣除方向',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

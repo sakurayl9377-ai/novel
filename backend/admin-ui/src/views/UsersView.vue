@@ -14,6 +14,7 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRoute } from 'vue-router';
 
 import MetricCard from '@/components/MetricCard.vue';
 import UserBanDialog from '@/components/users/UserBanDialog.vue';
@@ -53,6 +54,7 @@ import {
 } from '@/utils/users';
 
 const session = useSessionStore();
+const route = useRoute();
 const loading = ref(false);
 const initialized = ref(false);
 const items = ref<AdminUser[]>([]);
@@ -105,7 +107,14 @@ const filterCount = computed(() => [query.q, query.status, query.role, query.ris
   .filter((value) => value !== '').length);
 const allStatusCount = computed(() => Number(statusCounts.value.active || 0) + Number(statusCounts.value.banned || 0));
 
-onMounted(() => void loadUsers());
+onMounted(async () => {
+  await loadUsers();
+  const deepLinkedUserId = Number(route.query.userId || 0);
+  if (!Number.isSafeInteger(deepLinkedUserId) || deepLinkedUserId <= 0) return;
+  selectedUserId.value = deepLinkedUserId;
+  selectedUser.value = items.value.find((item) => item.id === deepLinkedUserId) || null;
+  detailOpen.value = true;
+});
 
 async function loadUsers(): Promise<void> {
   loading.value = true;

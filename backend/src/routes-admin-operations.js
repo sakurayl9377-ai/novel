@@ -32,6 +32,12 @@ export async function adminOperationsRoutes(app) {
   );
 
   app.get(
+    "/admin/finance/workbench",
+    { preHandler: app.adminRequired },
+    async (request) => financeWorkbench(request.query || {}),
+  );
+
+  app.get(
     "/admin/horse-race/rounds",
     { preHandler: app.adminRequired },
     async (request) => horseRaceRounds(request.query || {}),
@@ -328,6 +334,209 @@ function financeEvents(query) {
      ORDER BY count DESC, action ASC`,
   );
   return { page, pageSize, total, summary, actions, items };
+}
+
+function financeWorkbench(query) {
+  const { page, pageSize, offset } = pageParams(query);
+  const keyword = optionalString(query.q, 100);
+  const period = optionalString(query.period, 12).toLowerCase() || "30d";
+  const currency = optionalString(query.currency, 12).toLowerCase();
+  const direction = optionalString(query.direction, 12).toLowerCase();
+  const action = optionalString(query.action, 80);
+  const periodModifiers = {
+    today: "",
+    "7d": "-7 days",
+    "30d": "-30 days",
+    "90d": "-90 days",
+    "365d": "-365 days",
+    all: "",
+  };
+  if (!Object.hasOwn(periodModifiers, period)) {
+    throw badRequest("finance_period_invalid");
+  }
+  if (currency && !["points", "coins", "mixed"].includes(currency)) {
+    throw badRequest("finance_currency_invalid");
+  }
+  if (direction && !["credit", "debit"].includes(direction)) {
+    throw badRequest("finance_direction_invalid");
+  }
+
+  const baseWhere = [];
+  const baseParams = [];
+  if (period === "today") {
+    baseWhere.push(
+      "e.created_at >= datetime('now', '+8 hours', 'start of day', '-8 hours')",
+    );
+  } else if (periodModifiers[period]) {
+    baseWhere.push("e.created_at >= datetime('now', ?)");
+    baseParams.push(periodModifiers[period]);
+  }
+  if (keyword) {
+    const like = `%${keyword}%`;
+    baseWhere.push(
+      `(CAST(u.id AS TEXT) LIKE ? OR u.email LIKE ? OR u.nickname LIKE ?
+        OR e.description LIKE ? OR e.related_type LIKE ? OR e.related_id LIKE ?)`,
+    );
+    baseParams.push(like, like, like, like, like, like);
+  }
+  if (currency === "points") baseWhere.push("e.points_delta <> 0");
+  if (currency === "coins") baseWhere.push("e.coins_delta <> 0");
+  if (currency === "mixed") {
+    baseWhere.push("e.points_delta <> 0 AND e.coins_delta <> 0");
+  }
+  if (direction === "credit") {
+    baseWhere.push("(e.points_delta > 0 OR e.coins_delta > 0)");
+  }
+  if (direction === "debit") {
+    baseWhere.push("(e.points_delta < 0 OR e.coins_delta < 0)");
+  }
+
+  const where = [...baseWhere];
+  const params = [...baseParams];
+  if (action) {
+    where.push("e.action = ?");
+    params.push(action);
+  }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const baseClause = baseWhere.length
+    ? `WHERE ${baseWhere.join(" AND ")}`
+    : "";
+  const total = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM user_reward_events e
+       JOIN users u ON u.id = e.user_id
+       ${clause}`,
+      params,
+    )?.count || 0,
+  );
+  const summary = one(
+    `SELECT COUNT(DISTINCT e.user_id) AS affected_users,
+            COALESCE(SUM(e.points_delta), 0) AS points_delta,
+            COALESCE(SUM(CASE WHEN e.points_delta > 0 THEN e.points_delta ELSE 0 END), 0) AS points_issued,
+            COALESCE(ABS(SUM(CASE WHEN e.points_delta < 0 THEN e.points_delta ELSE 0 END)), 0) AS points_spent,
+            COALESCE(SUM(e.coins_delta), 0) AS coins_delta,
+            COALESCE(SUM(CASE WHEN e.coins_delta > 0 THEN e.coins_delta ELSE 0 END), 0) AS coins_issued,
+            COALESCE(ABS(SUM(CASE WHEN e.coins_delta < 0 THEN e.coins_delta ELSE 0 END)), 0) AS coins_spent
+     FROM user_reward_events e
+     JOIN users u ON u.id = e.user_id
+     ${clause}`,
+    params,
+  ) || {};
+  const items = all(
+    `SELECT e.*, u.email, u.nickname, u.avatar_url,
+            u.points AS current_points, u.sakura_coins AS current_coins,
+            operator.id AS operator_id, operator.nickname AS operator_nickname,
+            operator.email AS operator_email
+     FROM user_reward_events e
+     JOIN users u ON u.id = e.user_id
+     LEFT JOIN users operator
+       ON e.related_type = 'admin'
+      AND e.related_id = CAST(operator.id AS TEXT)
+     ${clause}
+     ORDER BY e.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset],
+  ).map(financeEventJson);
+  const actions = all(
+    `SELECT e.action, COUNT(*) AS event_count,
+            COALESCE(SUM(e.points_delta), 0) AS points_delta,
+            COALESCE(SUM(e.coins_delta), 0) AS coins_delta
+     FROM user_reward_events e
+     JOIN users u ON u.id = e.user_id
+     ${baseClause}
+     GROUP BY e.action
+     ORDER BY event_count DESC, e.action ASC`,
+    baseParams,
+  ).map((row) => ({
+    action: row.action || "",
+    count: Number(row.event_count || 0),
+    pointsDelta: Number(row.points_delta || 0),
+    coinsDelta: Number(row.coins_delta || 0),
+  }));
+  const daily = all(
+    `SELECT date(e.created_at, '+8 hours') AS day,
+            COUNT(*) AS event_count,
+            COALESCE(SUM(CASE WHEN e.points_delta > 0 THEN e.points_delta ELSE 0 END), 0) AS points_credit,
+            COALESCE(ABS(SUM(CASE WHEN e.points_delta < 0 THEN e.points_delta ELSE 0 END)), 0) AS points_debit,
+            COALESCE(SUM(CASE WHEN e.coins_delta > 0 THEN e.coins_delta ELSE 0 END), 0) AS coins_credit,
+            COALESCE(ABS(SUM(CASE WHEN e.coins_delta < 0 THEN e.coins_delta ELSE 0 END)), 0) AS coins_debit
+     FROM user_reward_events e
+     JOIN users u ON u.id = e.user_id
+     ${clause}
+     GROUP BY date(e.created_at, '+8 hours')
+     ORDER BY day DESC
+     LIMIT 90`,
+    params,
+  ).reverse().map((row) => ({
+    day: row.day || "",
+    events: Number(row.event_count || 0),
+    pointsCredit: Number(row.points_credit || 0),
+    pointsDebit: Number(row.points_debit || 0),
+    coinsCredit: Number(row.coins_credit || 0),
+    coinsDebit: Number(row.coins_debit || 0),
+  }));
+  const balances = one(
+    `SELECT COUNT(*) AS users,
+            COALESCE(SUM(points), 0) AS total_points,
+            COALESCE(SUM(sakura_coins), 0) AS total_coins,
+            SUM(CASE WHEN sakura_coins > 0 THEN 1 ELSE 0 END) AS coin_holders,
+            SUM(CASE WHEN points < 0 OR sakura_coins < 0 THEN 1 ELSE 0 END) AS negative_balances
+     FROM users`,
+  ) || {};
+  return {
+    page,
+    pageSize,
+    total,
+    filters: { period, currency, direction, action },
+    summary: {
+      affectedUsers: Number(summary.affected_users || 0),
+      pointsDelta: Number(summary.points_delta || 0),
+      pointsIssued: Number(summary.points_issued || 0),
+      pointsSpent: Number(summary.points_spent || 0),
+      coinsDelta: Number(summary.coins_delta || 0),
+      coinsIssued: Number(summary.coins_issued || 0),
+      coinsSpent: Number(summary.coins_spent || 0),
+    },
+    balances: {
+      users: Number(balances.users || 0),
+      totalPoints: Number(balances.total_points || 0),
+      totalCoins: Number(balances.total_coins || 0),
+      coinHolders: Number(balances.coin_holders || 0),
+      negativeBalances: Number(balances.negative_balances || 0),
+    },
+    actions,
+    daily,
+    items,
+  };
+}
+
+function financeEventJson(row) {
+  return {
+    id: Number(row.id || 0),
+    action: row.action || "",
+    pointsDelta: Number(row.points_delta || 0),
+    coinsDelta: Number(row.coins_delta || 0),
+    description: row.description || "",
+    relatedType: row.related_type || "",
+    relatedId: row.related_id || "",
+    createdAt: row.created_at || "",
+    user: {
+      id: Number(row.user_id || 0),
+      email: row.email || "",
+      nickname: row.nickname || "",
+      avatarUrl: row.avatar_url || "",
+      currentPoints: Number(row.current_points || 0),
+      currentCoins: Number(row.current_coins || 0),
+    },
+    operator: row.operator_id
+      ? {
+          id: Number(row.operator_id),
+          nickname: row.operator_nickname || "",
+          email: row.operator_email || "",
+        }
+      : null,
+  };
 }
 
 function horseRaceRounds(query) {
