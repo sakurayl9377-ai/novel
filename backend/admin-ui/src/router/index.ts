@@ -91,7 +91,7 @@ export const router = createRouter({
           component: DanmakuView,
           meta: {
             title: '弹幕管理',
-            hint: '时间轴审核、剧集绑定与外部弹幕同步',
+              hint: '本地弹幕审核、剧集定位与时间轴上下文',
             requiresAuth: true,
             requiresAdmin: true,
           },
