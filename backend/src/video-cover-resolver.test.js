@@ -30,11 +30,12 @@ test('prefers the matching language and rejects a different numbered season', ()
   assert.equal(seasonMismatch, null);
 });
 
-test('accepts persisted covers only from the active catalog provider', () => {
+test('accepts persisted covers only from active cover providers', () => {
   const supported = videoCoverResolverInternals.isSupportedCachedCover;
   assert.equal(supported({ provider: 'dbzy', coverUrl: 'https://img.example/cover.jpg' }), false);
-  assert.equal(supported({ provider: 'dbzy', coverUrl: '/video-covers/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg' }), true);
+  assert.equal(supported({ provider: 'dbzy', coverUrl: '/video-covers/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg' }), false);
   assert.equal(supported({ provider: 'douban', coverUrl: '/video-covers/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp' }), true);
+  assert.equal(supported({ provider: 'wuhandky', coverUrl: '/video-covers/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg' }), true);
   assert.equal(supported({ provider: 'removed-provider', coverUrl: 'https://img.example/cover.jpg' }), false);
   assert.equal(supported({ provider: 'dbzy', coverUrl: 'not-a-url' }), false);
 });

@@ -1,8 +1,7 @@
 import { ensureManagedUploadRetirementTriggers, one, run } from './db.js';
-import { searchDbzyCache } from './dbzy-source.js';
 import { mirrorVideoCover } from './video-cover-cache.js';
 
-const SUPPORTED_PROVIDERS = new Set(['dbzy', 'douban', 'wuhandky']);
+const SUPPORTED_PROVIDERS = new Set(['douban', 'wuhandky']);
 const WUHANDKY_IMAGE_HOSTS = new Set([
   'pic.fzmmx.com',
   'pic.danzhoufdc.com',
@@ -180,19 +179,6 @@ async function mirrorCatalogCover(url, provider) {
 
 async function findCatalogCover(title, year) {
   const queries = catalogQueries(title);
-  for (const query of queries) {
-    try {
-      const result = await searchDbzyCache(query, {
-        page: 1,
-        pageSize: 30,
-        allowStale: true,
-      });
-      const match = selectBestCoverMatch(title, year, result.items);
-      if (match) return catalogResult(match, 'dbzy');
-    } catch {
-      // The local cache is optional; continue to the public title catalog.
-    }
-  }
   for (const query of queries.slice(0, 2)) {
     try {
       const items = await withDoubanSlot(() => searchDoubanSuggestions(query));
@@ -266,7 +252,7 @@ function ensureTable() {
   run(
     `DELETE FROM video_cover_urls
      WHERE trim(cover_url) <> ''
-       AND lower(trim(provider)) NOT IN ('dbzy', 'douban', 'wuhandky')`,
+       AND lower(trim(provider)) NOT IN ('douban', 'wuhandky')`,
   );
   tableReady = true;
 }

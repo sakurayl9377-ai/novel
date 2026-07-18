@@ -588,51 +588,6 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_content_progress_updated
       ON user_content_progress(user_id, updated_at);
 
-    CREATE TABLE IF NOT EXISTS suibian_favorites (
-      user_id INTEGER NOT NULL,
-      drama_id TEXT NOT NULL,
-      title TEXT NOT NULL DEFAULT '',
-      category TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, drama_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_suibian_favorites_user
-      ON suibian_favorites(user_id, updated_at DESC);
-
-    CREATE TABLE IF NOT EXISTS suibian_likes (
-      user_id INTEGER NOT NULL,
-      drama_id TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, drama_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_suibian_likes_drama
-      ON suibian_likes(drama_id);
-
-    CREATE TABLE IF NOT EXISTS suibian_watch_history (
-      user_id INTEGER NOT NULL,
-      drama_id TEXT NOT NULL,
-      episode_index INTEGER NOT NULL DEFAULT 0,
-      episode_title TEXT NOT NULL DEFAULT '',
-      position_ms INTEGER NOT NULL DEFAULT 0,
-      duration_ms INTEGER NOT NULL DEFAULT 0,
-      title TEXT NOT NULL DEFAULT '',
-      category TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, drama_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      CHECK (episode_index >= 0),
-      CHECK (position_ms >= 0),
-      CHECK (duration_ms >= 0)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_suibian_history_user
-      ON suibian_watch_history(user_id, updated_at DESC);
-
     CREATE TABLE IF NOT EXISTS app_telemetry_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -714,38 +669,6 @@ export function migrate() {
       ON content_catalog(content_type, status, title, author);
     CREATE INDEX IF NOT EXISTS idx_content_catalog_source
       ON content_catalog(source_key, last_seen_at);
-
-    CREATE TABLE IF NOT EXISTS video_content_overrides (
-      source_key TEXT NOT NULL,
-      source_item_id TEXT NOT NULL,
-      visibility TEXT NOT NULL DEFAULT 'active',
-      note TEXT NOT NULL DEFAULT '',
-      updated_by INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (source_key, source_item_id),
-      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
-      CHECK (visibility IN ('active', 'hidden'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_video_content_overrides_visibility
-      ON video_content_overrides(source_key, visibility, updated_at);
-
-    CREATE TABLE IF NOT EXISTS video_category_policies (
-      source_key TEXT NOT NULL,
-      category_id INTEGER NOT NULL,
-      mode TEXT NOT NULL DEFAULT 'always',
-      daily_start TEXT NOT NULL DEFAULT '00:00',
-      daily_end TEXT NOT NULL DEFAULT '23:59',
-      timezone TEXT NOT NULL DEFAULT 'Asia/Hong_Kong',
-      age_restricted INTEGER NOT NULL DEFAULT 0,
-      updated_by INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (source_key, category_id),
-      FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
-      CHECK (mode IN ('always', 'hidden', 'scheduled'))
-    );
 
     CREATE TABLE IF NOT EXISTS content_source_health (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1295,6 +1218,7 @@ export function migrate() {
   addMissingColumn("content_source_health", "last_observation_error", "TEXT NOT NULL DEFAULT ''");
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
+  retireSuibianVideoData();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_active
       ON auth_tokens(user_id, revoked_at, expires_at);
@@ -1321,28 +1245,72 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_horse_race_bets_user
       ON horse_race_bets(user_id, round_id);
   `);
-  // DBZY is the only managed video catalog in this repository. Remove stale
-  // administration rows left by integrations that now live elsewhere.
-  db.exec(`
-    DELETE FROM video_content_overrides WHERE source_key <> 'dbzy';
-    DELETE FROM video_category_policies WHERE source_key <> 'dbzy';
-  `);
   seedChatRooms();
-  db.prepare(
-    `INSERT OR IGNORE INTO video_category_policies
-     (source_key, category_id, mode, daily_start, daily_end, timezone, age_restricted)
-     VALUES ('dbzy', 34, 'scheduled', '00:00', '06:00', ?, 1)`,
-  ).run(config.videoPolicyTimezone);
-  for (const categoryId of [35, 36]) {
-    db.prepare(
-      `INSERT OR IGNORE INTO video_category_policies
-       (source_key, category_id, mode, daily_start, daily_end, timezone, age_restricted)
-       VALUES ('dbzy', ?, 'hidden', '00:00', '23:59', ?, 0)`,
-    ).run(categoryId, config.videoPolicyTimezone);
-  }
   seedShopItems();
   seedChatBlockKeywords();
   encryptStoredSettingSecrets();
+}
+
+function retireSuibianVideoData() {
+  const videoCoverTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'video_cover_urls'")
+    .get();
+  const retiredCoverUrls = videoCoverTable
+    ? db
+        .prepare(
+          `SELECT DISTINCT cover_url AS coverUrl
+           FROM video_cover_urls
+           WHERE lower(trim(provider)) = 'dbzy'
+              OR lower(trim(source_key)) = 'dbzy'`,
+        )
+        .all()
+        .map((row) => String(row.coverUrl || ''))
+    : [];
+
+  db.exec(`
+    DROP TABLE IF EXISTS suibian_watch_history;
+    DROP TABLE IF EXISTS suibian_likes;
+    DROP TABLE IF EXISTS suibian_favorites;
+    DROP TABLE IF EXISTS video_category_policies;
+    DROP TABLE IF EXISTS video_content_overrides;
+  `);
+  if (videoCoverTable) {
+    db.exec(`
+      DELETE FROM video_cover_urls
+      WHERE lower(trim(provider)) = 'dbzy'
+         OR lower(trim(source_key)) = 'dbzy';
+    `);
+    const referenced = db.prepare(
+      'SELECT 1 FROM video_cover_urls WHERE cover_url = ? LIMIT 1',
+    );
+    for (const coverUrl of retiredCoverUrls) {
+      if (referenced.get(coverUrl)) continue;
+      const file = managedVideoCoverFile(coverUrl);
+      if (file) fs.rmSync(file, { force: true });
+    }
+  }
+
+  const retiredFiles = new Set([
+    path.join(config.rootDir, 'data', 'dbzy-cache.json'),
+    path.join(config.rootDir, 'data', 'suibian-catalog.json'),
+    retiredDataFile(process.env.DBZY_CACHE_FILE),
+    retiredDataFile(process.env.SUIBIAN_CATALOG_FILE),
+  ]);
+  for (const file of retiredFiles) {
+    if (file) fs.rmSync(file, { force: true });
+  }
+}
+
+function retiredDataFile(value) {
+  const file = String(value || '').trim();
+  return file ? path.resolve(config.rootDir, file) : '';
+}
+
+function managedVideoCoverFile(value) {
+  const match = String(value || '').match(
+    /^\/video-covers\/files\/([a-f0-9]{64}\.(?:gif|jpe?g|png|webp))$/i,
+  );
+  return match ? path.join(config.videoCoverDir, match[1]) : '';
 }
 
 function encryptStoredSettingSecrets() {

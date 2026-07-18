@@ -2,6 +2,7 @@
 // Loaded as an ordered deferred browser script; shared bindings are declared in admin-core.js.
 
 const config = window.NOVEL_ADMIN_CONFIG || { apiPrefix: "/api" };
+const formatTime = window.NOVEL_ADMIN_TIME.formatTime;
 const defaultSpeechSettings = {
   asrProductType: "rtasr",
   asrHostUrls: {
@@ -35,11 +36,6 @@ const state = {
     editFlag: null,
     preview: null,
   },
-  videoOps: {
-    categoryId: 0,
-    kind: "",
-    selectedId: "",
-  },
   growthOps: {
     days: 7,
     period: "weekly",
@@ -50,7 +46,6 @@ const state = {
     race: 1,
     notifications: 1,
     audit: 1,
-    videoOps: 1,
   },
   chatSelection: new Set(),
   danmakuEpisodeItems: [],
@@ -89,7 +84,6 @@ const viewMeta = {
   dashboard: ["总览", "查看服务状态、活跃对象和待处理风险。"],
   comments: ["评论", "按作品、章节或集数管理评论与回复。"],
   contentOps: ["内容运营", "统一管理作品目录、首页推荐位、来源健康、缓存修订和功能灰度。"],
-  videoOps: ["随便看视频", "管理影视与短剧目录、分类时段、HLS 线路候选和采集源同步。"],
   danmaku: ["弹幕", "按规范视频池管理弹幕，维护多个播放源共享关系。"],
   chat: ["聊天室", "按房间查看实时社区消息并处理违规内容。"],
   users: ["用户", "查看用户身份、活跃度、举报关系并执行封禁。"],
@@ -131,10 +125,6 @@ const statusOptions = {
     ["active", "目录正常"],
     ["inactive", "目录停用"],
     ["missing", "来源缺失"],
-  ],
-  videoOps: [
-    ["active", "已展示"],
-    ["hidden", "已隐藏"],
   ],
   versions: [
     ["current", "当前版"],
@@ -1419,18 +1409,6 @@ function empty(text) {
 
 function parseJsonDataset(element, key) {
   return JSON.parse(element.dataset[key] || "{}");
-}
-
-function formatTime(value) {
-  if (!value) return "-";
-  const date = new Date(String(value).replace(" ", "T"));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function formatBytes(value) {

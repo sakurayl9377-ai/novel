@@ -73,30 +73,6 @@ export const config = {
   trustedProxies: envList('TRUST_PROXY', '127.0.0.1,::1'),
   allowDevAuthCodes: envBool('ALLOW_DEV_AUTH_CODES', false),
   allowBetaTestSession: envBool('ALLOW_BETA_TEST_SESSION', false),
-  // The mobile app only receives normalized catalog data and episode HLS URLs.
-  // A local server-managed catalog is preferred; an authenticated HTTPS
-  // endpoint can be configured when the catalog is maintained elsewhere.
-  suibianCatalogFile: path.resolve(
-    rootDir,
-    env('SUIBIAN_CATALOG_FILE', './data/suibian-catalog.json'),
-  ),
-  suibianCatalogUrl: env('SUIBIAN_CATALOG_URL'),
-  suibianCatalogToken: env('SUIBIAN_CATALOG_TOKEN'),
-  suibianCatalogTimeoutMs: envNumber('SUIBIAN_CATALOG_TIMEOUT_MS', 8000),
-  suibianCatalogCacheTtlMs: envNumber('SUIBIAN_CATALOG_CACHE_TTL_MS', 300000),
-  suibianCatalogMaxBytes: envNumber('SUIBIAN_CATALOG_MAX_BYTES', 5 * 1024 * 1024),
-  dbzyEnabled: envBool('DBZY_ENABLED', true),
-  dbzyBaseUrl: env(
-    'DBZY_BASE_URL',
-    'https://caiji.dbzy5.com/api.php/provide/vod/from/dbm3u8/at/josn/',
-  ),
-  dbzyCacheFile: path.resolve(rootDir, env('DBZY_CACHE_FILE', './data/dbzy-cache.json')),
-  dbzyCacheTtlMs: envNumber('DBZY_CACHE_TTL_MS', 10 * 60 * 1000),
-  dbzyIncrementalHours: envNumber('DBZY_INCREMENTAL_HOURS', 24),
-  dbzyIncrementalMaxPages: envNumber('DBZY_INCREMENTAL_MAX_PAGES', 10),
-  dbzyTimeoutMs: envNumber('DBZY_TIMEOUT_MS', 8000),
-  dbzyMinRequestIntervalMs: envNumber('DBZY_MIN_REQUEST_INTERVAL_MS', 350),
-  dbzyMaxBytes: envNumber('DBZY_MAX_BYTES', 8 * 1024 * 1024),
   videoCoverDir: path.resolve(
     rootDir,
     env('VIDEO_COVER_DIR', './data/video-covers'),
@@ -115,9 +91,6 @@ export const config = {
   wenku8AutoRegister: envBool('WENKU8_AUTO_REGISTER', true),
   wenku8CacheTtlMs: envNumber('WENKU8_CACHE_TTL_MS', 10 * 60 * 1000),
   wenku8TimeoutMs: envNumber('WENKU8_TIMEOUT_MS', 8000),
-  dbzySyncEnabled: envBool('DBZY_SYNC_ENABLED', true),
-  dbzySyncIntervalMs: envNumber('DBZY_SYNC_INTERVAL_MS', 30 * 60 * 1000),
-  videoPolicyTimezone: env('VIDEO_POLICY_TIMEZONE', 'Asia/Hong_Kong'),
   speechAllowRemoteAudio: envBool('SPEECH_ALLOW_REMOTE_AUDIO', false),
   speechAudioMaxBytes: envNumber('SPEECH_AUDIO_MAX_BYTES', 5 * 1024 * 1024),
   speechAudioTimeoutMs: envNumber('SPEECH_AUDIO_TIMEOUT_MS', 8000),

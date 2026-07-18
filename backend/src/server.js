@@ -8,21 +8,18 @@ import { recordAdminAudit } from './admin-audit.js';
 import { adminRequired, authOptional, authRequired } from './auth.js';
 import { seedChatBotRooms } from './chat-bot.js';
 import { config } from './config.js';
-import { startDbzySyncScheduler, stopDbzySyncScheduler } from './dbzy-sync-scheduler.js';
 import { closeDb, migrate, seedAdmin } from './db.js';
 import { secureLoggerOptions } from './log-security.js';
 import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
-import { adminVideoRoutes } from './routes-admin-video.js';
 import { aiNovelRoutes } from './routes-ai-novels.js';
 import { authRoutes } from './routes-auth.js';
 import { contentRoutes } from './routes-content.js';
 import { gameRoutes } from './routes-game.js';
 import { growthRoutes } from './routes-growth.js';
 import { speechRoutes } from './routes-speech.js';
-import { suibianRoutes } from './routes-suibian.js';
 import { telemetryRoutes } from './routes-telemetry.js';
 import { userRoutes } from './routes-user.js';
 import {
@@ -42,11 +39,9 @@ export async function buildServer() {
   });
 
   startUploadOrphanSweeper(app.log);
-  startDbzySyncScheduler(app.log);
 
   app.addHook('onClose', async () => {
     await stopUploadOrphanSweeper();
-    stopDbzySyncScheduler();
     closeDb();
   });
 
@@ -84,14 +79,12 @@ export async function buildServer() {
       api.register(gameRoutes);
       api.register(growthRoutes);
       api.register(speechRoutes);
-      api.register(suibianRoutes);
       api.register(telemetryRoutes);
       api.register(aiNovelRoutes);
       api.register(adminRoutes);
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
       api.register(adminOperationsRoutes);
-      api.register(adminVideoRoutes);
       api.register(userRoutes);
     },
     { prefix: config.apiPrefix },
