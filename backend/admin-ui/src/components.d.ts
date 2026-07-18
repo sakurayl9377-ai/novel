@@ -11,11 +11,17 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ChatKeywordDrawer: typeof import('./components/chat/ChatKeywordDrawer.vue')['default']
+    ChatMembersDrawer: typeof import('./components/chat/ChatMembersDrawer.vue')['default']
+    ChatMessageDrawer: typeof import('./components/chat/ChatMessageDrawer.vue')['default']
+    ChatRoomEditorDrawer: typeof import('./components/chat/ChatRoomEditorDrawer.vue')['default']
     CommentContextDrawer: typeof import('./components/moderation/CommentContextDrawer.vue')['default']
     DanmakuContextDrawer: typeof import('./components/danmaku/DanmakuContextDrawer.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
+    ElAvatar: typeof import('element-plus/es')['ElAvatar']
     ElBadge: typeof import('element-plus/es')['ElBadge']
     ElButton: typeof import('element-plus/es')['ElButton']
+    ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElCollapse: typeof import('element-plus/es')['ElCollapse']
     ElCollapseItem: typeof import('element-plus/es')['ElCollapseItem']
     ElConfigProvider: typeof import('element-plus/es')['ElConfigProvider']
@@ -40,6 +46,7 @@ declare module 'vue' {
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElSkeleton: typeof import('element-plus/es')['ElSkeleton']
     ElSubMenu: typeof import('element-plus/es')['ElSubMenu']
+    ElSwitch: typeof import('element-plus/es')['ElSwitch']
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTabPane: typeof import('element-plus/es')['ElTabPane']

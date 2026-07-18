@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import { all, db, one, run } from "./db.js";
 import {
   fetchAnimeSourceDetail,
@@ -24,7 +26,11 @@ import {
   testChatBotReply,
 } from "./chat-bot.js";
 import { growthFromUser, levelFromPoints, levelThresholds } from "./growth.js";
-import { recordKnownUserBanIps } from "./chat-moderation.js";
+import {
+  findActiveChatKeyword,
+  recordBannedRegistrationIp,
+  recordKnownUserBanIps,
+} from "./chat-moderation.js";
 import { chatJson } from "./websocket.js";
 import {
   canonicalDanmakuVideoId,
@@ -49,6 +55,14 @@ const chatRoomCategories = [
   { key: "anime", label: "动漫" },
   { key: "manga", label: "漫画" },
 ];
+const chatMessageTypes = new Set([
+  "text",
+  "image",
+  "audio",
+  "file",
+  "sticker",
+  "share",
+]);
 
 export async function adminRoutes(app) {
   app.get("/admin/summary", { preHandler: app.adminRequired }, async () => {
@@ -1027,16 +1041,32 @@ export async function adminRoutes(app) {
       where.push("m.status = ?");
       params.push(status);
     }
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const total = Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM chat_messages m
+         JOIN users u ON u.id = m.user_id
+         ${clause}`,
+        params,
+      )?.count || 0,
+    );
     const items = all(
       `SELECT m.*, u.nickname, u.avatar_url
        FROM chat_messages m
        JOIN users u ON u.id = m.user_id
-       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ${clause}
        ORDER BY m.id DESC
        LIMIT ? OFFSET ?`,
       [...params, pageSize, offset],
     ).map(chatJson);
-    return { page, pageSize, items };
+    return {
+      page,
+      pageSize,
+      total,
+      statusCounts: statusCounts("chat_messages", "status"),
+      items,
+    };
   });
 
   app.get(
@@ -1051,10 +1081,13 @@ export async function adminRoutes(app) {
     async (request) => {
       const body = request.body || {};
       const name = requiredString(body.name, "name", 40);
-      const roomId =
-        normalizeChatRoomId(body.roomId) ||
-        normalizeChatRoomId(name) ||
-        `room-${Date.now()}`;
+      const requestedRoomId = optionalString(body.roomId, 80);
+      const roomId = requestedRoomId
+        ? validateNewChatRoomId(requestedRoomId)
+        : `room-${Date.now().toString(36)}`;
+      if (one("SELECT id FROM chat_rooms WHERE id = ?", [roomId])) {
+        throw badRequest("chat_room_exists");
+      }
       const avatarUrl = optionalString(body.avatarUrl, 800);
       const minLevel = clampLevel(body.minLevel);
       const category = normalizeChatRoomCategory(body.category);
@@ -1063,16 +1096,7 @@ export async function adminRoutes(app) {
       run(
         `INSERT INTO chat_rooms
            (id, name, avatar_url, min_level, category, is_official, owner_id, bot_enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name,
-           avatar_url = excluded.avatar_url,
-           min_level = excluded.min_level,
-           category = excluded.category,
-           is_official = excluded.is_official,
-           bot_enabled = excluded.bot_enabled,
-           status = 'active',
-           updated_at = datetime('now')`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           roomId,
           name,
@@ -1084,7 +1108,7 @@ export async function adminRoutes(app) {
           botEnabled,
         ],
       );
-      ensureChatBotWelcomeMessage(roomId, name);
+      if (botEnabled) ensureChatBotWelcomeMessage(roomId, name);
       return { ok: true, item: chatRoomAdminDetail(roomId) };
     },
   );
@@ -1096,6 +1120,9 @@ export async function adminRoutes(app) {
       const roomId = normalizeChatRoomId(request.params.roomId);
       const current = one("SELECT * FROM chat_rooms WHERE id = ?", [roomId]);
       if (!current) throw badRequest("chat room not found");
+      if (current.status === "deleted") {
+        throw badRequest("chat_room_dissolved");
+      }
       const body = request.body || {};
       const name = optionalString(body.name, 40) || current.name;
       const avatarUrl = Object.hasOwn(body, "avatarUrl")
@@ -1139,6 +1166,100 @@ export async function adminRoutes(app) {
     },
   );
 
+  app.get(
+    "/admin/chat/rooms/:roomId/members",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const roomId = normalizeChatRoomId(request.params.roomId);
+      if (!one("SELECT id FROM chat_rooms WHERE id = ?", [roomId])) {
+        throw badRequest("chat room not found");
+      }
+      const { page, pageSize, offset } = pageParams(request.query || {});
+      const keyword = optionalString(request.query?.q, 120);
+      const role = optionalString(request.query?.role, 20);
+      if (role && !["member", "manager"].includes(role)) {
+        throw badRequest("chat room member role is invalid");
+      }
+      const where = ["member.room_id = ?"];
+      const params = [roomId];
+      if (keyword) {
+        where.push("(u.nickname LIKE ? OR u.email LIKE ?)");
+        params.push(`%${keyword}%`, `%${keyword}%`);
+      }
+      if (role) {
+        where.push("member.role = ?");
+        params.push(role);
+      }
+      const clause = `WHERE ${where.join(" AND ")}`;
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM chat_room_members member
+           JOIN users u ON u.id = member.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
+      const items = all(
+        `SELECT member.*, u.nickname, u.email, u.avatar_url, u.status AS user_status
+         FROM chat_room_members member
+         JOIN users u ON u.id = member.user_id
+         ${clause}
+         ORDER BY CASE member.role WHEN 'manager' THEN 0 ELSE 1 END,
+                  member.joined_at DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset],
+      ).map(chatRoomMemberJson);
+      return { page, pageSize, total, items };
+    },
+  );
+
+  app.patch(
+    "/admin/chat/rooms/:roomId/members/:userId",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const roomId = normalizeChatRoomId(request.params.roomId);
+      const userId = positiveAdminId(request.params.userId, "chat member user id");
+      const role = requiredString(request.body?.role, "role", 20);
+      if (!["member", "manager"].includes(role)) {
+        throw badRequest("chat room member role is invalid");
+      }
+      const current = chatRoomMemberRow(roomId, userId);
+      if (!current) throw badRequest("chat room member not found");
+      if (isSystemChatMember(current)) throw badRequest("chat_bot_member_locked");
+      run(
+        `UPDATE chat_room_members
+         SET role = ?
+         WHERE room_id = ? AND user_id = ?`,
+        [role, roomId, userId],
+      );
+      return { ok: true, item: chatRoomMemberJson(chatRoomMemberRow(roomId, userId)) };
+    },
+  );
+
+  app.delete(
+    "/admin/chat/rooms/:roomId/members/:userId",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const roomId = normalizeChatRoomId(request.params.roomId);
+      const userId = positiveAdminId(request.params.userId, "chat member user id");
+      const current = chatRoomMemberRow(roomId, userId);
+      if (!current) throw badRequest("chat room member not found");
+      if (isSystemChatMember(current)) throw badRequest("chat_bot_member_locked");
+      run("DELETE FROM chat_room_members WHERE room_id = ? AND user_id = ?", [
+        roomId,
+        userId,
+      ]);
+      const disconnected =
+        request.server.disconnectChatRoomUser?.(
+          roomId,
+          userId,
+          "chat_room_membership_revoked_by_admin",
+        ) || 0;
+      return { ok: true, disconnected };
+    },
+  );
+
   app.delete(
     "/admin/chat/rooms/:roomId",
     { preHandler: app.adminRequired },
@@ -1171,55 +1292,105 @@ export async function adminRoutes(app) {
     { preHandler: app.adminRequired },
     async (request) => {
       const roomId = requiredString(request.query?.roomId, "roomId", 120);
+      const { page, pageSize, offset } = pageParams(request.query || {});
       const keyword = optionalString(request.query?.q, 120);
       const status = optionalString(request.query?.status, 20) || "visible";
-      const whereKeyword = keyword
-        ? "AND (m.content LIKE ? OR u.nickname LIKE ?)"
-        : "";
-      const params = keyword
-        ? [roomId, status, `%${keyword}%`, `%${keyword}%`]
-        : [roomId, status];
-      const room = one(
-        `SELECT
-           r.id AS room_id,
-           r.name,
-           r.avatar_url,
-           r.min_level,
-           r.category,
-           r.is_official,
-           r.status AS room_status,
-           r.bot_enabled,
-           COUNT(m.id) AS message_count,
-           COUNT(DISTINCT m.user_id) AS user_count,
-           MAX(m.created_at) AS last_created_at,
-           (
-             SELECT m2.content
-             FROM chat_messages m2
-             WHERE m2.room_id = r.id
-               AND m2.status = 'visible'
-             ORDER BY m2.id DESC
-             LIMIT 1
-           ) AS latest_content
-         FROM chat_rooms r
-         LEFT JOIN chat_messages m
-           ON m.room_id = r.id AND m.status = ?
-         WHERE r.id = ?
-         GROUP BY r.id`,
-        [status, roomId],
-      );
+      const type = optionalString(request.query?.type, 20);
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("chat message status is invalid");
+      }
+      if (type && !chatMessageTypes.has(type)) {
+        throw badRequest("chat message type is invalid");
+      }
+      const room = chatRoomAdminDetail(roomId);
       if (!room) throw badRequest("chat room not found");
+      const where = ["m.room_id = ?", "m.status = ?"];
+      const params = [roomId, status];
+      if (keyword) {
+        where.push("(m.content LIKE ? OR u.nickname LIKE ?)");
+        params.push(`%${keyword}%`, `%${keyword}%`);
+      }
+      if (type) {
+        where.push("m.type = ?");
+        params.push(type);
+      }
+      const clause = `WHERE ${where.join(" AND ")}`;
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM chat_messages m
+           JOIN users u ON u.id = m.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
       const items = all(
         `SELECT m.*, u.nickname, u.avatar_url
          FROM chat_messages m
          JOIN users u ON u.id = m.user_id
-         WHERE m.room_id = ?
-           AND m.status = ?
-           ${whereKeyword}
+         ${clause}
          ORDER BY m.id DESC
-         LIMIT 500`,
-        params,
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset],
       ).map(chatJson);
-      return { room: chatRoomJson(room), items };
+      return {
+        page,
+        pageSize,
+        total,
+        room,
+        statusCounts: chatMessageStatusCounts(roomId),
+        items,
+      };
+    },
+  );
+
+  app.get(
+    "/admin/chat/messages/:id/context",
+    { preHandler: app.adminRequired },
+    async (request) => chatMessageModerationContext(request.params.id),
+  );
+
+  app.patch(
+    "/admin/chat/messages/:id/status",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "chat message id");
+      const status = requiredString(request.body?.status, "status", 20);
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("chat message status is invalid");
+      }
+      const current = chatMessageModerationRow(id);
+      if (!current) throw badRequest("chat message not found");
+      run(
+        `UPDATE chat_messages
+         SET status = ?,
+             deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE NULL END
+         WHERE id = ?`,
+        [status, status, id],
+      );
+      return { ok: true, item: chatJson(chatMessageModerationRow(id)) };
+    },
+  );
+
+  app.patch(
+    "/admin/chat/messages/batch/status",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const ids = uniquePositiveIds(request.body?.ids, 500);
+      if (!ids.length) throw badRequest("chat ids are required");
+      const status = requiredString(request.body?.status, "status", 20);
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("chat message status is invalid");
+      }
+      const placeholders = ids.map(() => "?").join(",");
+      const result = run(
+        `UPDATE chat_messages
+         SET status = ?,
+             deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE NULL END
+         WHERE id IN (${placeholders})`,
+        [status, status, ...ids],
+      );
+      return { ok: true, updated: result.changes ?? 0 };
     },
   );
 
@@ -1227,10 +1398,7 @@ export async function adminRoutes(app) {
     "/admin/chat/batch",
     { preHandler: app.adminRequired },
     async (request) => {
-      const rawIds = Array.isArray(request.body?.ids) ? request.body.ids : [];
-      const ids = [
-        ...new Set(rawIds.map((id) => optionalInt(id)).filter((id) => id > 0)),
-      ].slice(0, 500);
+      const ids = uniquePositiveIds(request.body?.ids, 500);
       if (!ids.length) throw badRequest("chat ids are required");
       const placeholders = ids.map(() => "?").join(",");
       const result = run(
@@ -1249,6 +1417,9 @@ export async function adminRoutes(app) {
     async (request) => {
       const roomId = requiredString(request.body?.roomId, "roomId", 120);
       const status = optionalString(request.body?.status, 20) || "visible";
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("chat message status is invalid");
+      }
       const result = run(
         `UPDATE chat_messages
          SET status = 'deleted', deleted_at = datetime('now')
@@ -1263,27 +1434,63 @@ export async function adminRoutes(app) {
     "/admin/chat/keywords",
     { preHandler: app.adminRequired },
     async (request) => {
+      const keywordPagination = hasExplicitPagination(request.query)
+        ? pageParams(request.query || {})
+        : { page: 1, pageSize: 300, offset: 0 };
+      const { page, pageSize, offset } = keywordPagination;
       const keyword = optionalString(request.query?.q, 80);
       const status = optionalString(request.query?.status, 20);
       const where = [];
       const params = [];
       if (keyword) {
-        where.push("(keyword LIKE ? OR note LIKE ?)");
+        where.push("(k.keyword LIKE ? OR k.note LIKE ?)");
         params.push(`%${keyword}%`, `%${keyword}%`);
       }
       if (status) {
-        where.push("status = ?");
+        where.push("k.status = ?");
         params.push(status);
       }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM chat_block_keywords k
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
       const items = all(
-        `SELECT *
-         FROM chat_block_keywords
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-         ORDER BY status ASC, id DESC
-         LIMIT 300`,
-        params,
+        `SELECT k.*,
+                COUNT(v.id) AS hit_count,
+                MAX(v.created_at) AS last_hit_at
+         FROM chat_block_keywords k
+         LEFT JOIN chat_violations v ON v.keyword_id = k.id
+         ${clause}
+         GROUP BY k.id
+         ORDER BY k.status ASC, k.id DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset],
       ).map(chatKeywordJson);
-      return { items };
+      return {
+        page,
+        pageSize,
+        total,
+        items,
+        statusCounts: statusCounts("chat_block_keywords", "status"),
+      };
+    },
+  );
+
+  app.post(
+    "/admin/chat/keywords/test",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const content = requiredString(request.body?.content, "content", 800);
+      const match = findActiveChatKeyword(content);
+      return {
+        matched: Boolean(match),
+        item: match ? chatKeywordJson(match) : null,
+      };
     },
   );
 
@@ -1302,16 +1509,17 @@ export async function adminRoutes(app) {
       if (!["block"].includes(severity)) {
         throw badRequest("severity is invalid");
       }
+      if (
+        one("SELECT id FROM chat_block_keywords WHERE lower(keyword) = lower(?)", [
+          keyword,
+        ])
+      ) {
+        throw badRequest("chat_keyword_exists");
+      }
       const result = run(
         `INSERT INTO chat_block_keywords
            (keyword, match_type, severity, status, note)
-         VALUES (?, ?, ?, 'active', ?)
-         ON CONFLICT(keyword) DO UPDATE SET
-           match_type = excluded.match_type,
-           severity = excluded.severity,
-           status = 'active',
-           note = excluded.note,
-           updated_at = datetime('now')`,
+         VALUES (?, ?, ?, 'active', ?)`,
         [keyword, matchType, severity, note],
       );
       return { ok: true, id: result.lastInsertRowid };
@@ -1342,6 +1550,17 @@ export async function adminRoutes(app) {
         id,
       ]);
       if (!current) throw badRequest("keyword not found");
+      if (
+        keyword &&
+        one(
+          `SELECT id
+           FROM chat_block_keywords
+           WHERE lower(keyword) = lower(?) AND id != ?`,
+          [keyword, id],
+        )
+      ) {
+        throw badRequest("chat_keyword_exists");
+      }
       run(
         `UPDATE chat_block_keywords
          SET keyword = ?,
@@ -1384,6 +1603,8 @@ export async function adminRoutes(app) {
       const { page, pageSize, offset } = pageParams(request.query || {});
       const keyword = optionalString(request.query?.q, 120);
       const userId = optionalInt(request.query?.userId);
+      const roomId = optionalString(request.query?.roomId, 120);
+      const action = optionalString(request.query?.action, 30);
       const where = [];
       const params = [];
       if (keyword) {
@@ -1394,16 +1615,43 @@ export async function adminRoutes(app) {
         where.push("v.user_id = ?");
         params.push(userId);
       }
+      if (roomId) {
+        where.push("v.room_id = ?");
+        params.push(roomId);
+      }
+      if (action) {
+        if (!["blocked", "temp_ban", "permanent_ban"].includes(action)) {
+          throw badRequest("chat violation action is invalid");
+        }
+        where.push("v.action = ?");
+        params.push(action);
+      }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM chat_violations v
+           JOIN users u ON u.id = v.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
       const items = all(
         `SELECT v.*, u.nickname, u.email
          FROM chat_violations v
          JOIN users u ON u.id = v.user_id
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ${clause}
          ORDER BY v.id DESC
          LIMIT ? OFFSET ?`,
         [...params, pageSize, offset],
       ).map(chatViolationJson);
-      return { page, pageSize, items };
+      return {
+        page,
+        pageSize,
+        total,
+        actionCounts: statusCounts("chat_violations", "action"),
+        items,
+      };
     },
   );
 
@@ -1411,6 +1659,10 @@ export async function adminRoutes(app) {
     "/admin/blocked-ips",
     { preHandler: app.adminRequired },
     async (request) => {
+      const ipPagination = hasExplicitPagination(request.query)
+        ? pageParams(request.query || {})
+        : { page: 1, pageSize: 300, offset: 0 };
+      const { page, pageSize, offset } = ipPagination;
       const keyword = optionalString(request.query?.q, 80);
       const where = [];
       const params = [];
@@ -1418,16 +1670,26 @@ export async function adminRoutes(app) {
         where.push("(b.ip LIKE ? OR b.reason LIKE ? OR u.nickname LIKE ?)");
         params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
       }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM banned_registration_ips b
+           LEFT JOIN users u ON u.id = b.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
       const items = all(
         `SELECT b.*, u.nickname, u.email
          FROM banned_registration_ips b
          LEFT JOIN users u ON u.id = b.user_id
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ${clause}
          ORDER BY b.created_at DESC
-         LIMIT 300`,
-        params,
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset],
       ).map(blockedIpJson);
-      return { items };
+      return { page, pageSize, total, items };
     },
   );
 
@@ -1436,17 +1698,26 @@ export async function adminRoutes(app) {
     { preHandler: app.adminRequired },
     async (request) => {
       const ip = requiredString(request.body?.ip, "ip", 80);
+      if (!isIP(ip)) throw badRequest("blocked_ip_invalid");
       const reason = optionalString(request.body?.reason, 120);
       const userId = optionalInt(request.body?.userId) || null;
-      run(
-        `INSERT INTO banned_registration_ips (ip, user_id, reason)
-         VALUES (?, ?, ?)
-         ON CONFLICT(ip) DO UPDATE SET
-           user_id = excluded.user_id,
-           reason = excluded.reason`,
-        [ip, userId, reason || "admin_block"],
-      );
-      return { ok: true };
+      recordBannedRegistrationIp({
+        ip,
+        userId,
+        reason: reason || "admin_block",
+      });
+      return {
+        ok: true,
+        item: blockedIpJson(
+          one(
+            `SELECT b.*, u.nickname, u.email
+             FROM banned_registration_ips b
+             LEFT JOIN users u ON u.id = b.user_id
+             WHERE b.ip = ?`,
+            [ip],
+          ),
+        ),
+      };
     },
   );
 
@@ -2664,19 +2935,43 @@ function saveSettingGroup(prefix, values, allowedFields) {
 
 function chatRoomsQuery(query = {}) {
   const keyword = optionalString(query.q, 120);
-  const limit = Math.max(1, Math.min(100, optionalInt(query.limit, 100)));
-  const status = optionalString(query.status, 20) || "active";
-  const where = ["r.status = ?"];
-  const params = [status];
+  const { page, pageSize, offset } = pageParams({
+    ...query,
+    pageSize: query.pageSize || query.limit || (query.page ? 20 : 100),
+  });
+  const requestedStatus = optionalString(query.status, 20) || "active";
+  if (!["all", "active", "hidden", "deleted"].includes(requestedStatus)) {
+    throw badRequest("chat room status is invalid");
+  }
+  const status = requestedStatus === "all" ? "" : requestedStatus;
+  const where = [];
+  const params = [];
+  if (status) {
+    where.push("r.status = ?");
+    params.push(status);
+  }
   const category = optionalString(query.category, 20);
   if (category) {
+    if (!chatRoomCategories.some((item) => item.key === category)) {
+      throw badRequest("chat room category is invalid");
+    }
     where.push("r.category = ?");
-    params.push(normalizeChatRoomCategory(category));
+    params.push(category);
   }
   if (keyword) {
-    where.push("(r.id LIKE ? OR r.name LIKE ? OR latest.content LIKE ?)");
+    where.push(
+      `(r.id LIKE ? OR r.name LIKE ? OR EXISTS (
+         SELECT 1
+         FROM chat_messages search
+         WHERE search.room_id = r.id AND search.content LIKE ?
+       ))`,
+    );
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
   }
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const total = Number(
+    one(`SELECT COUNT(*) AS count FROM chat_rooms r ${clause}`, params)?.count || 0,
+  );
   const items = all(
     `SELECT
        r.id AS room_id,
@@ -2687,9 +2982,22 @@ function chatRoomsQuery(query = {}) {
        r.is_official,
        r.status AS room_status,
        r.bot_enabled,
-       COUNT(latest.id) AS message_count,
-       COUNT(DISTINCT latest.user_id) AS user_count,
-       MAX(latest.created_at) AS last_created_at,
+       r.created_at,
+       r.updated_at,
+       (SELECT COUNT(*) FROM chat_messages m
+        WHERE m.room_id = r.id AND m.status = 'visible') AS message_count,
+       (SELECT COUNT(DISTINCT m.user_id) FROM chat_messages m
+        WHERE m.room_id = r.id AND m.status = 'visible') AS user_count,
+       (SELECT COUNT(*) FROM chat_messages m
+        WHERE m.room_id = r.id AND m.status = 'deleted') AS deleted_message_count,
+       (SELECT COUNT(*) FROM chat_room_members member
+        WHERE member.room_id = r.id) AS member_count,
+       (SELECT COUNT(*) FROM chat_messages m
+        WHERE m.room_id = r.id
+          AND m.status = 'visible'
+          AND m.created_at >= datetime('now', '-24 hours')) AS recent_message_count,
+       (SELECT MAX(m.created_at) FROM chat_messages m
+        WHERE m.room_id = r.id AND m.status = 'visible') AS last_created_at,
        (
          SELECT m2.content
          FROM chat_messages m2
@@ -2699,10 +3007,7 @@ function chatRoomsQuery(query = {}) {
          LIMIT 1
        ) AS latest_content
      FROM chat_rooms r
-     LEFT JOIN chat_messages latest
-       ON latest.room_id = r.id AND latest.status = 'visible'
-     WHERE ${where.join(" AND ")}
-     GROUP BY r.id
+     ${clause}
      ORDER BY
        CASE r.category
          WHEN 'novel' THEN 1
@@ -2712,25 +3017,53 @@ function chatRoomsQuery(query = {}) {
        END,
        r.is_official DESC,
        last_created_at DESC
-     LIMIT ?`,
-    [...params, limit],
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset],
   ).map(chatRoomJson);
+  const categoryCounts = all(
+    `SELECT category AS key, COUNT(*) AS count
+     FROM chat_rooms
+     ${status ? "WHERE status = ?" : ""}
+     GROUP BY category`,
+    status ? [status] : [],
+  );
   return {
+    page,
+    pageSize,
+    total,
     items,
     categories: chatRoomCategories.map((item) => ({
       ...item,
-      count: items.filter((room) => room.category === item.key).length,
+      count:
+        categoryCounts.find((countItem) => countItem.key === item.key)?.count || 0,
       hot: isHotChatCategory(item.key, items),
     })),
+    statusCounts: statusCounts("chat_rooms", "status"),
+    stats: chatWorkbenchStats(),
   };
 }
 
 function chatRoomAdminDetail(roomId) {
   const row = one(
     `SELECT r.*,
-            COUNT(DISTINCT m.user_id) AS active_user_count,
-            COUNT(m.id) AS recent_message_count,
-            MAX(m.created_at) AS last_message_at,
+            (SELECT COUNT(DISTINCT m.user_id)
+             FROM chat_messages m
+             WHERE m.room_id = r.id
+               AND m.status = 'visible'
+               AND m.created_at >= datetime('now', '-10 minutes')) AS active_user_count,
+            (SELECT COUNT(*)
+             FROM chat_messages m
+             WHERE m.room_id = r.id
+               AND m.status = 'visible'
+               AND m.created_at >= datetime('now', '-24 hours')) AS recent_message_count,
+            (SELECT COUNT(*) FROM chat_messages m
+             WHERE m.room_id = r.id AND m.status = 'visible') AS message_count,
+            (SELECT COUNT(*) FROM chat_messages m
+             WHERE m.room_id = r.id AND m.status = 'deleted') AS deleted_message_count,
+            (SELECT COUNT(*) FROM chat_room_members member
+             WHERE member.room_id = r.id) AS member_count,
+            (SELECT MAX(m.created_at) FROM chat_messages m
+             WHERE m.room_id = r.id AND m.status = 'visible') AS last_message_at,
             (
               SELECT content
               FROM chat_messages latest
@@ -2739,12 +3072,7 @@ function chatRoomAdminDetail(roomId) {
               LIMIT 1
             ) AS latest_content
      FROM chat_rooms r
-     LEFT JOIN chat_messages m
-       ON m.room_id = r.id
-      AND m.status = 'visible'
-      AND m.created_at >= datetime('now', '-10 minutes')
-     WHERE r.id = ?
-     GROUP BY r.id`,
+     WHERE r.id = ?`,
     [roomId],
   );
   return row ? chatRoomAdminJson(row) : null;
@@ -2765,8 +3093,13 @@ function chatRoomAdminJson(row) {
     botEnabled: Boolean(row.bot_enabled),
     activeUserCount: row.active_user_count || 0,
     recentMessageCount: row.recent_message_count || 0,
+    messageCount: row.message_count || 0,
+    deletedMessageCount: row.deleted_message_count || 0,
+    memberCount: row.member_count || 0,
     lastMessageAt: row.last_message_at || "",
     latestContent: row.latest_content || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
   };
 }
 
@@ -2776,6 +3109,14 @@ function normalizeChatRoomId(value) {
     .replace(/[^\w:.-]/g, "-")
     .replace(/-+/g, "-")
     .slice(0, 80);
+}
+
+function validateNewChatRoomId(value) {
+  const roomId = String(value || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]{1,79}$/.test(roomId)) {
+    throw badRequest("chat_room_id_invalid");
+  }
+  return roomId;
 }
 
 function clampLevel(value) {
@@ -2810,6 +3151,148 @@ function isHotChatCategory(category, rooms) {
     }
   }
   return hotScore > 0 && hotCategory === category;
+}
+
+function chatWorkbenchStats() {
+  return {
+    activeRooms: Number(
+      one("SELECT COUNT(*) AS count FROM chat_rooms WHERE status = 'active'")
+        ?.count || 0,
+    ),
+    hiddenRooms: Number(
+      one("SELECT COUNT(*) AS count FROM chat_rooms WHERE status = 'hidden'")
+        ?.count || 0,
+    ),
+    visibleMessages: Number(
+      one(
+        "SELECT COUNT(*) AS count FROM chat_messages WHERE status = 'visible'",
+      )?.count || 0,
+    ),
+    messages24h: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM chat_messages
+         WHERE status = 'visible'
+           AND created_at >= datetime('now', '-24 hours')`,
+      )?.count || 0,
+    ),
+    violationsToday: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM chat_violations
+         WHERE created_at >= datetime('now', 'start of day')`,
+      )?.count || 0,
+    ),
+    activeKeywords: Number(
+      one(
+        "SELECT COUNT(*) AS count FROM chat_block_keywords WHERE status = 'active'",
+      )?.count || 0,
+    ),
+    blockedIps: Number(
+      one("SELECT COUNT(*) AS count FROM banned_registration_ips")?.count || 0,
+    ),
+  };
+}
+
+function chatMessageStatusCounts(roomId) {
+  return all(
+    `SELECT status AS key, COUNT(*) AS count
+     FROM chat_messages
+     WHERE room_id = ?
+     GROUP BY status`,
+    [roomId],
+  ).reduce((result, item) => {
+    result[item.key] = Number(item.count || 0);
+    return result;
+  }, {});
+}
+
+function chatMessageModerationContext(rawId) {
+  const id = positiveAdminId(rawId, "chat message id");
+  const row = chatMessageModerationRow(id);
+  if (!row) throw badRequest("chat message not found");
+  const item = chatJson(row);
+  const nearby = all(
+    `SELECT m.*, u.nickname, u.avatar_url
+     FROM chat_messages m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.room_id = ? AND m.id != ?
+     ORDER BY ABS(julianday(m.created_at) - julianday(?)), m.id DESC
+     LIMIT 12`,
+    [row.room_id, id, row.created_at],
+  )
+    .sort((left, right) => left.id - right.id)
+    .map(chatJson);
+  const reports = all(
+    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
+     FROM reports r
+     LEFT JOIN users u ON u.id = r.reporter_id
+     LEFT JOIN users h ON h.id = r.handled_by
+     WHERE r.target_type = 'chat' AND r.target_id = ?
+     ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.id DESC`,
+    [String(id)],
+  ).map(reportJson);
+  return {
+    item,
+    room: chatRoomAdminDetail(row.room_id),
+    nearby,
+    reports,
+  };
+}
+
+function chatMessageModerationRow(id) {
+  return one(
+    `SELECT m.*, u.nickname, u.avatar_url
+     FROM chat_messages m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.id = ?`,
+    [id],
+  );
+}
+
+function uniquePositiveIds(rawIds, limit = 500) {
+  if (!Array.isArray(rawIds)) return [];
+  return [
+    ...new Set(rawIds.map((id) => optionalInt(id)).filter((id) => id > 0)),
+  ].slice(0, limit);
+}
+
+function hasExplicitPagination(query = {}) {
+  return Object.hasOwn(query, "page") || Object.hasOwn(query, "pageSize");
+}
+
+function chatRoomMemberRow(roomId, userId) {
+  return one(
+    `SELECT member.*, u.nickname, u.email, u.avatar_url, u.status AS user_status
+     FROM chat_room_members member
+     JOIN users u ON u.id = member.user_id
+     WHERE member.room_id = ? AND member.user_id = ?`,
+    [roomId, userId],
+  );
+}
+
+function chatRoomMemberJson(row) {
+  return {
+    userId: row.user_id,
+    role: row.role || "member",
+    joinedAt: row.joined_at || "",
+    lastSeenAt: row.last_seen_at || "",
+    lastReadAt: row.last_read_at || "",
+    isSystem: isSystemChatMember(row),
+    user: {
+      id: row.user_id,
+      nickname: row.nickname || "",
+      email: row.email || "",
+      avatarUrl: row.avatar_url || "",
+      status: row.user_status || "active",
+    },
+  };
+}
+
+function isSystemChatMember(row) {
+  return ["chatbot@system.local", "chat-bot@system.local"].includes(
+    String(row?.email || "").toLowerCase(),
+  );
 }
 
 function reportRows({
@@ -3182,9 +3665,14 @@ function chatRoomJson(row) {
     status: row.room_status || "active",
     botEnabled: Boolean(row.bot_enabled),
     messageCount: row.message_count || 0,
+    deletedMessageCount: row.deleted_message_count || 0,
+    memberCount: row.member_count || 0,
+    recentMessageCount: row.recent_message_count || 0,
     userCount: row.user_count || 0,
     lastCreatedAt: row.last_created_at,
     latestContent: row.latest_content || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
   };
 }
 
@@ -3196,6 +3684,8 @@ function chatKeywordJson(row) {
     severity: row.severity || "block",
     status: row.status || "active",
     note: row.note || "",
+    hitCount: row.hit_count || 0,
+    lastHitAt: row.last_hit_at || "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

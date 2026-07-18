@@ -21,6 +21,11 @@ describe('role-aware navigation', () => {
     expect(
       visibleNavigation('admin')
         .flatMap((group) => group.items)
+        .find((item) => item.route === 'chat')?.legacy,
+    ).toBeUndefined();
+    expect(
+      visibleNavigation('admin')
+        .flatMap((group) => group.items)
         .find((item) => item.route === 'reports')?.legacy,
     ).toBeUndefined();
   });

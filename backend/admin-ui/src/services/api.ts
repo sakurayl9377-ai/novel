@@ -112,6 +112,12 @@ function friendlyApiError(code: string): string {
     novel_cannot_be_deleted: '审核中或已发布的作品不能删除',
     chapter_requires_novel_review: '该章节属于整书投稿，请在整书审核队列中处理',
     serial_chapter_review_in_progress: '已有连载章节正在审核，请等待本批次完成后再提交',
+    chat_room_exists: '这个房间 ID 已存在，请使用自动生成或换一个 ID',
+    chat_room_id_invalid: '房间 ID 格式不正确，请仅使用字母、数字、点、冒号、下划线或短横线',
+    chat_room_dissolved: '房间已经解散，成员关系已移除，不能再编辑',
+    chat_keyword_exists: '相同关键词规则已经存在，请直接编辑原规则',
+    chat_bot_member_locked: '系统机器人成员由房间机器人开关管理，不能手动移出',
+    blocked_ip_invalid: '请输入有效的 IPv4 或 IPv6 地址',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

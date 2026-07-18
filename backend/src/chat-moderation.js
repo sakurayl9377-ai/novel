@@ -87,7 +87,7 @@ export function findActiveChatKeyword(content) {
 export function recordChatViolation({ userId, roomId, content, keyword, ip }) {
   const keywordText = String(keyword?.keyword || "").trim();
   const keywordId = keyword?.id || null;
-  run(
+  const violation = run(
     `INSERT INTO chat_violations
       (user_id, room_id, content, keyword_id, keyword, action, ip)
      VALUES (?, ?, ?, ?, ?, 'blocked', ?)`,
@@ -116,7 +116,11 @@ export function recordChatViolation({ userId, roomId, content, keyword, ip }) {
     [userId],
   ).count;
   if (dayCount <= dailyViolationLimit) {
-    return { action: "blocked", dayCount };
+    return {
+      action: "blocked",
+      dayCount,
+      violationId: Number(violation.lastInsertRowid),
+    };
   }
 
   const user = one(
@@ -143,10 +147,14 @@ export function recordChatViolation({ userId, roomId, content, keyword, ip }) {
       ip,
       reason: "chat_keyword_permanent",
     });
+    run("UPDATE chat_violations SET action = 'permanent_ban' WHERE id = ?", [
+      Number(violation.lastInsertRowid),
+    ]);
     return {
       action: "permanent_ban",
       dayCount,
       tempBanCount: nextTempBanCount,
+      violationId: Number(violation.lastInsertRowid),
     };
   }
 
@@ -166,10 +174,14 @@ export function recordChatViolation({ userId, roomId, content, keyword, ip }) {
     ip,
     reason: "chat_keyword_temp",
   });
+  run("UPDATE chat_violations SET action = 'temp_ban' WHERE id = ?", [
+    Number(violation.lastInsertRowid),
+  ]);
   return {
     action: "temp_ban",
     dayCount,
     tempBanCount: nextTempBanCount,
+    violationId: Number(violation.lastInsertRowid),
   };
 }
 

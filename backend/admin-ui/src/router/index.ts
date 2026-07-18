@@ -6,13 +6,13 @@ const DashboardView = () => import('@/views/DashboardView.vue');
 const AiNovelsView = () => import('@/views/AiNovelsView.vue');
 const ModerationView = () => import('@/views/ModerationView.vue');
 const DanmakuView = () => import('@/views/DanmakuView.vue');
+const ChatView = () => import('@/views/ChatView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['chat', '聊天室', '房间、消息与风控规则'],
   ['users', '用户管理', '账号、权限、设备与行为'],
   ['finance', '资金流水', '积分和樱花币账变'],
   ['shop', '商店与装扮', '商品、素材与用户库存'],
@@ -91,7 +91,18 @@ export const router = createRouter({
           component: DanmakuView,
           meta: {
             title: '弹幕管理',
-              hint: '本地弹幕审核、剧集定位与时间轴上下文',
+            hint: '本地弹幕审核、剧集定位与时间轴上下文',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'chat',
+          name: 'chat',
+          component: ChatView,
+          meta: {
+            title: '聊天室',
+            hint: '房间配置、消息审核与社区风控',
             requiresAuth: true,
             requiresAdmin: true,
           },
