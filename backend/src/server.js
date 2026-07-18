@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cors from '@fastify/cors';
@@ -65,11 +66,15 @@ export async function buildServer() {
     },
   });
 
+  const adminV2Root = path.join(config.rootDir, 'admin-dist');
+  const adminV2Available = fs.existsSync(path.join(adminV2Root, 'index.html'));
+
   app.get('/health', async () => ({
     ok: true,
     service: 'novel-interaction-backend',
     apiPrefix: config.apiPrefix,
     adminPath: config.adminPath,
+    adminV2Available,
   }));
 
   app.register(
@@ -92,7 +97,7 @@ export async function buildServer() {
 
   registerWebSockets(app, config);
 
-  app.get(`${config.adminPath}/config.js`, async (_request, reply) => {
+  const adminConfigHandler = async (_request, reply) => {
     reply.type('application/javascript');
     return `window.NOVEL_ADMIN_CONFIG = ${JSON.stringify({
       apiPrefix: config.apiPrefix,
@@ -101,6 +106,31 @@ export async function buildServer() {
       wsGamePath: config.wsGamePath,
       wsDanmakuPath: config.wsDanmakuPath,
     })};`;
+  };
+
+  app.get(`${config.adminPath}/config.js`, adminConfigHandler);
+  app.get(`${config.adminPath}/v2/config.js`, adminConfigHandler);
+  app.get(`${config.adminPath}/v2/config.json`, async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return {
+      apiPrefix: config.apiPrefix,
+      adminPath: config.adminPath,
+      wsChatPath: config.wsChatPath,
+      wsGamePath: config.wsGamePath,
+      wsDanmakuPath: config.wsDanmakuPath,
+    };
+  });
+
+  if (adminV2Available) {
+    await app.register(fastifyStatic, {
+      root: adminV2Root,
+      prefix: `${config.adminPath}/v2/`,
+      decorateReply: false,
+    });
+  }
+
+  app.get(`${config.adminPath}/v2`, async (_request, reply) => {
+    return reply.redirect(`${config.adminPath}/v2/`);
   });
 
   await app.register(fastifyStatic, {

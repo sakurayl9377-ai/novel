@@ -1,0 +1,18 @@
+import { describe, expect, it } from 'vitest';
+
+import { visibleNavigation } from './navigation';
+
+describe('role-aware navigation', () => {
+  it('shows the complete workbench to administrators', () => {
+    const routes = visibleNavigation('admin').flatMap((group) => group.items.map((item) => item.route));
+    expect(routes).toContain('dashboard');
+    expect(routes).toContain('settings');
+    expect(routes).toContain('ai-novels');
+  });
+
+  it('limits ordinary creators to the AI novel workspace', () => {
+    const groups = visibleNavigation('user');
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.items.map((item) => item.route)).toEqual(['ai-novels']);
+  });
+});

@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #25242a;
+  background: #f7f6f8;
+  --sakura-50: #fff4f7;
+  --sakura-100: #ffe5ed;
+  --sakura-200: #ffcbd9;
+  --sakura-400: #ef779b;
+  --sakura-500: #dc547f;
+  --sakura-600: #c53e6d;
+  --ink-900: #25242a;
+  --ink-700: #4f4c57;
+  --ink-500: #77727f;
+  --ink-300: #aca7b2;
+  --line: #e9e5eb;
+  --surface: #ffffff;
+  --surface-muted: #faf9fb;
+  --shadow-sm: 0 8px 24px rgb(42 29 39 / 5%);
+  --shadow-md: 0 18px 50px rgb(55 34 48 / 10%);
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --el-color-primary: var(--sakura-500);
+  --el-color-primary-light-3: #e980a1;
+  --el-color-primary-light-5: #efa7bd;
+  --el-color-primary-light-7: #f7cfdb;
+  --el-color-primary-light-8: #fae1e8;
+  --el-color-primary-light-9: var(--sakura-50);
+  --el-color-primary-dark-2: var(--sakura-600);
+  --el-border-radius-base: 10px;
+  --el-border-color: var(--line);
+  --el-text-color-primary: var(--ink-900);
+  --el-text-color-regular: var(--ink-700);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: #f7f6f8;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}

@@ -27,7 +27,23 @@ npm run dev
 ```text
 健康检查: http://127.0.0.1:3010/health
 后台管理: http://127.0.0.1:3010/admin/
+新版后台（迁移期间与旧版并行）: http://127.0.0.1:3010/admin/v2/
 API 前缀: http://127.0.0.1:3010/api
+```
+
+新版后台源码位于 `admin-ui/`。本地联调时分别启动后端与 Vite：
+
+```bash
+npm run dev
+npm run admin:dev
+```
+
+Vite 开发地址为 `http://127.0.0.1:5174/admin/v2/`。提交前运行：
+
+```bash
+npm run admin:typecheck
+npm run admin:test
+npm run admin:build
 ```
 
 默认管理员：

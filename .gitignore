@@ -50,6 +50,7 @@ migrate_working_dir/
 
 # Node/backend
 **/node_modules/
+backend/admin-dist/
 backend/data/*.sqlite
 backend/data/*.sqlite-*
 backend/data/uploads/

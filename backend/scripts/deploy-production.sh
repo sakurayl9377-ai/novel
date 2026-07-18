@@ -54,7 +54,7 @@ actual_checksum="$(sha256sum "$archive" | awk '{print $1}')"
 [[ "$actual_checksum" == "$expected_checksum" ]] || fail "checksum_mismatch"
 
 archive_entries="$(tar -tzf "$archive")"
-for required in backend/package.json backend/package-lock.json backend/src/server.js; do
+for required in backend/package.json backend/package-lock.json backend/src/server.js backend/admin-dist/index.html; do
   grep -Fxq "$required" <<<"$archive_entries" || fail "archive_layout_invalid"
 done
 while IFS= read -r entry; do
@@ -255,7 +255,7 @@ fi
 sudo -u "$app_user" "${runtime_env[@]}" "$npm_bin" ci --omit=dev --prefix "$staged_dir"
 while IFS= read -r -d '' file; do
   sudo -u "$app_user" "$node_bin" --check "$file" >/dev/null
-done < <(find "$staged_dir/src" "$staged_dir/public" -type f -name '*.js' -print0)
+done < <(find "$staged_dir/src" "$staged_dir/public" "$staged_dir/admin-dist" -type f -name '*.js' -print0)
 sudo -u "$app_user" "${runtime_env[@]}" "$npm_bin" run security --prefix "$staged_dir"
 python_cache="$work_dir/python-cache"
 PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$staged_dir"/scripts/*.py
