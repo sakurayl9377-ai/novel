@@ -16,16 +16,36 @@ export function formatBytes(value: unknown): string {
   return `${bytes.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
+export const adminTimeZone = 'Asia/Shanghai';
+
+const adminDateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: adminTimeZone,
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+export function parseServerTime(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim().replace(' ', 'T');
+  const timestamp = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatDateTime(value: unknown): string {
   if (!value) return '—';
-  const date = new Date(String(value).replace(' ', 'T'));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  const date = parseServerTime(value);
+  if (!date) return String(value);
+  const parts = Object.fromEntries(
+    adminDateTimeFormatter
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 export function formatDuration(secondsValue: unknown): string {
