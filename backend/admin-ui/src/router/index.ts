@@ -7,13 +7,13 @@ const AiNovelsView = () => import('@/views/AiNovelsView.vue');
 const ModerationView = () => import('@/views/ModerationView.vue');
 const DanmakuView = () => import('@/views/DanmakuView.vue');
 const ChatView = () => import('@/views/ChatView.vue');
+const UsersView = () => import('@/views/UsersView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['users', '用户管理', '账号、权限、设备与行为'],
   ['finance', '资金流水', '积分和樱花币账变'],
   ['shop', '商店与装扮', '商品、素材与用户库存'],
   ['growth-rules', '成长规则', '等级、积分与权益规则'],
@@ -103,6 +103,17 @@ export const router = createRouter({
           meta: {
             title: '聊天室',
             hint: '房间配置、消息审核与社区风控',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'users',
+          name: 'users',
+          component: UsersView,
+          meta: {
+            title: '用户管理',
+            hint: '账号、权限、设备、风险与资产操作工作台',
             requiresAuth: true,
             requiresAdmin: true,
           },

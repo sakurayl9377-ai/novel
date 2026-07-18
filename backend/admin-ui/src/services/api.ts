@@ -118,6 +118,18 @@ function friendlyApiError(code: string): string {
     chat_keyword_exists: '相同关键词规则已经存在，请直接编辑原规则',
     chat_bot_member_locked: '系统机器人成员由房间机器人开关管理，不能手动移出',
     blocked_ip_invalid: '请输入有效的 IPv4 或 IPv6 地址',
+    cannot_ban_self: '不能封禁当前登录的管理员账号',
+    user_ban_mode_invalid: '请选择限时封禁或永久封禁',
+    user_ban_duration_invalid: '请选择列表中的有效封禁时长',
+    user_ban_reason_invalid: '请选择有效的封禁原因',
+    cannot_change_own_role: '不能修改当前登录账号自身的角色，请由其他管理员操作',
+    last_admin_protected: '这是最后一个可用管理员账号，不能封禁或取消其管理员权限',
+    user_adjustment_currency_invalid: '请选择成长值或樱花币',
+    user_adjustment_direction_invalid: '请选择增加或扣除',
+    user_adjustment_amount_invalid: '请输入有效的正整数调整数量',
+    user_adjustment_reason_invalid: '请选择有效的账变原因',
+    insufficient_user_balance: '用户余额不足，整笔操作已取消',
+    cannot_revoke_own_sessions: '不能在用户工作台撤销当前账号自身的登录会话',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

@@ -28,6 +28,11 @@ describe('role-aware navigation', () => {
         .flatMap((group) => group.items)
         .find((item) => item.route === 'reports')?.legacy,
     ).toBeUndefined();
+    expect(
+      visibleNavigation('admin')
+        .flatMap((group) => group.items)
+        .find((item) => item.route === 'users')?.legacy,
+    ).toBeUndefined();
   });
 
   it('limits ordinary creators to the AI novel workspace', () => {

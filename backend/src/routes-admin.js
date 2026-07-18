@@ -63,6 +63,22 @@ const chatMessageTypes = new Set([
   "sticker",
   "share",
 ]);
+const adminBanReasonCodes = new Set([
+  "community_violation",
+  "fraud",
+  "spam",
+  "security_risk",
+  "account_abuse",
+  "other",
+]);
+const adminAdjustmentReasonCodes = new Set([
+  "customer_support",
+  "campaign_reward",
+  "refund",
+  "fraud_correction",
+  "data_correction",
+  "other",
+]);
 
 export async function adminRoutes(app) {
   app.get("/admin/summary", { preHandler: app.adminRequired }, async () => {
@@ -134,9 +150,13 @@ export async function adminRoutes(app) {
     "/admin/users",
     { preHandler: app.adminRequired },
     async (request) => {
+      releaseExpiredAdminUserBans();
       const { page, pageSize, offset } = pageParams(request.query || {});
       const keyword = optionalString(request.query?.q, 80);
       const status = optionalString(request.query?.status, 20);
+      const role = optionalString(request.query?.role, 20);
+      const risk = optionalString(request.query?.risk, 30);
+      const sort = optionalString(request.query?.sort, 30) || "newest";
       const appVersionCode = Math.max(
         0,
         optionalInt(request.query?.appVersionCode, 0),
@@ -145,27 +165,77 @@ export async function adminRoutes(app) {
       const params = [];
 
       if (keyword) {
-        where.push("(u.email LIKE ? OR u.nickname LIKE ?)");
-        params.push(`%${keyword}%`, `%${keyword}%`);
+        where.push(
+          `(CAST(u.id AS TEXT) LIKE ? OR u.email LIKE ? OR u.nickname LIKE ?
+            OR u.register_ip LIKE ? OR u.last_login_ip LIKE ?)`,
+        );
+        params.push(...Array(5).fill(`%${keyword}%`));
       }
       if (status) {
+        if (!["active", "banned"].includes(status)) {
+          throw badRequest("user status is invalid");
+        }
         where.push("u.status = ?");
         params.push(status);
+      }
+      if (role) {
+        if (!["user", "admin"].includes(role)) {
+          throw badRequest("user role is invalid");
+        }
+        where.push("u.role = ?");
+        params.push(role);
       }
       if (appVersionCode > 0) {
         where.push("latest_app.version_code = ?");
         params.push(appVersionCode);
       }
+      if (risk) {
+        if (!["chat_violations", "reported", "no_version"].includes(risk)) {
+          throw badRequest("user risk filter is invalid");
+        }
+        if (risk === "chat_violations") where.push("u.chat_violation_total > 0");
+        if (risk === "reported") {
+          where.push(
+            `EXISTS (
+               SELECT 1 FROM reports risk_report
+               WHERE risk_report.target_type = 'user'
+                 AND risk_report.target_id = CAST(u.id AS TEXT)
+             )`,
+          );
+        }
+        if (risk === "no_version") where.push("latest_app.id IS NULL");
+      }
+      const orderBy = {
+        newest: "u.id DESC",
+        recent: "COALESCE(latest_app.last_seen_at, u.last_login_at, u.created_at) DESC, u.id DESC",
+        risk: "u.chat_violation_total DESC, reported_count DESC, u.id DESC",
+        points: "u.points DESC, u.id DESC",
+        coins: "u.sakura_coins DESC, u.id DESC",
+      }[sort];
+      if (!orderBy) throw badRequest("user sort is invalid");
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const latestAppCte = `WITH latest_app AS (
+        SELECT i.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY i.user_id
+                 ORDER BY i.last_seen_at DESC, i.id DESC
+               ) AS row_number
+        FROM user_app_installs i
+      )`;
+      const total = Number(
+        one(
+          `${latestAppCte}
+           SELECT COUNT(*) AS count
+           FROM users u
+           LEFT JOIN latest_app
+             ON latest_app.user_id = u.id AND latest_app.row_number = 1
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
 
       const items = all(
-        `WITH latest_app AS (
-           SELECT i.*,
-                  ROW_NUMBER() OVER (
-                    PARTITION BY i.user_id
-                    ORDER BY i.last_seen_at DESC, i.id DESC
-                  ) AS row_number
-           FROM user_app_installs i
-         )
+        `${latestAppCte}
          SELECT
          u.id, u.email, u.nickname, u.avatar_url, u.gender, u.bio, u.signature,
          u.space_title, u.profile_banner_url, u.dynamic_avatar_url,
@@ -179,27 +249,36 @@ export async function adminRoutes(app) {
          latest_app.device_model AS app_device_model,
          latest_app.os_version AS app_os_version,
          latest_app.last_seen_at AS app_last_seen_at,
-         COUNT(DISTINCT c.id) AS comment_count,
-         COUNT(DISTINCT d.id) AS danmaku_count,
-         COUNT(DISTINCT m.id) AS chat_count,
-         COUNT(DISTINCT rr.id) AS report_count,
-         COUNT(DISTINCT rt.id) AS reported_count
+         (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id) AS comment_count,
+         (SELECT COUNT(*) FROM danmaku d WHERE d.user_id = u.id) AS danmaku_count,
+         (SELECT COUNT(*) FROM chat_messages m WHERE m.user_id = u.id) AS chat_count,
+         (SELECT COUNT(*) FROM reports rr WHERE rr.reporter_id = u.id) AS report_count,
+         (SELECT COUNT(*) FROM reports rt
+          WHERE rt.target_type = 'user' AND rt.target_id = CAST(u.id AS TEXT)) AS reported_count,
+         (SELECT COUNT(*) FROM auth_tokens token
+          WHERE token.user_id = u.id
+            AND token.revoked_at IS NULL
+            AND datetime(token.expires_at) > datetime('now')) AS active_session_count,
+         (SELECT COUNT(*) FROM user_app_installs install
+          WHERE install.user_id = u.id) AS device_count
        FROM users u
        LEFT JOIN latest_app
          ON latest_app.user_id = u.id AND latest_app.row_number = 1
-       LEFT JOIN comments c ON c.user_id = u.id
-       LEFT JOIN danmaku d ON d.user_id = u.id
-       LEFT JOIN chat_messages m ON m.user_id = u.id
-       LEFT JOIN reports rr ON rr.reporter_id = u.id
-       LEFT JOIN reports rt
-         ON rt.target_type = 'user' AND rt.target_id = CAST(u.id AS TEXT)
-       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-       GROUP BY u.id
-       ORDER BY u.id DESC
+       ${clause}
+       ORDER BY ${orderBy}
        LIMIT ? OFFSET ?`,
         [...params, pageSize, offset],
       ).map(userAdminJson);
-      return { page, pageSize, items };
+      return {
+        page,
+        pageSize,
+        total,
+        statusCounts: statusCounts("users", "status"),
+        roleCounts: statusCounts("users", "role"),
+        stats: userWorkbenchStats(),
+        versionOptions: adminUserVersionOptions(),
+        items,
+      };
     },
   );
 
@@ -207,6 +286,7 @@ export async function adminRoutes(app) {
     "/admin/users/:id/activity",
     { preHandler: app.adminRequired },
     async (request) => {
+      releaseExpiredAdminUserBans();
       const id = optionalInt(request.params.id);
       if (!id) throw badRequest("user id is invalid");
       const user = one(
@@ -270,6 +350,11 @@ export async function adminRoutes(app) {
              WHERE target_type = 'user' AND target_id = ?`,
             [String(id)],
           ).count,
+          active_session_count: activeUserSessionCount(id),
+          device_count: one(
+            "SELECT COUNT(*) AS count FROM user_app_installs WHERE user_id = ?",
+            [id],
+          ).count,
         }),
         comments: all(
           `SELECT c.*, u.nickname, u.avatar_url
@@ -299,6 +384,58 @@ export async function adminRoutes(app) {
           [id],
         ).map(chatJson),
         reports: reportRows({ reporterId: id, limit: 20 }),
+        reportsAgainst: userTargetReports(id),
+        devices: all(
+          `SELECT id, install_id, version_name, version_code, platform,
+                  device_model, os_version, first_seen_at, last_seen_at, last_ip
+           FROM user_app_installs
+           WHERE user_id = ?
+           ORDER BY last_seen_at DESC, id DESC
+           LIMIT 50`,
+          [id],
+        ).map(adminUserDeviceJson),
+        sessions: {
+          activeCount: activeUserSessionCount(id),
+          items: all(
+            `SELECT id, expires_at, created_at, revoked_at,
+                    CASE
+                      WHEN revoked_at IS NULL
+                       AND datetime(expires_at) > datetime('now') THEN 1
+                      ELSE 0
+                    END AS is_active
+             FROM auth_tokens
+             WHERE user_id = ?
+             ORDER BY id DESC
+             LIMIT 20`,
+            [id],
+          ).map(adminUserSessionJson),
+        },
+        rewardEvents: all(
+          `SELECT id, action, points_delta, coins_delta, description,
+                  related_type, related_id, created_at
+           FROM user_reward_events
+           WHERE user_id = ?
+           ORDER BY id DESC
+           LIMIT 50`,
+          [id],
+        ).map(adminUserRewardEventJson),
+        violations: all(
+          `SELECT v.*, u.nickname, u.email
+           FROM chat_violations v
+           JOIN users u ON u.id = v.user_id
+           WHERE v.user_id = ?
+           ORDER BY v.id DESC
+           LIMIT 50`,
+          [id],
+        ).map(chatViolationJson),
+        blockedIps: all(
+          `SELECT b.*, u.nickname, u.email
+           FROM banned_registration_ips b
+           LEFT JOIN users u ON u.id = b.user_id
+           WHERE b.user_id = ?
+           ORDER BY b.created_at DESC`,
+          [id],
+        ).map(blockedIpJson),
       };
     },
   );
@@ -407,14 +544,255 @@ export async function adminRoutes(app) {
   );
 
   app.patch(
+    "/admin/users/:id/profile",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      requireAdminUser(id);
+      const body = request.body || {};
+      const nickname = requiredString(body.nickname, "nickname", 32);
+      const signature = optionalString(body.signature, 80);
+      const bio = optionalString(body.bio, 140);
+      const gender = optionalString(body.gender, 20) || "private";
+      if (!["male", "female", "private"].includes(gender)) {
+        throw badRequest("gender is invalid");
+      }
+      run(
+        `UPDATE users
+         SET nickname = ?, signature = ?, bio = ?, gender = ?,
+             updated_at = datetime('now')
+         WHERE id = ?`,
+        [nickname, signature, bio, gender, id],
+      );
+      return { ok: true, item: adminUserDetailRow(id) };
+    },
+  );
+
+  app.post(
+    "/admin/users/:id/ban",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      if (id === request.user.id) throw badRequest("cannot_ban_self");
+      const current = requireAdminUser(id);
+      protectLastActiveAdmin(current);
+      const mode = requiredString(request.body?.mode, "mode", 20);
+      if (!["temporary", "permanent"].includes(mode)) {
+        throw badRequest("user_ban_mode_invalid");
+      }
+      const durationHours = optionalInt(request.body?.durationHours, 24);
+      const allowedDurations = new Set([1, 24, 72, 168, 720]);
+      if (mode === "temporary" && !allowedDurations.has(durationHours)) {
+        throw badRequest("user_ban_duration_invalid");
+      }
+      const reasonCode = requiredString(request.body?.reasonCode, "reasonCode", 40);
+      if (!adminBanReasonCodes.has(reasonCode)) {
+        throw badRequest("user_ban_reason_invalid");
+      }
+      const note = optionalString(request.body?.note, 120);
+      const reason = note ? `${reasonCode}:${note}` : reasonCode;
+      const blockKnownIps = request.body?.blockKnownIps === true;
+      let revokedSessions = 0;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (mode === "temporary") {
+          run(
+            `UPDATE users
+             SET status = 'banned',
+                 banned_until = datetime('now', ?),
+                 ban_reason = ?,
+                 updated_at = datetime('now')
+             WHERE id = ?`,
+            [`+${durationHours} hours`, reason, id],
+          );
+        } else {
+          run(
+            `UPDATE users
+             SET status = 'banned', banned_until = '', ban_reason = ?,
+                 updated_at = datetime('now')
+             WHERE id = ?`,
+            [reason, id],
+          );
+        }
+        revokedSessions = revokeActiveUserSessions(id);
+        if (blockKnownIps) recordKnownUserBanIps(id, `admin_ban:${reasonCode}`);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      const disconnected = disconnectAdminUserFromChat(request.server, id);
+      return {
+        ok: true,
+        revokedSessions,
+        disconnected,
+        item: adminUserDetailRow(id),
+      };
+    },
+  );
+
+  app.post(
+    "/admin/users/:id/unban",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      requireAdminUser(id);
+      const removeKnownIps = request.body?.removeKnownIps === true;
+      let removedIps = 0;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        run(
+          `UPDATE users
+           SET status = 'active', banned_until = '', ban_reason = '',
+               updated_at = datetime('now')
+           WHERE id = ?`,
+          [id],
+        );
+        if (removeKnownIps) {
+          removedIps =
+            run("DELETE FROM banned_registration_ips WHERE user_id = ?", [id])
+              .changes ?? 0;
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return { ok: true, removedIps, item: adminUserDetailRow(id) };
+    },
+  );
+
+  app.post(
+    "/admin/users/:id/role",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      const role = requiredString(request.body?.role, "role", 20);
+      if (!["user", "admin"].includes(role)) throw badRequest("user role is invalid");
+      const current = requireAdminUser(id);
+      if (id === request.user.id && role !== current.role) {
+        throw badRequest("cannot_change_own_role");
+      }
+      if (current.role === "admin" && role === "user") protectLastActiveAdmin(current);
+      if (current.role === role) return { ok: true, revokedSessions: 0, item: adminUserDetailRow(id) };
+      db.exec("BEGIN IMMEDIATE");
+      let revokedSessions = 0;
+      try {
+        run(
+          "UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?",
+          [role, id],
+        );
+        revokedSessions = revokeActiveUserSessions(id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return { ok: true, revokedSessions, item: adminUserDetailRow(id) };
+    },
+  );
+
+  app.post(
+    "/admin/users/:id/economy-adjustment",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      const currency = requiredString(request.body?.currency, "currency", 20);
+      const direction = requiredString(request.body?.direction, "direction", 20);
+      const amount = optionalInt(request.body?.amount, 0);
+      const reasonCode = requiredString(request.body?.reasonCode, "reasonCode", 40);
+      const note = optionalString(request.body?.note, 120);
+      if (!["points", "coins"].includes(currency)) {
+        throw badRequest("user_adjustment_currency_invalid");
+      }
+      if (!["credit", "debit"].includes(direction)) {
+        throw badRequest("user_adjustment_direction_invalid");
+      }
+      if (amount <= 0 || amount > 100_000_000) {
+        throw badRequest("user_adjustment_amount_invalid");
+      }
+      if (!adminAdjustmentReasonCodes.has(reasonCode)) {
+        throw badRequest("user_adjustment_reason_invalid");
+      }
+      const delta = direction === "credit" ? amount : -amount;
+      let previousBalance = 0;
+      let nextBalance = 0;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = requireAdminUser(id);
+        previousBalance = Number(
+          currency === "points" ? current.points || 0 : current.sakura_coins || 0,
+        );
+        nextBalance = previousBalance + delta;
+        if (nextBalance < 0) throw badRequest("insufficient_user_balance");
+        if (currency === "points") {
+          run(
+            `UPDATE users
+             SET points = ?, level = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [nextBalance, levelFromPoints(nextBalance), id],
+          );
+        } else {
+          run(
+            `UPDATE users
+             SET sakura_coins = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [nextBalance, id],
+          );
+        }
+        const description = adminAdjustmentDescription(reasonCode, note);
+        run(
+          `INSERT INTO user_reward_events
+             (user_id, action, points_delta, coins_delta, description,
+              related_type, related_id)
+           VALUES (?, ?, ?, ?, ?, 'admin', ?)`,
+          [
+            id,
+            currency === "points" ? "admin_adjust_points" : "admin_adjust_coins",
+            currency === "points" ? delta : 0,
+            currency === "coins" ? delta : 0,
+            description,
+            String(request.user.id),
+          ],
+        );
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return {
+        ok: true,
+        currency,
+        delta,
+        previousBalance,
+        nextBalance,
+        item: adminUserDetailRow(id),
+      };
+    },
+  );
+
+  app.post(
+    "/admin/users/:id/revoke-sessions",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "user id");
+      if (id === request.user.id) throw badRequest("cannot_revoke_own_sessions");
+      requireAdminUser(id);
+      const revokedSessions = revokeActiveUserSessions(id);
+      const disconnected = disconnectAdminUserFromChat(request.server, id);
+      return { ok: true, revokedSessions, disconnected };
+    },
+  );
+
+  app.patch(
     "/admin/users/:id",
     { preHandler: app.adminRequired },
     async (request) => {
-      const id = optionalInt(request.params.id);
-      if (!id) throw badRequest("user id is invalid");
+      const id = positiveAdminId(request.params.id, "user id");
+      const current = requireAdminUser(id);
       const body = request.body || {};
-      const status = optionalString(request.body?.status, 20);
-      const role = optionalString(request.body?.role, 20);
+      const status = optionalString(body.status, 20);
+      const role = optionalString(body.role, 20);
       const nickname = optionalString(body.nickname, 32);
       const signature = optionalString(body.signature, 80);
       const bio = optionalString(body.bio, 140);
@@ -441,73 +819,106 @@ export async function adminRoutes(app) {
         throw badRequest("gender is invalid");
       }
       if (id === request.user.id && status === "banned") {
-        throw badRequest("cannot ban yourself");
+        throw badRequest("cannot_ban_self");
       }
-      if (nickname) {
-        run(
-          `UPDATE users
-           SET nickname = ?,
-               signature = ?,
-               bio = ?,
-               gender = COALESCE(NULLIF(?, ''), gender),
-               updated_at = datetime('now')
-           WHERE id = ?`,
-          [nickname, signature, bio, gender, id],
-        );
+      if (id === request.user.id && role && role !== current.role) {
+        throw badRequest("cannot_change_own_role");
       }
-      if (points != null) {
-        run(
-          `UPDATE users
-           SET points = ?,
-               level = ?,
-               updated_at = datetime('now')
-           WHERE id = ?`,
-          [points, levelFromPoints(points), id],
-        );
+      if (
+        current.role === "admin" &&
+        current.status === "active" &&
+        (status === "banned" || role === "user")
+      ) {
+        protectLastActiveAdmin(current);
       }
-      if (sakuraCoins != null) {
-        run(
-          `UPDATE users
-           SET sakura_coins = ?, updated_at = datetime('now')
-           WHERE id = ?`,
-          [sakuraCoins, id],
-        );
-      } else if (sakuraCoinsDelta != null && sakuraCoinsDelta !== 0) {
-        run(
-          `UPDATE users
-           SET sakura_coins = MAX(0, sakura_coins + ?),
-               updated_at = datetime('now')
-           WHERE id = ?`,
-          [sakuraCoinsDelta, id],
-        );
-        run(
-          `INSERT INTO user_reward_events
-             (user_id, action, coins_delta, description, related_type, related_id)
-           VALUES (?, 'admin_adjust_coins', ?, '后台调整樱花币', 'admin', ?)`,
-          [id, sakuraCoinsDelta, String(request.user.id)],
-        );
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (nickname) {
+          run(
+            `UPDATE users
+             SET nickname = ?, signature = ?, bio = ?,
+                 gender = COALESCE(NULLIF(?, ''), gender),
+                 updated_at = datetime('now')
+             WHERE id = ?`,
+            [nickname, signature, bio, gender, id],
+          );
+        }
+        if (points != null && points !== Number(current.points || 0)) {
+          const pointsDelta = points - Number(current.points || 0);
+          run(
+            `UPDATE users
+             SET points = ?, level = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [points, levelFromPoints(points), id],
+          );
+          run(
+            `INSERT INTO user_reward_events
+               (user_id, action, points_delta, description, related_type, related_id)
+             VALUES (?, 'admin_adjust_points', ?, '旧版后台成长值修正', 'admin', ?)`,
+            [id, pointsDelta, String(request.user.id)],
+          );
+        }
+        let coinsDelta = null;
+        if (sakuraCoins != null) {
+          coinsDelta = sakuraCoins - Number(current.sakura_coins || 0);
+        } else if (sakuraCoinsDelta != null && sakuraCoinsDelta !== 0) {
+          if (Number(current.sakura_coins || 0) + sakuraCoinsDelta < 0) {
+            throw badRequest("insufficient_user_balance");
+          }
+          coinsDelta = sakuraCoinsDelta;
+        }
+        if (coinsDelta != null && coinsDelta !== 0) {
+          const nextCoins = Number(current.sakura_coins || 0) + coinsDelta;
+          run(
+            `UPDATE users
+             SET sakura_coins = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [nextCoins, id],
+          );
+          run(
+            `INSERT INTO user_reward_events
+               (user_id, action, coins_delta, description, related_type, related_id)
+             VALUES (?, 'admin_adjust_coins', ?, '旧版后台樱花币修正', 'admin', ?)`,
+            [id, coinsDelta, String(request.user.id)],
+          );
+        }
+        if (status) {
+          if (status === "active") {
+            run(
+              `UPDATE users
+               SET status = 'active', banned_until = '', ban_reason = '',
+                   updated_at = datetime('now')
+               WHERE id = ?`,
+              [id],
+            );
+          } else {
+            run(
+              `UPDATE users
+               SET status = 'banned', banned_until = '',
+                   ban_reason = 'admin_ban_legacy', updated_at = datetime('now')
+               WHERE id = ?`,
+              [id],
+            );
+            revokeActiveUserSessions(id);
+            recordKnownUserBanIps(id, "admin_ban_legacy");
+          }
+        }
+        if (role && role !== current.role) {
+          run(
+            "UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?",
+            [role, id],
+          );
+          revokeActiveUserSessions(id);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
       }
-      if (status) {
-        run(
-          `UPDATE users
-           SET status = ?,
-               banned_until = CASE WHEN ? = 'active' THEN '' ELSE banned_until END,
-               ban_reason = CASE WHEN ? = 'active' THEN '' ELSE ban_reason END,
-               updated_at = datetime('now')
-           WHERE id = ?`,
-          [status, status, status, id],
-        );
-        if (status === "banned") recordKnownUserBanIps(id, "admin_ban");
+      if (status === "banned" || (role && role !== current.role)) {
+        disconnectAdminUserFromChat(request.server, id);
       }
-      if (role) {
-        run(
-          `UPDATE users
-           SET role = ?, updated_at = datetime('now')
-           WHERE id = ?`,
-          [role, id],
-        );
-      }
-      return { ok: true };
+      return { ok: true, item: adminUserDetailRow(id) };
     },
   );
 
@@ -3519,6 +3930,286 @@ function deleteReportTarget(report) {
   return 0;
 }
 
+function userWorkbenchStats() {
+  const chatViolationUsers = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM users
+       WHERE chat_violation_total > 0`,
+    )?.count || 0,
+  );
+  const reportedUsers = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM users u
+       WHERE EXISTS (
+         SELECT 1 FROM reports report
+         WHERE report.target_type = 'user'
+           AND report.target_id = CAST(u.id AS TEXT)
+       )`,
+    )?.count || 0,
+  );
+  const noVersionUsers = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM users u
+       WHERE NOT EXISTS (
+         SELECT 1 FROM user_app_installs install
+         WHERE install.user_id = u.id
+       )`,
+    )?.count || 0,
+  );
+  return {
+    total: Number(one("SELECT COUNT(*) AS count FROM users")?.count || 0),
+    active: Number(
+      one("SELECT COUNT(*) AS count FROM users WHERE status = 'active'")?.count || 0,
+    ),
+    banned: Number(
+      one("SELECT COUNT(*) AS count FROM users WHERE status = 'banned'")?.count || 0,
+    ),
+    admins: Number(
+      one("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")?.count || 0,
+    ),
+    newToday: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM users
+         WHERE created_at >= datetime('now', 'start of day')`,
+      )?.count || 0,
+    ),
+    activeToday: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM users u
+         WHERE u.last_login_at >= datetime('now', 'start of day')
+            OR EXISTS (
+              SELECT 1 FROM user_app_installs install
+              WHERE install.user_id = u.id
+                AND install.last_seen_at >= datetime('now', 'start of day')
+            )`,
+      )?.count || 0,
+    ),
+    riskUsers: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM users u
+         WHERE u.status = 'banned'
+            OR u.chat_violation_total > 0
+            OR EXISTS (
+              SELECT 1 FROM reports report
+              WHERE report.target_type = 'user'
+                AND report.target_id = CAST(u.id AS TEXT)
+            )`,
+      )?.count || 0,
+    ),
+    chatViolationUsers,
+    reportedUsers,
+    noVersionUsers,
+    activeSessions: Number(
+      one(
+        `SELECT COUNT(*) AS count
+         FROM auth_tokens
+         WHERE revoked_at IS NULL
+           AND datetime(expires_at) > datetime('now')`,
+      )?.count || 0,
+    ),
+  };
+}
+
+function releaseExpiredAdminUserBans() {
+  run(
+    `UPDATE users
+     SET status = 'active', banned_until = '', ban_reason = '',
+         updated_at = datetime('now')
+     WHERE status = 'banned'
+       AND banned_until <> ''
+       AND datetime(banned_until) <= datetime('now')`,
+  );
+}
+
+function adminUserVersionOptions() {
+  return all(
+    `SELECT version_code, version_name, platform,
+            COUNT(DISTINCT user_id) AS user_count,
+            MAX(last_seen_at) AS last_seen_at
+     FROM user_app_installs
+     WHERE version_code > 0
+     GROUP BY version_code, version_name, platform
+     ORDER BY version_code DESC, platform, version_name
+     LIMIT 100`,
+  ).map((row) => ({
+    versionCode: Number(row.version_code || 0),
+    versionName: row.version_name || "",
+    platform: row.platform || "",
+    userCount: Number(row.user_count || 0),
+    lastSeenAt: row.last_seen_at || "",
+  }));
+}
+
+function adminUserDetailRow(id) {
+  const row = one(
+    `WITH latest_app AS (
+       SELECT i.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY i.user_id
+                ORDER BY i.last_seen_at DESC, i.id DESC
+              ) AS row_number
+       FROM user_app_installs i
+     )
+     SELECT u.*,
+            latest_app.version_name AS app_version_name,
+            latest_app.version_code AS app_version_code,
+            latest_app.platform AS app_platform,
+            latest_app.device_model AS app_device_model,
+            latest_app.os_version AS app_os_version,
+            latest_app.last_seen_at AS app_last_seen_at,
+            (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id) AS comment_count,
+            (SELECT COUNT(*) FROM danmaku d WHERE d.user_id = u.id) AS danmaku_count,
+            (SELECT COUNT(*) FROM chat_messages m WHERE m.user_id = u.id) AS chat_count,
+            (SELECT COUNT(*) FROM reports rr WHERE rr.reporter_id = u.id) AS report_count,
+            (SELECT COUNT(*) FROM reports rt
+             WHERE rt.target_type = 'user'
+               AND rt.target_id = CAST(u.id AS TEXT)) AS reported_count,
+            (SELECT COUNT(*) FROM auth_tokens token
+             WHERE token.user_id = u.id
+               AND token.revoked_at IS NULL
+               AND datetime(token.expires_at) > datetime('now')) AS active_session_count,
+            (SELECT COUNT(*) FROM user_app_installs install
+             WHERE install.user_id = u.id) AS device_count
+     FROM users u
+     LEFT JOIN latest_app
+       ON latest_app.user_id = u.id AND latest_app.row_number = 1
+     WHERE u.id = ?`,
+    [id],
+  );
+  return row ? userAdminJson(row) : null;
+}
+
+function requireAdminUser(id) {
+  const user = one("SELECT * FROM users WHERE id = ?", [id]);
+  if (!user) throw badRequest("user not found");
+  return user;
+}
+
+function protectLastActiveAdmin(user) {
+  if (user.role !== "admin" || user.status !== "active") return;
+  const count = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM users
+       WHERE role = 'admin' AND status = 'active'`,
+    )?.count || 0,
+  );
+  if (count <= 1) throw badRequest("last_admin_protected");
+}
+
+function activeUserSessionCount(userId) {
+  return Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM auth_tokens
+       WHERE user_id = ?
+         AND revoked_at IS NULL
+         AND datetime(expires_at) > datetime('now')`,
+      [userId],
+    )?.count || 0,
+  );
+}
+
+function revokeActiveUserSessions(userId) {
+  return (
+    run(
+      `UPDATE auth_tokens
+       SET revoked_at = datetime('now')
+       WHERE user_id = ?
+         AND revoked_at IS NULL
+         AND datetime(expires_at) > datetime('now')`,
+      [userId],
+    ).changes ?? 0
+  );
+}
+
+function disconnectAdminUserFromChat(server, userId) {
+  let disconnected = 0;
+  const rooms = all(
+    "SELECT room_id FROM chat_room_members WHERE user_id = ?",
+    [userId],
+  );
+  for (const room of rooms) {
+    disconnected +=
+      server.disconnectChatRoomUser?.(
+        room.room_id,
+        userId,
+        "account_access_revoked_by_admin",
+      ) || 0;
+  }
+  return disconnected;
+}
+
+function adminUserDeviceJson(row) {
+  return {
+    id: row.id,
+    installId: row.install_id || "",
+    versionName: row.version_name || "",
+    versionCode: Number(row.version_code || 0),
+    platform: row.platform || "",
+    deviceModel: row.device_model || "",
+    osVersion: row.os_version || "",
+    firstSeenAt: row.first_seen_at || "",
+    lastSeenAt: row.last_seen_at || "",
+    lastIp: row.last_ip || "",
+  };
+}
+
+function adminUserSessionJson(row) {
+  return {
+    id: row.id,
+    expiresAt: row.expires_at || "",
+    createdAt: row.created_at || "",
+    revokedAt: row.revoked_at || "",
+    active: Boolean(row.is_active),
+  };
+}
+
+function adminUserRewardEventJson(row) {
+  return {
+    id: row.id,
+    action: row.action || "",
+    pointsDelta: Number(row.points_delta || 0),
+    coinsDelta: Number(row.coins_delta || 0),
+    description: row.description || "",
+    relatedType: row.related_type || "",
+    relatedId: row.related_id || "",
+    createdAt: row.created_at || "",
+  };
+}
+
+function userTargetReports(userId) {
+  return all(
+    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
+     FROM reports r
+     LEFT JOIN users u ON u.id = r.reporter_id
+     LEFT JOIN users h ON h.id = r.handled_by
+     WHERE r.target_type = 'user' AND r.target_id = ?
+     ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.id DESC
+     LIMIT 50`,
+    [String(userId)],
+  ).map(reportJson);
+}
+
+function adminAdjustmentDescription(reasonCode, note) {
+  const label =
+    {
+      customer_support: "客服补偿",
+      campaign_reward: "活动奖励",
+      refund: "退款返还",
+      fraud_correction: "异常账变纠正",
+      data_correction: "数据修正",
+      other: "其他人工调整",
+    }[reasonCode] || reasonCode;
+  return note ? `${label}：${note}` : label;
+}
+
 function userAdminJson(row) {
   return {
     id: row.id,
@@ -3541,6 +4232,8 @@ function userAdminJson(row) {
     banReason: row.ban_reason || "",
     chatViolationTotal: row.chat_violation_total || 0,
     chatTempBanCount: row.chat_temp_ban_count || 0,
+    activeSessionCount: row.active_session_count || 0,
+    deviceCount: row.device_count || 0,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
     appInstall: row.app_version_name

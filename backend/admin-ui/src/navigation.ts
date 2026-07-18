@@ -12,7 +12,6 @@ import {
   Goods,
   Grid,
   Histogram,
-  Lock,
   MagicStick,
   Monitor,
   Opportunity,
@@ -61,7 +60,7 @@ export const navigationGroups: NavigationGroup[] = [
     key: 'users',
     label: '用户与经济',
     items: [
-      { label: '用户管理', route: 'users', icon: User, adminOnly: true, legacy: true },
+      { label: '用户管理', route: 'users', icon: User, adminOnly: true },
       { label: '资金流水', route: 'finance', icon: Coin, adminOnly: true, legacy: true },
       { label: '商店与装扮', route: 'shop', icon: Goods, adminOnly: true, legacy: true },
       { label: '成长规则', route: 'growth-rules', icon: Opportunity, adminOnly: true, legacy: true },
@@ -86,7 +85,6 @@ export const navigationGroups: NavigationGroup[] = [
       { label: '审计日志', route: 'audit', icon: DocumentChecked, adminOnly: true, legacy: true },
       { label: '代理管理', route: 'proxy', icon: Connection, adminOnly: true, legacy: true },
       { label: '系统配置', route: 'settings', icon: Setting, adminOnly: true, legacy: true },
-      { label: '权限安全', route: 'users', icon: Lock, adminOnly: true, legacy: true },
     ],
   },
 ];
