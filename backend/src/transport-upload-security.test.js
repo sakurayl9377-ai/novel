@@ -13,7 +13,6 @@ process.env.DB_PATH = path.join(tempDir, "transport-upload-security.sqlite");
 process.env.TOKEN_SECRET = "transport-upload-security-token-secret";
 process.env.ADMIN_USERNAME = "transport-upload-security-admin";
 process.env.ADMIN_PASSWORD = "transport-upload-security-admin-password";
-process.env.DBZY_SYNC_ENABLED = "false";
 
 const Fastify = (await import("fastify")).default;
 const websocketPlugin = (await import("@fastify/websocket")).default;

@@ -351,7 +351,7 @@ test('backend business consistency regressions', async (t) => {
         videoId: 'first-write-source',
         animeId: 'attacker-anime',
         episodeId: 'episode-1',
-        sourceName: 'DBZY',
+        sourceName: 'trusted-provider',
         content: 'first write',
       });
       assert.equal(firstWrite.statusCode, 200);
@@ -382,7 +382,7 @@ test('backend business consistency regressions', async (t) => {
       run(
         `INSERT INTO danmaku_video_aliases
            (alias_video_id, canonical_video_id, anime_id, episode_id, source_name)
-         VALUES ('trusted-source', 'anime:legit:episode:1', 'legit', '1', 'DBZY')`,
+         VALUES ('trusted-source', 'anime:legit:episode:1', 'legit', '1', 'trusted-provider')`,
       );
       const trusted = await postDanmaku(app, token, {
         videoId: 'trusted-source',

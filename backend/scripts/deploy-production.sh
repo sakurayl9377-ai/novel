@@ -90,6 +90,7 @@ updater_restore="$(dirname "$updater_target")/.mihomo-update-subscription.restor
 deploy_script_restore="$(dirname "$deploy_script_target")/.novel-backend-deploy.restore.$$"
 switched=false
 tools_installed=false
+committed=false
 
 cleanup() {
   rm -rf "$work_dir"
@@ -105,6 +106,60 @@ cleanup() {
     "$helper_restore" \
     "$updater_restore" \
     "$deploy_script_restore"
+}
+
+sanitize_retired_video_database() {
+  local target_database="$1"
+  [[ -f "$target_database" ]] || return 0
+  local cleanup_sql
+  cleanup_sql="
+    PRAGMA foreign_keys = OFF;
+    BEGIN IMMEDIATE;
+    DROP TABLE IF EXISTS suibian_watch_history;
+    DROP TABLE IF EXISTS suibian_likes;
+    DROP TABLE IF EXISTS suibian_favorites;
+    DROP TABLE IF EXISTS video_category_policies;
+    DROP TABLE IF EXISTS video_content_overrides;
+  "
+  if [[ "$(sqlite3 "$target_database" "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'video_cover_urls';")" == "1" ]]; then
+    cleanup_sql+="
+      DELETE FROM video_cover_urls
+      WHERE lower(trim(provider)) = 'dbzy'
+         OR lower(trim(source_key)) = 'dbzy';
+    "
+  fi
+  cleanup_sql+="COMMIT;"
+  sqlite3 "$target_database" ".timeout 10000" "$cleanup_sql"
+}
+
+remove_retired_video_releases() {
+  local active_release="$1"
+  while IFS= read -r -d '' release; do
+    [[ "$release" == "$active_release" ]] && continue
+    if find "$release" -type f \
+      \( -iname '*dbzy*' -o -iname '*suibian*' \) \
+      -print -quit | grep -q .; then
+      rm -rf "$release"
+    fi
+  done < <(find "$release_root" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
+verify_retired_video_cleanup() {
+  if grep -Eq '^[[:space:]]*(export[[:space:]]+)?(DBZY_|SUIBIAN_|VIDEO_POLICY_TIMEZONE[[:space:]]*=)' "$shared_root/.env"; then
+    fail "retired_video_environment_present"
+  fi
+  [[ ! -e "$shared_root/data/dbzy-cache.json" ]] || fail "retired_video_cache_present"
+  [[ ! -e "$shared_root/data/suibian-catalog.json" ]] || fail "retired_video_catalog_present"
+  local legacy_tables
+  legacy_tables="$(sqlite3 "$database_path" \
+    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('suibian_watch_history','suibian_likes','suibian_favorites','video_category_policies','video_content_overrides');")"
+  [[ "$legacy_tables" == "0" ]] || fail "retired_video_tables_present"
+  if [[ "$(sqlite3 "$database_path" "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'video_cover_urls';")" == "1" ]]; then
+    local legacy_covers
+    legacy_covers="$(sqlite3 "$database_path" \
+      "SELECT COUNT(*) FROM video_cover_urls WHERE lower(trim(provider)) = 'dbzy' OR lower(trim(source_key)) = 'dbzy';")"
+    [[ "$legacy_covers" == "0" ]] || fail "retired_video_covers_present"
+  fi
 }
 
 restore_tools() {
@@ -168,7 +223,9 @@ on_exit() {
   local status=$?
   trap - EXIT INT TERM
   set +e
-  (( status == 0 )) || rollback
+  if (( status != 0 )) && [[ "$committed" != true ]]; then
+    rollback
+  fi
   cleanup
   exit "$status"
 }
@@ -262,8 +319,21 @@ mv -Tf "${app_link}.next" "$app_link"
 switched=true
 systemctl restart "$service"
 wait_for_health || fail "health_check_failed"
+# The new release is healthy. Post-deploy retirement failures must not roll
+# back to a release that can start the removed collector again.
+committed=true
+"$node_bin" "$new_release/scripts/retire-video-environment.js" "$shared_root/.env"
+rm -f \
+  "$shared_root/data/dbzy-cache.json" \
+  "$shared_root/data/suibian-catalog.json"
+sanitize_retired_video_database "$database_path"
+while IFS= read -r -d '' database_backup; do
+  sanitize_retired_video_database "$database_backup"
+done < <(find "$database_backup_root" -mindepth 1 -maxdepth 1 -type f -name 'interaction-*.sqlite' -print0 2>/dev/null)
+verify_retired_video_cleanup
 
 current_release="$(readlink -f "$app_link")"
+remove_retired_video_releases "$current_release"
 find "$release_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
   | sort -nr \
   | awk 'NR > 6 { sub(/^[^ ]+ /, ""); print }' \
@@ -277,6 +347,7 @@ find "$database_backup_root" -mindepth 1 -maxdepth 1 -type f -name 'interaction-
   | xargs -r rm -f || true
 
 echo "deploy_status=ok"
+echo "retired_video_environment=removed"
 echo "deploy_revision=$revision"
 echo "deploy_previous=$previous_release"
 systemctl is-active "$service"

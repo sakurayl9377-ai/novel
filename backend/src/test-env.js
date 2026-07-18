@@ -13,5 +13,4 @@ process.env.ADMIN_USERNAME ||= 'admin';
 process.env.ADMIN_PASSWORD ||= 'unit-test-admin-password';
 process.env.ALLOW_DEV_AUTH_CODES ||= 'false';
 process.env.ALLOW_BETA_TEST_SESSION ||= 'false';
-process.env.DBZY_SYNC_ENABLED ||= 'false';
 process.env.SPEECH_ALLOW_REMOTE_AUDIO ||= 'false';
