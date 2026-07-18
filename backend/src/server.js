@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
@@ -39,6 +40,15 @@ export async function buildServer() {
     trustProxy: config.trustedProxies,
   });
 
+  app.setErrorHandler((error, _request, reply) => {
+    const status = error.statusCode || 500;
+    if (status >= 500) app.log.error({ err: error }, 'request failed');
+    reply.code(status).send({
+      error: error.publicCode || (status >= 500 ? 'internal_error' : error.message),
+      ...(error.details === undefined ? {} : { details: error.details }),
+    });
+  });
+
   startUploadOrphanSweeper(app.log);
 
   app.addHook('onClose', async () => {
@@ -56,6 +66,14 @@ export async function buildServer() {
 
   await app.register(cors, {
     origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(','),
+  });
+  await app.register(multipart, {
+    limits: {
+      files: 1,
+      fields: 8,
+      parts: 10,
+      fileSize: 5 * 1024 * 1024,
+    },
   });
   await app.register(websocket, {
     options: {
@@ -141,14 +159,6 @@ export async function buildServer() {
 
   app.get(config.adminPath, async (_request, reply) => {
     return reply.redirect(`${config.adminPath}/`);
-  });
-
-  app.setErrorHandler((error, _request, reply) => {
-    const status = error.statusCode || 500;
-    if (status >= 500) app.log.error({ err: error }, 'request failed');
-    reply.code(status).send({
-      error: error.publicCode || (status >= 500 ? 'internal_error' : error.message),
-    });
   });
 
   return app;

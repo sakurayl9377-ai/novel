@@ -16,6 +16,7 @@ export const managedUploadFolders = new Set([
   "chat-images",
   "chat-audio",
   "chat-files",
+  "novel-covers",
 ]);
 
 export function validateUploadBytes(mimeType, bytes) {
@@ -350,10 +351,12 @@ export function managedUploadKeyFromAnyUrl({ url, apiPrefix, folders }) {
     return null;
   }
   const profilePrefix = `${normalizedPrefix}/uploads/profile/`;
+  const contentPrefix = `${normalizedPrefix}/uploads/content/`;
   const legacyAvatarPrefix = `${normalizedPrefix}/uploads/avatars/`;
   let folder = "";
   let file = "";
   const profileMarker = "/uploads/profile/";
+  const contentMarker = "/uploads/content/";
   const legacyAvatarMarker = "/uploads/avatars/";
   const profileStart = pathname.startsWith(profilePrefix)
     ? profilePrefix.length
@@ -365,8 +368,14 @@ export function managedUploadKeyFromAnyUrl({ url, apiPrefix, folders }) {
     : pathname.lastIndexOf(legacyAvatarMarker) >= 0
       ? pathname.lastIndexOf(legacyAvatarMarker) + legacyAvatarMarker.length
       : -1;
-  if (profileStart >= 0) {
-    const remainder = pathname.slice(profileStart);
+  const contentStart = pathname.startsWith(contentPrefix)
+    ? contentPrefix.length
+    : pathname.lastIndexOf(contentMarker) >= 0
+      ? pathname.lastIndexOf(contentMarker) + contentMarker.length
+      : -1;
+  const structuredStart = profileStart >= 0 ? profileStart : contentStart;
+  if (structuredStart >= 0) {
+    const remainder = pathname.slice(structuredStart);
     const separator = remainder.indexOf("/");
     if (separator <= 0 || remainder.indexOf("/", separator + 1) >= 0) return null;
     folder = decodeUrlSegment(remainder.slice(0, separator));

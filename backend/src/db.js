@@ -1130,8 +1130,10 @@ export function migrate() {
       category TEXT NOT NULL DEFAULT 'AI原创',
       cover_url TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'pending',
+      status TEXT NOT NULL DEFAULT 'draft',
       review_note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      submitted_at TEXT NOT NULL DEFAULT '',
       reviewed_by INTEGER,
       reviewed_at TEXT NOT NULL DEFAULT '',
       published_at TEXT NOT NULL DEFAULT '',
@@ -1139,7 +1141,7 @@ export function migrate() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
-      CHECK (status IN ('pending', 'published', 'rejected'))
+      CHECK (status IN ('draft', 'pending', 'published', 'rejected'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_ai_novels_public
@@ -1153,8 +1155,10 @@ export function migrate() {
       title TEXT NOT NULL,
       content TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending',
+      status TEXT NOT NULL DEFAULT 'draft',
       review_note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      submitted_at TEXT NOT NULL DEFAULT '',
       reviewed_by INTEGER,
       reviewed_at TEXT NOT NULL DEFAULT '',
       published_at TEXT NOT NULL DEFAULT '',
@@ -1163,12 +1167,31 @@ export function migrate() {
       UNIQUE (novel_id, sort_order),
       FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
       FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
-      CHECK (status IN ('pending', 'published', 'rejected'))
+      CHECK (status IN ('draft', 'pending', 'published', 'rejected'))
     );
 
     CREATE INDEX IF NOT EXISTS idx_ai_novel_chapters_order
       ON ai_novel_chapters(novel_id, status, sort_order, id);
+
+    CREATE TABLE IF NOT EXISTS ai_novel_review_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      chapter_id INTEGER,
+      submission_revision INTEGER NOT NULL DEFAULT 1,
+      decision TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      reviewer_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (chapter_id) REFERENCES ai_novel_chapters(id) ON DELETE SET NULL,
+      FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (decision IN ('approve', 'reject', 'direct_publish'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_review_events_novel
+      ON ai_novel_review_events(novel_id, created_at DESC, id DESC);
   `);
+  migrateAiNovelWorkflowSchema();
   addMissingColumn("users", "bio", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("users", "gender", "TEXT NOT NULL DEFAULT 'private'");
   addMissingColumn("users", "signature", "TEXT NOT NULL DEFAULT ''");
@@ -1324,6 +1347,150 @@ function encryptStoredSettingSecrets() {
     if (!row.value || isEncryptedSettingSecret(row.value)) continue;
     update.run(encryptSettingSecret(row.value), row.key);
   }
+}
+
+function migrateAiNovelWorkflowSchema() {
+  const novelSql = String(
+    one("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ai_novels'")
+      ?.sql || "",
+  );
+  const chapterSql = String(
+    one(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ai_novel_chapters'",
+    )?.sql || "",
+  );
+  const supportsDrafts = novelSql.includes("'draft'") && chapterSql.includes("'draft'");
+
+  if (!supportsDrafts) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    let transactionStarted = false;
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      transactionStarted = true;
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_retired_upload_ai_novels_cover_url_insert;
+        DROP TRIGGER IF EXISTS trg_retired_upload_ai_novels_cover_url_update;
+        DROP TRIGGER IF EXISTS trg_active_upload_ai_novels_cover_url_retirement;
+        DROP TABLE IF EXISTS ai_novels_workflow_next;
+        DROP TABLE IF EXISTS ai_novel_chapters_workflow_next;
+
+        CREATE TABLE ai_novels_workflow_next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          pen_name TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL DEFAULT 'AI原创',
+          cover_url TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'draft',
+          review_note TEXT NOT NULL DEFAULT '',
+          revision INTEGER NOT NULL DEFAULT 1,
+          submitted_at TEXT NOT NULL DEFAULT '',
+          reviewed_by INTEGER,
+          reviewed_at TEXT NOT NULL DEFAULT '',
+          published_at TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+          CHECK (status IN ('draft', 'pending', 'published', 'rejected'))
+        );
+
+        INSERT INTO ai_novels_workflow_next
+          (id, user_id, title, pen_name, category, cover_url, description,
+           status, review_note, revision, submitted_at, reviewed_by,
+           reviewed_at, published_at, created_at, updated_at)
+        SELECT id, user_id, title, pen_name, category, cover_url, description,
+               status, review_note, 1,
+               CASE WHEN status IN ('pending', 'published', 'rejected')
+                    THEN created_at ELSE '' END,
+               reviewed_by, reviewed_at, published_at, created_at, updated_at
+        FROM ai_novels;
+
+        CREATE TABLE ai_novel_chapters_workflow_next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          novel_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'draft',
+          review_note TEXT NOT NULL DEFAULT '',
+          revision INTEGER NOT NULL DEFAULT 1,
+          submitted_at TEXT NOT NULL DEFAULT '',
+          reviewed_by INTEGER,
+          reviewed_at TEXT NOT NULL DEFAULT '',
+          published_at TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (novel_id, sort_order),
+          FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+          FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+          CHECK (status IN ('draft', 'pending', 'published', 'rejected'))
+        );
+
+        INSERT INTO ai_novel_chapters_workflow_next
+          (id, novel_id, title, content, sort_order, status, review_note,
+           revision, submitted_at, reviewed_by, reviewed_at, published_at,
+           created_at, updated_at)
+        SELECT id, novel_id, title, content, sort_order, status, review_note,
+               1,
+               CASE WHEN status IN ('pending', 'published', 'rejected')
+                    THEN created_at ELSE '' END,
+               reviewed_by, reviewed_at, published_at, created_at, updated_at
+        FROM ai_novel_chapters;
+
+        DROP TABLE ai_novel_chapters;
+        DROP TABLE ai_novels;
+        ALTER TABLE ai_novels_workflow_next RENAME TO ai_novels;
+        ALTER TABLE ai_novel_chapters_workflow_next RENAME TO ai_novel_chapters;
+
+        CREATE INDEX idx_ai_novels_public
+          ON ai_novels(status, published_at DESC, id DESC);
+        CREATE INDEX idx_ai_novels_owner
+          ON ai_novels(user_id, updated_at DESC, id DESC);
+        CREATE INDEX idx_ai_novel_chapters_order
+          ON ai_novel_chapters(novel_id, status, sort_order, id);
+      `);
+      db.exec("COMMIT");
+      transactionStarted = false;
+    } catch (error) {
+      if (transactionStarted) db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+
+  addMissingColumn("ai_novels", "revision", "INTEGER NOT NULL DEFAULT 1");
+  addMissingColumn("ai_novels", "submitted_at", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn(
+    "ai_novel_chapters",
+    "revision",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
+  addMissingColumn(
+    "ai_novel_chapters",
+    "submitted_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_novel_review_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      chapter_id INTEGER,
+      submission_revision INTEGER NOT NULL DEFAULT 1,
+      decision TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      reviewer_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (chapter_id) REFERENCES ai_novel_chapters(id) ON DELETE SET NULL,
+      FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (decision IN ('approve', 'reject', 'direct_publish'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_review_events_novel
+      ON ai_novel_review_events(novel_id, created_at DESC, id DESC);
+  `);
 }
 
 function addMissingColumn(table, column, definition) {

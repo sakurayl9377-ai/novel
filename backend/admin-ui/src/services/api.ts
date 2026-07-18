@@ -19,6 +19,10 @@ export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
   auth?: boolean;
 }
 
+export interface ApiFormRequestOptions extends Omit<RequestInit, 'body'> {
+  auth?: boolean;
+}
+
 export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {},
@@ -26,18 +30,50 @@ export async function apiRequest<T>(
   const serializedBody = options.body === undefined
     ? undefined
     : JSON.stringify(options.body);
-  const headers = new Headers(options.headers);
-  const token = localStorage.getItem(adminTokenStorageKey) || '';
-  if (options.auth !== false && token) headers.set('Authorization', `Bearer ${token}`);
+  const headers = authorizedHeaders(options.headers, options.auth);
   if (serializedBody !== undefined) headers.set('Content-Type', 'application/json');
 
+  return executeRequest<T>(path, {
+    ...options,
+    headers,
+    body: serializedBody,
+  });
+}
+
+export async function apiFormRequest<T>(
+  path: string,
+  body: FormData,
+  options: ApiFormRequestOptions = {},
+): Promise<T> {
+  return executeRequest<T>(path, {
+    ...options,
+    method: options.method || 'POST',
+    headers: authorizedHeaders(options.headers, options.auth),
+    body,
+  });
+}
+
+export function queryString(values: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value === '' || value === null || value === undefined) continue;
+    params.set(key, String(value));
+  }
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function authorizedHeaders(source: HeadersInit | undefined, auth = true): Headers {
+  const headers = new Headers(source);
+  const token = localStorage.getItem(adminTokenStorageKey) || '';
+  if (auth !== false && token) headers.set('Authorization', `Bearer ${token}`);
+  return headers;
+}
+
+async function executeRequest<T>(path: string, options: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${runtimeConfig.apiPrefix}${path}`, {
-      ...options,
-      headers,
-      body: serializedBody,
-    });
+    response = await fetch(`${runtimeConfig.apiPrefix}${path}`, options);
   } catch (error) {
     throw new ApiError(
       error instanceof Error ? error.message : '网络连接失败，请稍后重试',
@@ -57,22 +93,25 @@ export async function apiRequest<T>(
   return data as T;
 }
 
-export function queryString(values: Record<string, unknown>): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) {
-    if (value === '' || value === null || value === undefined) continue;
-    params.set(key, String(value));
-  }
-  const query = params.toString();
-  return query ? `?${query}` : '';
-}
-
 function friendlyApiError(code: string): string {
   const messages: Record<string, string> = {
     unauthorized: '登录已失效，请重新登录',
     admin_required: '当前账号没有管理权限',
     account_banned: '当前账号已被封禁',
     internal_error: '服务暂时不可用，请稍后重试',
+    revision_conflict: '作品已在其他页面发生变化，已为你重新加载最新内容',
+    novel_review_in_progress: '作品正在审核中，暂时不能修改',
+    novel_cover_file_required: '请选择封面图片',
+    novel_cover_file_too_large: '封面不能超过 5MB',
+    novel_cover_type_invalid: '封面仅支持 JPG、PNG 或 WebP',
+    novel_cover_content_invalid: '图片内容与文件类型不一致，请重新选择',
+    novel_cover_upload_required: '请通过封面上传区域选择图片，不能填写外部地址',
+    novel_cover_not_found: '封面文件不存在，请重新上传',
+    upload_file_quota_exceeded: '上传文件数量已达上限，请删除不用的草稿后重试',
+    upload_storage_quota_exceeded: '上传空间已满，请清理不用的内容后重试',
+    novel_cannot_be_deleted: '审核中或已发布的作品不能删除',
+    chapter_requires_novel_review: '该章节属于整书投稿，请在整书审核队列中处理',
+    serial_chapter_review_in_progress: '已有连载章节正在审核，请等待本批次完成后再提交',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

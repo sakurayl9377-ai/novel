@@ -30,6 +30,7 @@ const loading = ref(true);
 const error = ref('');
 const summary = ref<DashboardSummary>({});
 const operations = ref<OperationsOverview>({});
+const aiPendingCount = ref(0);
 
 const service = computed(() => operations.value.service || {});
 const users = computed(() => operations.value.users || {});
@@ -53,11 +54,11 @@ const taskCards = computed(() => [
   },
   {
     label: 'AI 小说审核',
-    value: '即将接入',
+    value: aiPendingCount.value,
     hint: '作品和连载章节统一审核',
     route: 'ai-novels',
     icon: MagicStick,
-    tone: 'default',
+    tone: aiPendingCount.value > 0 ? 'danger' : 'default',
   },
   {
     label: '社区内容',
@@ -73,12 +74,15 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
   try {
-    const [summaryData, operationsData] = await Promise.all([
+    const [summaryData, operationsData, pendingNovels, pendingChapters] = await Promise.all([
       apiRequest<DashboardSummary>('/admin/summary'),
       apiRequest<OperationsOverview>('/admin/operations/overview'),
+      apiRequest<{ total: number }>('/admin/ai-novels?status=pending&page=1&pageSize=1'),
+      apiRequest<{ total: number }>('/admin/ai-novel-chapters?status=pending&page=1&pageSize=1'),
     ]);
     summary.value = summaryData;
     operations.value = operationsData;
+    aiPendingCount.value = Number(pendingNovels.total || 0) + Number(pendingChapters.total || 0);
   } catch (loadError) {
     error.value = loadError instanceof Error ? loadError.message : '总览加载失败';
   } finally {
