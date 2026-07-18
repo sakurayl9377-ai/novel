@@ -727,6 +727,9 @@ export async function adminRoutes(app) {
       const { page, pageSize, offset } = pageParams(request.query || {});
       const keyword = optionalString(request.query?.q, 120);
       const status = optionalString(request.query?.status, 20);
+      const animeId = optionalString(request.query?.animeId, 120);
+      const episodeId = optionalString(request.query?.episodeId, 200);
+      const videoId = optionalString(request.query?.videoId, 300);
       const where = [];
       const params = [];
       if (keyword) {
@@ -745,16 +748,72 @@ export async function adminRoutes(app) {
         where.push("d.status = ?");
         params.push(status);
       }
+      if (animeId) {
+        where.push("d.anime_id = ?");
+        params.push(animeId);
+      }
+      if (episodeId) {
+        where.push("d.episode_id = ?");
+        params.push(episodeId);
+      }
+      if (videoId) {
+        where.push("d.video_id = ?");
+        params.push(videoId);
+      }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const items = all(
-        `SELECT d.*, u.nickname, u.avatar_url
+        `SELECT d.*, u.nickname, u.avatar_url, u.email AS user_email
          FROM danmaku d
          JOIN users u ON u.id = d.user_id
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ${clause}
          ORDER BY d.id DESC
          LIMIT ? OFFSET ?`,
         [...params, pageSize, offset],
-      ).map(danmakuJson);
-      return { page, pageSize, items };
+      ).map(danmakuModerationJson);
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM danmaku d
+           JOIN users u ON u.id = d.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
+      return {
+        page,
+        pageSize,
+        total,
+        statusCounts: statusCounts("danmaku", "status"),
+        stats: danmakuModerationStats(),
+        items,
+      };
+    },
+  );
+
+  app.get(
+    "/admin/danmaku/:id/context",
+    { preHandler: app.adminRequired },
+    async (request) => danmakuModerationContext(request.params.id),
+  );
+
+  app.patch(
+    "/admin/danmaku/:id/status",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "danmaku id");
+      const status = requiredString(request.body?.status, "status", 20);
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("danmaku status is invalid");
+      }
+      const result = run(
+        `UPDATE danmaku
+         SET status = ?,
+             deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE NULL END
+         WHERE id = ?`,
+        [status, status, id],
+      );
+      if (!result.changes) throw badRequest("danmaku not found");
+      return { item: danmakuModerationJson(danmakuModerationRow(id)) };
     },
   );
 
@@ -1558,6 +1617,121 @@ function positiveAdminId(value, label) {
   return id;
 }
 
+function danmakuModerationStats() {
+  const row = one(
+    `SELECT
+       COUNT(DISTINCT CASE WHEN status = 'visible' THEN video_id END) AS video_count,
+       COUNT(DISTINCT CASE WHEN status = 'visible' AND anime_id != '' THEN anime_id END) AS anime_count,
+       COUNT(DISTINCT CASE WHEN status = 'visible' THEN user_id END) AS user_count
+     FROM danmaku`,
+  );
+  const importedCount = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM danmaku d
+       JOIN users u ON u.id = d.user_id
+       WHERE d.status = 'visible' AND u.email = ?`,
+      [bilibiliImportEmail],
+    )?.count || 0,
+  );
+  return {
+    animeCount: Number(row?.anime_count || 0),
+    videoCount: Number(row?.video_count || 0),
+    userCount: Number(row?.user_count || 0),
+    importedCount,
+  };
+}
+
+function danmakuModerationContext(rawId) {
+  const id = positiveAdminId(rawId, "danmaku id");
+  const item = danmakuModerationRow(id);
+  if (!item) throw badRequest("danmaku not found");
+  const meta = one(
+    `SELECT anime_title, episode_title
+     FROM danmaku_episode_meta
+     WHERE canonical_video_id = ?`,
+    [item.video_id],
+  );
+  const aliases = all(
+    `SELECT alias_video_id, canonical_video_id, anime_id, episode_id, source_name, created_at
+     FROM danmaku_video_aliases
+     WHERE canonical_video_id = ?
+     ORDER BY source_name, id`,
+    [item.video_id],
+  ).map((row) => ({
+    aliasVideoId: row.alias_video_id,
+    canonicalVideoId: row.canonical_video_id,
+    animeId: row.anime_id,
+    episodeId: row.episode_id,
+    sourceName: row.source_name,
+    createdAt: row.created_at,
+  }));
+  const nearby = all(
+    `SELECT d.*, u.nickname, u.avatar_url, u.email AS user_email
+     FROM danmaku d
+     JOIN users u ON u.id = d.user_id
+     WHERE d.video_id = ?
+       AND d.time_ms BETWEEN ? AND ?
+       AND d.id != ?
+     ORDER BY ABS(d.time_ms - ?), d.id
+     LIMIT 30`,
+    [
+      item.video_id,
+      Math.max(0, item.time_ms - 15000),
+      item.time_ms + 15000,
+      id,
+      item.time_ms,
+    ],
+  ).map(danmakuModerationJson);
+  const reports = all(
+    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
+     FROM reports r
+     LEFT JOIN users u ON u.id = r.reporter_id
+     LEFT JOIN users h ON h.id = r.handled_by
+     WHERE r.target_type = 'danmaku' AND r.target_id = ?
+     ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.id DESC`,
+    [String(id)],
+  ).map(reportJson);
+  return {
+    item: danmakuModerationJson(item),
+    group: {
+      videoId: item.video_id,
+      animeId: item.anime_id || "unknown",
+      animeTitle:
+        cleanAdminTitle(meta?.anime_title) ||
+        danmakuAnimeFallbackTitle(item.anime_id || "unknown"),
+      episodeId: item.episode_id || item.video_id,
+      episodeTitle: meta?.episode_title || item.episode_id || item.video_id,
+      aliasCount: aliases.length,
+      bilibiliImportedCount: bilibiliImportedCountForTarget({
+        targetVideoId: item.video_id,
+        animeId: item.anime_id,
+        episodeId: item.episode_id,
+      }),
+    },
+    aliases,
+    nearby,
+    reports,
+  };
+}
+
+function danmakuModerationRow(id) {
+  return one(
+    `SELECT d.*, u.nickname, u.avatar_url, u.email AS user_email
+     FROM danmaku d
+     JOIN users u ON u.id = d.user_id
+     WHERE d.id = ?`,
+    [id],
+  );
+}
+
+function danmakuModerationJson(row) {
+  return {
+    ...danmakuJson(row),
+    isImported: row.user_email === bilibiliImportEmail,
+  };
+}
+
 function commentGroups(query = {}) {
   const keyword = optionalString(query.q, 120);
   const limit = Math.max(1, Math.min(100, optionalInt(query.limit, 100)));
@@ -1826,8 +2000,22 @@ async function danmakuAnimeSearch(query = {}) {
   const keyword = optionalString(query.q, 120);
   const limit = Math.max(1, Math.min(50, optionalInt(query.limit, 30)));
   const status = optionalString(query.status, 20) || "visible";
-  if (!keyword) return { items: [], hint: "search_required" };
   const like = `%${keyword}%`;
+  const searchClause = keyword
+    ? `AND (
+         d.anime_id LIKE ?
+         OR d.episode_id LIKE ?
+         OR d.video_id LIKE ?
+         OR d.content LIKE ?
+         OR m.anime_title LIKE ?
+         OR m.episode_title LIKE ?
+         OR a.alias_video_id LIKE ?
+         OR a.source_name LIKE ?
+       )`
+    : "";
+  const searchParams = keyword
+    ? [like, like, like, like, like, like, like, like]
+    : [];
   const danmakuItems = all(
     `SELECT
        COALESCE(NULLIF(d.anime_id, ''), 'unknown') AS anime_id,
@@ -1843,21 +2031,12 @@ async function danmakuAnimeSearch(query = {}) {
      LEFT JOIN danmaku_video_aliases a
        ON a.canonical_video_id = d.video_id
      WHERE d.status = ?
-       AND (
-         d.anime_id LIKE ?
-         OR d.episode_id LIKE ?
-         OR d.video_id LIKE ?
-         OR d.content LIKE ?
-         OR m.anime_title LIKE ?
-         OR m.episode_title LIKE ?
-         OR a.alias_video_id LIKE ?
-         OR a.source_name LIKE ?
-       )
+       ${searchClause}
      GROUP BY
        COALESCE(NULLIF(d.anime_id, ''), 'unknown')
      ORDER BY last_created_at DESC, danmaku_count DESC
      LIMIT ?`,
-    [status, like, like, like, like, like, like, like, like, limit],
+    [status, ...searchParams, limit],
   ).map((row) => {
     const animeTitle = cleanAdminTitle(row.anime_title);
     return {
@@ -1872,10 +2051,12 @@ async function danmakuAnimeSearch(query = {}) {
     };
   });
   let sourceItems = [];
-  try {
-    sourceItems = await searchAnimeSource(keyword, { limit });
-  } catch {
-    sourceItems = [];
+  if (keyword) {
+    try {
+      sourceItems = await searchAnimeSource(keyword, { limit });
+    } catch {
+      sourceItems = [];
+    }
   }
   const items = mergeDanmakuAnimeCandidates(danmakuItems, sourceItems).slice(
     0,
@@ -2130,7 +2311,7 @@ function danmakuEpisodeDetail(videoId, query = {}) {
     count: row.count,
   }));
   const items = all(
-    `SELECT d.*, u.nickname, u.avatar_url
+    `SELECT d.*, u.nickname, u.avatar_url, u.email AS user_email
      FROM danmaku d
      JOIN users u ON u.id = d.user_id
      WHERE d.video_id = ?
@@ -2140,7 +2321,7 @@ function danmakuEpisodeDetail(videoId, query = {}) {
      ORDER BY d.time_ms ASC, d.id ASC
      LIMIT ? OFFSET ?`,
     [...params, pageSize, offset],
-  ).map(danmakuJson);
+  ).map(danmakuModerationJson);
   return {
     page,
     pageSize,
@@ -2224,7 +2405,7 @@ function danmakuGroupDetail(videoId, query = {}) {
     count: row.count,
   }));
   const items = all(
-    `SELECT d.*, u.nickname, u.avatar_url
+    `SELECT d.*, u.nickname, u.avatar_url, u.email AS user_email
      FROM danmaku d
      JOIN users u ON u.id = d.user_id
      WHERE d.video_id = ?
@@ -2234,7 +2415,7 @@ function danmakuGroupDetail(videoId, query = {}) {
      ORDER BY d.time_ms ASC, d.id ASC
      LIMIT 5000`,
     params,
-  ).map(danmakuJson);
+  ).map(danmakuModerationJson);
   return {
     group: danmakuGroupJson({
       ...group,

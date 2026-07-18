@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     CommentContextDrawer: typeof import('./components/moderation/CommentContextDrawer.vue')['default']
+    DanmakuContextDrawer: typeof import('./components/danmaku/DanmakuContextDrawer.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElBadge: typeof import('element-plus/es')['ElBadge']
     ElButton: typeof import('element-plus/es')['ElButton']

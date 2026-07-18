@@ -52,7 +52,7 @@ export const navigationGroups: NavigationGroup[] = [
     items: [
       { label: '内容运营', route: 'content', icon: Collection, adminOnly: true, legacy: true },
       { label: '评论审核', route: 'comments', icon: Tickets, adminOnly: true },
-      { label: '弹幕管理', route: 'danmaku', icon: VideoCamera, adminOnly: true, legacy: true },
+      { label: '弹幕管理', route: 'danmaku', icon: VideoCamera, adminOnly: true },
       { label: '聊天室', route: 'chat', icon: ChatDotRound, adminOnly: true, legacy: true },
       { label: '举报中心', route: 'reports', icon: Flag, adminOnly: true },
     ],

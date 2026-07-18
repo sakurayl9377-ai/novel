@@ -5,13 +5,13 @@ const LoginView = () => import('@/views/LoginView.vue');
 const DashboardView = () => import('@/views/DashboardView.vue');
 const AiNovelsView = () => import('@/views/AiNovelsView.vue');
 const ModerationView = () => import('@/views/ModerationView.vue');
+const DanmakuView = () => import('@/views/DanmakuView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['danmaku', '弹幕管理', '视频池、播放源与弹幕审核'],
   ['chat', '聊天室', '房间、消息与风控规则'],
   ['users', '用户管理', '账号、权限、设备与行为'],
   ['finance', '资金流水', '积分和樱花币账变'],
@@ -81,6 +81,17 @@ export const router = createRouter({
           meta: {
             title: '举报中心',
             hint: '核对举报目标并记录处置结果',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'danmaku',
+          name: 'danmaku',
+          component: DanmakuView,
+          meta: {
+            title: '弹幕管理',
+            hint: '时间轴审核、剧集绑定与外部弹幕同步',
             requiresAuth: true,
             requiresAdmin: true,
           },
