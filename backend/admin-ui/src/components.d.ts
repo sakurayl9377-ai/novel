@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CommentContextDrawer: typeof import('./components/moderation/CommentContextDrawer.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElBadge: typeof import('element-plus/es')['ElBadge']
     ElButton: typeof import('element-plus/es')['ElButton']
@@ -49,6 +50,7 @@ declare module 'vue' {
     MetricCard: typeof import('./components/MetricCard.vue')['default']
     NovelEditorDrawer: typeof import('./components/ai-novels/NovelEditorDrawer.vue')['default']
     NovelReviewDrawer: typeof import('./components/ai-novels/NovelReviewDrawer.vue')['default']
+    ReportDetailDrawer: typeof import('./components/moderation/ReportDetailDrawer.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SectionCard: typeof import('./components/SectionCard.vue')['default']

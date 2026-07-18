@@ -8,6 +8,16 @@ describe('role-aware navigation', () => {
     expect(routes).toContain('dashboard');
     expect(routes).toContain('settings');
     expect(routes).toContain('ai-novels');
+    expect(
+      visibleNavigation('admin')
+        .flatMap((group) => group.items)
+        .find((item) => item.route === 'comments')?.legacy,
+    ).toBeUndefined();
+    expect(
+      visibleNavigation('admin')
+        .flatMap((group) => group.items)
+        .find((item) => item.route === 'reports')?.legacy,
+    ).toBeUndefined();
   });
 
   it('limits ordinary creators to the AI novel workspace', () => {

@@ -1,4 +1,4 @@
-import { all, one, run } from "./db.js";
+import { all, db, one, run } from "./db.js";
 import {
   fetchAnimeSourceDetail,
   searchAnimeSource,
@@ -504,6 +504,7 @@ export async function adminRoutes(app) {
       const { page, pageSize, offset } = pageParams(request.query || {});
       const keyword = optionalString(request.query?.q, 120);
       const status = optionalString(request.query?.status, 20);
+      const targetType = optionalString(request.query?.targetType, 32);
       const where = [];
       const params = [];
       if (keyword) {
@@ -522,16 +523,65 @@ export async function adminRoutes(app) {
         where.push("c.status = ?");
         params.push(status);
       }
+      if (targetType) {
+        where.push("c.target_type = ?");
+        params.push(targetType);
+      }
+      const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const items = all(
         `SELECT c.*, u.nickname, u.avatar_url
          FROM comments c
          JOIN users u ON u.id = c.user_id
-         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ${clause}
          ORDER BY c.id DESC
          LIMIT ? OFFSET ?`,
         [...params, pageSize, offset],
       ).map(commentJson);
-      return { page, pageSize, items };
+      const total = Number(
+        one(
+          `SELECT COUNT(*) AS count
+           FROM comments c
+           JOIN users u ON u.id = c.user_id
+           ${clause}`,
+          params,
+        )?.count || 0,
+      );
+      return {
+        page,
+        pageSize,
+        total,
+        statusCounts: statusCounts("comments", "status"),
+        targetCounts: groupedCounts("comments", "target_type"),
+        items,
+      };
+    },
+  );
+
+  app.get(
+    "/admin/comments/:id/context",
+    { preHandler: app.adminRequired },
+    async (request) => commentModerationContext(request.params.id),
+  );
+
+  app.patch(
+    "/admin/comments/:id/status",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const id = positiveAdminId(request.params.id, "comment id");
+      const status = requiredString(request.body?.status, "status", 20);
+      if (!["visible", "deleted"].includes(status)) {
+        throw badRequest("comment status is invalid");
+      }
+      const result = run(
+        `UPDATE comments
+         SET status = ?,
+             deleted_at = CASE WHEN ? = 'deleted' THEN datetime('now') ELSE NULL END,
+             updated_at = datetime('now')
+         WHERE id = ?`,
+        [status, status, id],
+      );
+      if (!result.changes) throw badRequest("comment not found");
+      return { item: commentJson(commentModerationRow(id)) };
     },
   );
 
@@ -1385,6 +1435,7 @@ export async function adminRoutes(app) {
       return {
         page,
         pageSize,
+        total: reportCount({ status, targetType, keyword }),
         statusCounts: statusCounts("reports", "status"),
         targetCounts: groupedCounts("reports", "target_type"),
         items,
@@ -1402,12 +1453,15 @@ export async function adminRoutes(app) {
       if (!["open", "resolved", "ignored"].includes(status)) {
         throw badRequest("status is invalid");
       }
-      run(
+      const result = run(
         `UPDATE reports
-         SET status = ?, handled_at = datetime('now'), handled_by = ?
+         SET status = ?,
+             handled_at = CASE WHEN ? = 'open' THEN NULL ELSE datetime('now') END,
+             handled_by = CASE WHEN ? = 'open' THEN NULL ELSE ? END
          WHERE id = ?`,
-        [status, request.user.id, id],
+        [status, status, status, request.user.id, id],
       );
+      if (!result.changes) throw badRequest("report not found");
       return { ok: true };
     },
   );
@@ -1423,16 +1477,85 @@ export async function adminRoutes(app) {
       if (!manageableTargets.has(report.target_type)) {
         throw badRequest("target type is invalid");
       }
-      const deleted = deleteReportTarget(report);
-      run(
-        `UPDATE reports
-         SET status = 'resolved', handled_at = datetime('now'), handled_by = ?
-         WHERE id = ?`,
-        [request.user.id, id],
-      );
-      return { ok: true, deleted };
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const deleted = deleteReportTarget(report);
+        run(
+          `UPDATE reports
+           SET status = 'resolved', handled_at = datetime('now'), handled_by = ?
+           WHERE id = ?`,
+          [request.user.id, id],
+        );
+        db.exec("COMMIT");
+        return { ok: true, deleted };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
   );
+}
+
+function commentModerationContext(rawId) {
+  const id = positiveAdminId(rawId, "comment id");
+  const item = commentModerationRow(id);
+  if (!item) throw badRequest("comment not found");
+  const parent = item.parent_id ? commentModerationRow(item.parent_id) : null;
+  const replies = all(
+    `SELECT c.*, u.nickname, u.avatar_url
+     FROM comments c
+     JOIN users u ON u.id = c.user_id
+     WHERE c.parent_id = ?
+     ORDER BY c.id`,
+    [id],
+  ).map(commentJson);
+  const meta = one(
+    `SELECT target_title, chapter_title, episode_title
+     FROM comment_target_meta
+     WHERE target_type = ? AND target_id = ?
+       AND chapter_id = ? AND episode_id = ?`,
+    [item.target_type, item.target_id, item.chapter_id, item.episode_id],
+  );
+  const reports = all(
+    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
+     FROM reports r
+     LEFT JOIN users u ON u.id = r.reporter_id
+     LEFT JOIN users h ON h.id = r.handled_by
+     WHERE r.target_type = 'comment' AND r.target_id = ?
+     ORDER BY CASE r.status WHEN 'open' THEN 0 ELSE 1 END, r.id DESC`,
+    [String(id)],
+  ).map(reportJson);
+  return {
+    item: commentJson(item),
+    parent: parent ? commentJson(parent) : null,
+    replies,
+    reports,
+    target: {
+      type: item.target_type,
+      id: item.target_id,
+      title: meta?.target_title || "",
+      chapterId: item.chapter_id || "",
+      chapterTitle: meta?.chapter_title || "",
+      episodeId: item.episode_id || "",
+      episodeTitle: meta?.episode_title || "",
+    },
+  };
+}
+
+function commentModerationRow(id) {
+  return one(
+    `SELECT c.*, u.nickname, u.avatar_url
+     FROM comments c
+     JOIN users u ON u.id = c.user_id
+     WHERE c.id = ?`,
+    [id],
+  );
+}
+
+function positiveAdminId(value, label) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) throw badRequest(`${label} is invalid`);
+  return id;
 }
 
 function commentGroups(query = {}) {
@@ -2516,6 +2639,45 @@ function reportRows({
   limit = 20,
   offset = 0,
 } = {}) {
+  const { clause, params } = reportFilter({
+    status,
+    targetType,
+    keyword,
+    reporterId,
+  });
+  return all(
+    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
+     FROM reports r
+     LEFT JOIN users u ON u.id = r.reporter_id
+     LEFT JOIN users h ON h.id = r.handled_by
+     ${clause}
+     ORDER BY
+       CASE r.status WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END,
+       r.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  ).map(reportJson);
+}
+
+function reportCount(filters = {}) {
+  const { clause, params } = reportFilter(filters);
+  return Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM reports r
+       LEFT JOIN users u ON u.id = r.reporter_id
+       ${clause}`,
+      params,
+    )?.count || 0,
+  );
+}
+
+function reportFilter({
+  status = "",
+  targetType = "",
+  keyword = "",
+  reporterId = 0,
+} = {}) {
   const where = [];
   const params = [];
   if (status) {
@@ -2534,18 +2696,10 @@ function reportRows({
     where.push("(r.reason LIKE ? OR r.target_id LIKE ? OR u.nickname LIKE ?)");
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
   }
-  return all(
-    `SELECT r.*, u.nickname AS reporter_nickname, h.nickname AS handler_nickname
-     FROM reports r
-     LEFT JOIN users u ON u.id = r.reporter_id
-     LEFT JOIN users h ON h.id = r.handled_by
-     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-     ORDER BY
-       CASE r.status WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END,
-       r.id DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limit, offset],
-  ).map(reportJson);
+  return {
+    clause: where.length ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
 }
 
 function reportJson(row) {
