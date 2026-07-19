@@ -80,7 +80,11 @@ with zipfile.ZipFile(sys.argv[1], "r") as apk:
 PY
 
 for target_dir in "$canonical_dir" "$legacy_app3_dir" "$legacy_app_dir"; do
-  [[ -d "$target_dir" && ! -L "$target_dir" ]] || fail "release_directory_missing"
+  [[ ! -L "$target_dir" ]] || fail "release_directory_invalid"
+  if [[ ! -e "$target_dir" ]]; then
+    install -d -m 0755 -o root -g root "$target_dir"
+  fi
+  [[ -d "$target_dir" && ! -L "$target_dir" ]] || fail "release_directory_invalid"
 done
 
 current_version_code=0
