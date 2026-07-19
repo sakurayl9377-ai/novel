@@ -79,6 +79,21 @@ with zipfile.ZipFile(sys.argv[1], "r") as apk:
         raise SystemExit(1)
 PY
 
+legacy_manifest_path="$staging_dir/version-legacy.json"
+python3 - "$manifest_path" "$legacy_manifest_path" <<'PY' || fail "legacy_manifest_failed"
+import json
+import os
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as source:
+    value = json.load(source)
+value["apkUrl"] = "https://49.232.137.85/app3/app-release.apk"
+descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+    json.dump(value, target, ensure_ascii=False, indent=2)
+    target.write("\n")
+PY
+
 for target_dir in "$canonical_dir" "$legacy_app3_dir" "$legacy_app_dir"; do
   [[ ! -L "$target_dir" ]] || fail "release_directory_invalid"
   if [[ ! -e "$target_dir" ]]; then
@@ -150,14 +165,15 @@ install_atomic "$apk_path" "$legacy_app3_dir/app-release.apk"
   || fail "legacy_alias_checksum_mismatch"
 
 history_name="version-${version_name}+${version_code}.json"
-for target_dir in "$legacy_app_dir" "$legacy_app3_dir" "$canonical_dir"; do
-  install_atomic "$manifest_path" "$target_dir/$history_name"
+for target_dir in "$legacy_app_dir" "$legacy_app3_dir"; do
+  install_atomic "$legacy_manifest_path" "$target_dir/$history_name"
 done
+install_atomic "$manifest_path" "$canonical_dir/$history_name"
 
-# Each manifest points to the immutable domain APK. Switch the canonical
-# manifest last so new clients only see a release after every legacy entry is ready.
-install_atomic "$manifest_path" "$legacy_app_dir/version.json"
-install_atomic "$manifest_path" "$legacy_app3_dir/version.json"
+# Legacy manifests use the verified IP alias while the canonical manifest uses
+# the immutable domain APK. Switch canonical last after every legacy entry is ready.
+install_atomic "$legacy_manifest_path" "$legacy_app_dir/version.json"
+install_atomic "$legacy_manifest_path" "$legacy_app3_dir/version.json"
 install_atomic "$manifest_path" "$canonical_dir/version.json"
 
 printf '{"ok":true,"data":{"versionName":"%s","versionCode":%s,"sha256":"%s","bytes":%s,"targets":3}}\n' \
