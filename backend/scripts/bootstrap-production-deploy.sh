@@ -4,6 +4,7 @@ set -euo pipefail
 public_key="${1:-}"
 deploy_user="${NOVEL_DEPLOY_USER:-novel-deploy}"
 script_source="${NOVEL_DEPLOY_SCRIPT_SOURCE:-./scripts/deploy-production.sh}"
+app_release_source="${NOVEL_APP_RELEASE_SCRIPT_SOURCE:-./scripts/deploy-app-release.sh}"
 helper_source="${NOVEL_MIHOMO_HELPER_SOURCE:-./scripts/mihomo-admin-control.py}"
 updater_source="${NOVEL_MIHOMO_UPDATER_SOURCE:-./scripts/mihomo-subscription-update.py}"
 migration_source="${NOVEL_LAYOUT_MIGRATION_SOURCE:-./scripts/migrate-production-layout.sh}"
@@ -163,6 +164,7 @@ if [[ "$public_key" == *$'\n'* || "$public_key" == *$'\r'* ]] \
   exit 1
 fi
 [[ -f "$script_source" ]] || { echo "bootstrap_error=deploy_script_missing" >&2; exit 1; }
+[[ -f "$app_release_source" ]] || { echo "bootstrap_error=app_release_script_missing" >&2; exit 1; }
 [[ -f "$helper_source" ]] || { echo "bootstrap_error=mihomo_helper_missing" >&2; exit 1; }
 [[ -f "$updater_source" ]] || { echo "bootstrap_error=mihomo_updater_missing" >&2; exit 1; }
 [[ -f "$migration_source" ]] || { echo "bootstrap_error=migration_script_missing" >&2; exit 1; }
@@ -226,6 +228,7 @@ chown "$deploy_user:$deploy_user" "$home_dir/.ssh/authorized_keys"
 chmod 600 "$home_dir/.ssh/authorized_keys"
 
 install -o root -g root -m 0755 "$script_source" /usr/local/sbin/novel-backend-deploy
+install -o root -g root -m 0755 "$app_release_source" /usr/local/sbin/novel-app-release-deploy
 install -o root -g root -m 0755 "$helper_source" /usr/local/sbin/novel-mihomo-control
 install -d -m 0755 -o root -g root /usr/local/libexec
 install -o root -g root -m 0755 "$updater_source" /usr/local/libexec/mihomo-update-subscription
@@ -237,6 +240,10 @@ install_sudoers_rule \
   "/etc/sudoers.d/${app_user}-novel-mihomo-control" \
   "$app_user" \
   /usr/local/sbin/novel-mihomo-control
+install_sudoers_rule \
+  "/etc/sudoers.d/${app_user}-novel-app-release" \
+  "$app_user" \
+  /usr/local/sbin/novel-app-release-deploy
 install_deploy_ssh_policy
 
 echo "bootstrap_status=ok"
