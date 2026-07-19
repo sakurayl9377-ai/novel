@@ -16,6 +16,7 @@ import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
+import { adminShopRoutes } from './routes-admin-shop.js';
 import { aiNovelRoutes } from './routes-ai-novels.js';
 import { authRoutes } from './routes-auth.js';
 import { contentRoutes } from './routes-content.js';
@@ -108,6 +109,7 @@ export async function buildServer() {
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
       api.register(adminOperationsRoutes);
+      api.register(adminShopRoutes);
       api.register(userRoutes);
     },
     { prefix: config.apiPrefix },

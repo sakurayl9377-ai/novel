@@ -272,20 +272,29 @@ class _ShopItemPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final fallback = switch (item.itemType) {
+      'chat_bubble' => _ShopBubblePreview(value: item.assetValue),
+      'sticker_pack' => _ShopStickerPackPreview(pack: item.assetValue),
+      _ => Icon(_shopIcon(item), color: color, size: 36),
+    };
     return Container(
       width: 92,
       height: 104,
-      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: color.withValues(alpha: 0.24)),
       ),
-      child: switch (item.itemType) {
-        'chat_bubble' => _ShopBubblePreview(value: item.assetValue),
-        'sticker_pack' => _ShopStickerPackPreview(pack: item.assetValue),
-        _ => Icon(_shopIcon(item), color: color, size: 36),
-      },
+      clipBehavior: Clip.antiAlias,
+      child: item.previewUrl.isEmpty
+          ? Padding(padding: const EdgeInsets.all(10), child: fallback)
+          : Image.network(
+              item.previewUrl,
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (context, error, stackTrace) =>
+                  Padding(padding: const EdgeInsets.all(10), child: fallback),
+            ),
     );
   }
 }

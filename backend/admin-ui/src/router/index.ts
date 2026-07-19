@@ -9,13 +9,13 @@ const DanmakuView = () => import('@/views/DanmakuView.vue');
 const ChatView = () => import('@/views/ChatView.vue');
 const UsersView = () => import('@/views/UsersView.vue');
 const FinanceView = () => import('@/views/FinanceView.vue');
+const ShopView = () => import('@/views/ShopView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['shop', '商店与装扮', '商品、素材与用户库存'],
   ['growth-rules', '成长规则', '等级、积分与权益规则'],
   ['race', '赛马运营', '轮次、下注、赛季与公平审计'],
   ['notifications', '通知发布', '草稿、分群与发送记录'],
@@ -29,6 +29,7 @@ const legacyRoutes = [
 
 export const router = createRouter({
   history: createWebHashHistory(),
+  scrollBehavior: () => ({ top: 0 }),
   routes: [
     {
       path: '/login',
@@ -125,6 +126,17 @@ export const router = createRouter({
           meta: {
             title: '资金流水',
             hint: '成长值与樱花币的不可变账本、来源核对和人工账变',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'shop',
+          name: 'shop',
+          component: ShopView,
+          meta: {
+            title: '商店与装扮',
+            hint: '商品生命周期、素材预览、持有人影响与销售记录',
             requiresAuth: true,
             requiresAdmin: true,
           },

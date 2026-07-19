@@ -524,6 +524,7 @@ class ShopItem {
     this.itemType = 'cosmetic',
     this.minLevel = 0,
     this.assetValue = '',
+    this.previewUrl = '',
     this.acquiredAt = '',
   });
 
@@ -534,6 +535,7 @@ class ShopItem {
   final String itemType;
   final int minLevel;
   final String assetValue;
+  final String previewUrl;
   final String acquiredAt;
 
   factory ShopItem.fromJson(Map<String, dynamic> json) {
@@ -547,6 +549,7 @@ class ShopItem {
           : _asString(json['itemType']),
       minLevel: _asInt(json['minLevel']),
       assetValue: _asString(json['assetValue']),
+      previewUrl: _asString(json['previewUrl']),
       acquiredAt: _asString(json['acquiredAt']),
     );
   }

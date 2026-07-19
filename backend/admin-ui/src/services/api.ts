@@ -133,6 +133,23 @@ function friendlyApiError(code: string): string {
     finance_period_invalid: '请选择有效的账本时间范围',
     finance_currency_invalid: '请选择成长值、樱花币或同时变化',
     finance_direction_invalid: '请选择发放或扣除方向',
+    shop_status_invalid: '请选择有效的商品状态',
+    shop_item_type_invalid: '请选择客户端当前支持的商品类型',
+    shop_asset_preset_invalid: '请选择该商品类型下可用的运行时预设',
+    shop_preview_file_required: '请选择商品预览图',
+    shop_preview_file_too_large: '商品预览图不能超过 3MB',
+    shop_preview_type_invalid: '商品预览图仅支持 JPG、PNG 或 WebP',
+    shop_preview_content_invalid: '图片内容与文件类型不一致，请重新选择',
+    shop_preview_upload_required: '请通过图片上传区域选择预览图，不能填写外部地址',
+    shop_preview_not_found: '商品预览图不存在，请重新上传',
+    shop_preview_required_for_activation: '上架前必须上传商品预览图',
+    shop_item_name_conflict: '已有未归档商品使用相同名称',
+    shop_item_preset_conflict: '该运行时预设已有未归档商品，请先处理原商品',
+    shop_item_revision_conflict: '商品已在其他页面发生变化，请重新加载后再操作',
+    shop_item_identity_locked: '商品已有持有人、正在装备或不处于草稿状态，不能改变类型与运行时预设',
+    shop_item_archived: '归档商品不能直接编辑，请先恢复为草稿',
+    shop_status_transition_invalid: '当前商品状态不允许执行这个操作',
+    shop_status_unchanged: '商品已经处于所选状态',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

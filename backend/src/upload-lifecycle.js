@@ -27,6 +27,7 @@ const managedUploadReferenceColumns = [
   ["campaigns", "banner_url"],
   ["ai_novels", "cover_url"],
   ["shop_items", "asset_value"],
+  ["shop_items", "preview_url"],
   ["app_settings", "value"],
 ];
 
@@ -53,6 +54,8 @@ export function referencedUploadUrls() {
      SELECT cover_url AS url FROM ai_novels WHERE cover_url <> ''
      UNION ALL
      SELECT asset_value AS url FROM shop_items WHERE asset_value <> ''
+     UNION ALL
+     SELECT preview_url AS url FROM shop_items WHERE preview_url <> ''
      UNION ALL
      SELECT value AS url FROM app_settings WHERE value <> ''`,
   ).map((row) => row.url);

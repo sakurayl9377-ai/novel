@@ -32,6 +32,7 @@ const managedUploadUrlColumns = [
   ["campaigns", "banner_url"],
   ["ai_novels", "cover_url"],
   ["shop_items", "asset_value"],
+  ["shop_items", "preview_url"],
   ["app_settings", "value"],
 ];
 
@@ -421,8 +422,25 @@ export function migrate() {
       item_type TEXT NOT NULL DEFAULT 'cosmetic',
       min_level INTEGER NOT NULL DEFAULT 0,
       asset_value TEXT NOT NULL DEFAULT '',
+      preview_url TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      revision INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_item_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (item_id) REFERENCES shop_items(id) ON DELETE RESTRICT,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT
     );
 
     CREATE TABLE IF NOT EXISTS user_inventory (
@@ -1239,6 +1257,7 @@ export function migrate() {
   addMissingColumn("content_source_health", "observed_latency_total_ms", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("content_source_health", "last_observed_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("content_source_health", "last_observation_error", "TEXT NOT NULL DEFAULT ''");
+  migrateShopWorkflowSchema();
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
   retireSuibianVideoData();
@@ -1497,6 +1516,45 @@ function addMissingColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (columns.some((item) => item.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateShopWorkflowSchema() {
+  addMissingColumn("shop_items", "preview_url", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn("shop_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  addMissingColumn("shop_items", "revision", "INTEGER NOT NULL DEFAULT 1");
+  addMissingColumn("shop_items", "updated_at", "TEXT NOT NULL DEFAULT ''");
+  run(
+    `UPDATE shop_items
+     SET updated_at = created_at
+     WHERE updated_at = ''`,
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS shop_item_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (item_id) REFERENCES shop_items(id) ON DELETE RESTRICT,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT
+    );
+    CREATE INDEX IF NOT EXISTS idx_shop_items_status_order
+      ON shop_items(status, sort_order, min_level, price_coins, id);
+    CREATE INDEX IF NOT EXISTS idx_user_inventory_item
+      ON user_inventory(item_id, acquired_at DESC, user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_equipment_item
+      ON user_equipment(item_id, user_id, slot);
+    CREATE INDEX IF NOT EXISTS idx_shop_item_events_item
+      ON shop_item_events(item_id, created_at DESC, id DESC);
+    CREATE TRIGGER IF NOT EXISTS trg_shop_items_archive_instead_of_delete
+      BEFORE DELETE ON shop_items
+      BEGIN
+        SELECT RAISE(ABORT, 'shop_items_must_be_archived');
+      END;
+  `);
 }
 
 export function ensureManagedUploadRetirementTriggers(

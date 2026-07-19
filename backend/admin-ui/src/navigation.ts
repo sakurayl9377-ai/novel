@@ -62,7 +62,7 @@ export const navigationGroups: NavigationGroup[] = [
     items: [
       { label: '用户管理', route: 'users', icon: User, adminOnly: true },
       { label: '资金流水', route: 'finance', icon: Coin, adminOnly: true },
-      { label: '商店与装扮', route: 'shop', icon: Goods, adminOnly: true, legacy: true },
+      { label: '商店与装扮', route: 'shop', icon: Goods, adminOnly: true },
       { label: '成长规则', route: 'growth-rules', icon: Opportunity, adminOnly: true, legacy: true },
     ],
   },

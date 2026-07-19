@@ -245,10 +245,11 @@ class InteractionService {
     final json = await _request('GET', Uri.parse('$apiBaseUrl/shop/items'));
     final raw = json['items'];
     if (raw is! List) return const [];
-    return raw
-        .whereType<Map>()
-        .map((item) => ShopItem.fromJson(item.cast<String, dynamic>()))
-        .toList();
+    return raw.whereType<Map>().map((item) {
+      final value = item.cast<String, dynamic>();
+      value['previewUrl'] = _absoluteApiResourceUrl(value['previewUrl']);
+      return ShopItem.fromJson(value);
+    }).toList();
   }
 
   Future<UserProfile> redeemShopItem({
@@ -804,6 +805,14 @@ class InteractionService {
     );
     final json = await _request('GET', uri, token: token);
     return _items(json).map(InteractionUser.fromJson).toList();
+  }
+
+  String _absoluteApiResourceUrl(Object? rawValue) {
+    final value = rawValue?.toString().trim() ?? '';
+    if (value.isEmpty) return '';
+    final uri = Uri.tryParse(value);
+    if (uri?.hasScheme ?? false) return value;
+    return Uri.parse(apiBaseUrl).resolve(value).toString();
   }
 
   Future<Map<String, dynamic>> _request(

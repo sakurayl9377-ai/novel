@@ -909,7 +909,7 @@ export async function userRoutes(app) {
       `SELECT *
        FROM shop_items
        WHERE status = 'active'
-       ORDER BY min_level ASC, price_coins ASC`,
+       ORDER BY sort_order ASC, min_level ASC, price_coins ASC, id ASC`,
     ).map(shopItemJson),
   }));
 
@@ -2122,8 +2122,12 @@ function shopItemJson(row) {
     itemType: row.item_type || "cosmetic",
     minLevel: row.min_level || 0,
     assetValue: row.asset_value || "",
+    previewUrl: row.preview_url || "",
+    sortOrder: Number(row.sort_order || 0),
     status: row.status || "active",
+    revision: Number(row.revision || 1),
     createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
   };
 }
 
