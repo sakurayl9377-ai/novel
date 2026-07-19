@@ -38,18 +38,6 @@ export async function adminOperationsRoutes(app) {
   );
 
   app.get(
-    "/admin/notifications",
-    { preHandler: app.adminRequired },
-    async (request) => adminBroadcasts(request.query || {}),
-  );
-
-  app.post(
-    "/admin/notifications/broadcast",
-    { preHandler: app.adminRequired },
-    async (request) => createBroadcast(request.user.id, request.body || {}),
-  );
-
-  app.get(
     "/admin/audit-logs",
     { preHandler: app.adminRequired },
     async (request) => adminAuditLogs(request.query || {}),
@@ -513,54 +501,6 @@ function financeEventJson(row) {
           email: row.operator_email || "",
         }
       : null,
-  };
-}
-
-function adminBroadcasts(query) {
-  const { page, pageSize, offset } = pageParams(query);
-  const total = count("admin_broadcasts");
-  return {
-    page,
-    pageSize,
-    total,
-    items: broadcastRows({ limit: pageSize, offset }),
-  };
-}
-
-function createBroadcast(adminUserId, body) {
-  const title = requiredString(body.title, "title", 80);
-  const content = requiredString(body.content, "content", 2000);
-  const category = optionalString(body.category, 40) || "system";
-  let broadcastId = 0;
-  let recipientCount = 0;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = run(
-      `INSERT INTO admin_broadcasts
-       (admin_user_id, title, content, category)
-       VALUES (?, ?, ?, ?)`,
-      [adminUserId, title, content, category],
-    );
-    broadcastId = Number(result.lastInsertRowid || 0);
-    const notificationResult = run(
-      `INSERT INTO system_notifications (user_id, title, content, category)
-       SELECT id, ?, ?, ? FROM users WHERE status = 'active'`,
-      [title, content, category],
-    );
-    recipientCount = Number(notificationResult.changes || 0);
-    run(
-      "UPDATE admin_broadcasts SET recipient_count = ? WHERE id = ?",
-      [recipientCount, broadcastId],
-    );
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-  return {
-    ok: true,
-    item: broadcastRows({ id: broadcastId, limit: 1 })[0],
-    recipientCount,
   };
 }
 

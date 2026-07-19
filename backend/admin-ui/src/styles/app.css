@@ -1,3 +1,8 @@
+.el-popper[data-popper-reference-hidden='true'] {
+  display: none !important;
+  pointer-events: none;
+}
+
 .admin-shell {
   --sidebar-width: 260px;
   min-height: 100vh;

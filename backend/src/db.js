@@ -267,6 +267,7 @@ export function migrate() {
     CREATE TABLE IF NOT EXISTS system_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
+      broadcast_id INTEGER,
       title TEXT NOT NULL,
       content TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'system',
@@ -277,6 +278,9 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_system_notifications_user
       ON system_notifications(user_id, read_at, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_system_notifications_broadcast
+      ON system_notifications(broadcast_id, user_id);
 
     CREATE TABLE IF NOT EXISTS user_follows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,13 +558,42 @@ export function migrate() {
       title TEXT NOT NULL,
       content TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'system',
+      status TEXT NOT NULL DEFAULT 'draft',
+      audience_json TEXT NOT NULL DEFAULT '{}',
       recipient_count INTEGER NOT NULL DEFAULT 0,
+      delivered_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      preview_count INTEGER NOT NULL DEFAULT 0,
+      revision INTEGER NOT NULL DEFAULT 1,
+      idempotency_key TEXT NOT NULL DEFAULT '',
+      failure_reason TEXT NOT NULL DEFAULT '',
+      sent_at TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_time
       ON admin_broadcasts(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_status
+      ON admin_broadcasts(status, created_at DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS admin_notification_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      broadcast_id INTEGER NOT NULL,
+      admin_user_id INTEGER,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (broadcast_id) REFERENCES admin_broadcasts(id) ON DELETE CASCADE,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_admin_notification_events_broadcast
+      ON admin_notification_events(broadcast_id, created_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS user_app_installs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1331,6 +1364,7 @@ export function migrate() {
   migrateGrowthOperationsSchema();
   migrateHorseRaceOperationsSchema();
   migrateShopWorkflowSchema();
+  migrateNotificationOperationsSchema();
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
   retireSuibianVideoData();
@@ -1701,6 +1735,63 @@ function migrateHorseRaceOperationsSchema() {
     BEGIN
       SELECT RAISE(ABORT, 'horse_race_fairness_immutable');
     END;
+  `);
+}
+
+function migrateNotificationOperationsSchema() {
+  // Legacy broadcasts were sent immediately and have no audience snapshot.
+  // Preserve their history as completed sends while new records start as drafts.
+  addMissingColumn("system_notifications", "broadcast_id", "INTEGER");
+  addMissingColumn("admin_broadcasts", "status", "TEXT NOT NULL DEFAULT 'sent'");
+  addMissingColumn("admin_broadcasts", "audience_json", "TEXT NOT NULL DEFAULT '{}'");
+  addMissingColumn("admin_broadcasts", "delivered_count", "INTEGER NOT NULL DEFAULT 0");
+  addMissingColumn("admin_broadcasts", "failed_count", "INTEGER NOT NULL DEFAULT 0");
+  addMissingColumn("admin_broadcasts", "preview_count", "INTEGER NOT NULL DEFAULT 0");
+  addMissingColumn("admin_broadcasts", "revision", "INTEGER NOT NULL DEFAULT 1");
+  addMissingColumn("admin_broadcasts", "idempotency_key", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn("admin_broadcasts", "failure_reason", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn("admin_broadcasts", "sent_at", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn("admin_broadcasts", "updated_at", "TEXT NOT NULL DEFAULT ''");
+  run(
+    `UPDATE admin_broadcasts
+     SET status = 'sent',
+         audience_json = CASE WHEN audience_json = '{}' THEN '{"scope":"all_active","legacy":true}' ELSE audience_json END,
+         delivered_count = CASE WHEN delivered_count = 0 THEN recipient_count ELSE delivered_count END,
+         preview_count = CASE WHEN preview_count = 0 THEN recipient_count ELSE preview_count END,
+         sent_at = CASE WHEN sent_at = '' THEN created_at ELSE sent_at END,
+         updated_at = CASE WHEN updated_at = '' THEN created_at ELSE updated_at END
+     WHERE status = 'sent' OR (recipient_count > 0 AND status = 'draft')`,
+  );
+  run(
+    `UPDATE admin_broadcasts
+     SET updated_at = created_at
+     WHERE updated_at = ''`,
+  );
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS admin_notification_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      broadcast_id INTEGER NOT NULL,
+      admin_user_id INTEGER,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (broadcast_id) REFERENCES admin_broadcasts(id) ON DELETE CASCADE,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_system_notifications_broadcast
+      ON system_notifications(broadcast_id, user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_system_notifications_broadcast_user
+      ON system_notifications(broadcast_id, user_id)
+      WHERE broadcast_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_broadcasts_idempotency
+      ON admin_broadcasts(idempotency_key)
+      WHERE idempotency_key <> '';
+    CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_status
+      ON admin_broadcasts(status, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_admin_notification_events_broadcast
+      ON admin_notification_events(broadcast_id, created_at DESC, id DESC);
   `);
 }
 

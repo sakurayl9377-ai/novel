@@ -94,7 +94,11 @@ export function visibleNavigation(role: string | undefined): NavigationGroup[] {
   return navigationGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => !item.adminOnly || isAdmin),
+      items: group.items
+        .filter((item) => !item.adminOnly || isAdmin)
+        .map((item) => item.route === 'notifications'
+          ? { ...item, label: '通知发布', legacy: false }
+          : item),
     }))
     .filter((group) => group.items.length > 0);
 }

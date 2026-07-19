@@ -13,6 +13,7 @@ const ShopView = () => import('@/views/ShopView.vue');
 const GrowthRulesView = () => import('@/views/GrowthRulesView.vue');
 const GrowthOperationsView = () => import('@/views/GrowthOperationsView.vue');
 const RaceOperationsView = () => import('@/views/RaceOperationsView.vue');
+const NotificationsView = () => import('@/views/NotificationsView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
@@ -174,7 +175,18 @@ export const router = createRouter({
             requiresAdmin: true,
           },
         },
-        ...legacyRoutes.map(([path, title, hint]) => ({
+        {
+          path: 'notifications',
+          name: 'notifications',
+          component: NotificationsView,
+          meta: {
+            title: '通知发布',
+            hint: '草稿、受众预览、原子发送与完整审计记录',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        ...legacyRoutes.filter(([path]) => path !== 'notifications').map(([path, title, hint]) => ({
           path,
           name: path,
           component: LegacyModuleView,
