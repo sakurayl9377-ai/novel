@@ -907,6 +907,29 @@ export function migrate() {
       FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS growth_rule_sets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      revision INTEGER NOT NULL UNIQUE,
+      state TEXT NOT NULL DEFAULT 'draft',
+      base_revision INTEGER NOT NULL DEFAULT 0,
+      edit_version INTEGER NOT NULL DEFAULT 1,
+      rules_json TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      published_at TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (state IN ('draft', 'published', 'superseded', 'discarded'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_rule_sets_published
+      ON growth_rule_sets(state) WHERE state = 'published';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_rule_sets_draft
+      ON growth_rule_sets(state) WHERE state = 'draft';
+    CREATE INDEX IF NOT EXISTS idx_growth_rule_sets_history
+      ON growth_rule_sets(revision DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS campaigns (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       campaign_key TEXT NOT NULL UNIQUE,

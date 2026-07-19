@@ -16,7 +16,7 @@ import {
 import { commentJson, danmakuJson } from "./routes-content.js";
 import { findUserByBearer } from "./auth.js";
 import { all, db, one, run } from "./db.js";
-import { levelFromPoints } from "./growth.js";
+import { levelFromPoints, minimumLevelForPrivilege } from "./growth.js";
 import { privateUser, publicUser } from "./security.js";
 import { activeChatUserIds, chatJson } from "./websocket.js";
 import { dailyRewardCaps, grantReward, publicRewardRules } from "./rewards.js";
@@ -450,10 +450,16 @@ export async function userRoutes(app) {
       const level = levelFromPoints(request.user.points || 0);
 
       if (!nickname) throw badRequest("nickname is required");
-      if (dynamicAvatarUrl && level < 5) {
+      if (
+        dynamicAvatarUrl &&
+        level < minimumLevelForPrivilege("dynamicAvatar")
+      ) {
         throw badRequest("level_required_dynamic_avatar");
       }
-      if (profileTheme !== "sakura" && level < 2) {
+      if (
+        profileTheme !== "sakura" &&
+        level < minimumLevelForPrivilege("profileSkins")
+      ) {
         throw badRequest("level_required_profile_skin");
       }
 

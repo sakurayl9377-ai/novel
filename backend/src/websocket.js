@@ -16,7 +16,7 @@ import {
   refreshExpiredBan,
 } from "./chat-moderation.js";
 import { all, one, run } from "./db.js";
-import { levelFromPoints } from "./growth.js";
+import { levelFromPoints, minimumLevelForPrivilege } from "./growth.js";
 import {
   horseRaceStateJson,
   horseRaceStatesJson,
@@ -108,7 +108,11 @@ export function registerWebSockets(app, config) {
         isJoined: isChatRoomMember(roomId, user.id),
       },
     });
-    if (announceEntrance && levelFromPoints(user.points || 0) >= 7) {
+    if (
+      announceEntrance &&
+      levelFromPoints(user.points || 0) >=
+        minimumLevelForPrivilege("chatEntranceEffect")
+    ) {
       broadcastChat(chatRooms.get(roomId), {
         type: "entrance",
         roomId,
@@ -199,11 +203,14 @@ export function registerWebSockets(app, config) {
         return;
       }
       const level = levelFromPoints(currentUser.points || 0);
-      if (type === "image" && level < 3) {
+      if (type === "image" && level < minimumLevelForPrivilege("chatImages")) {
         send(socket, { type: "error", error: "level_required_chat_image" });
         return;
       }
-      if (type === "sticker" && level < 4) {
+      if (
+        type === "sticker" &&
+        level < minimumLevelForPrivilege("chatStickers")
+      ) {
         send(socket, { type: "error", error: "level_required_chat_sticker" });
         return;
       }

@@ -150,6 +150,23 @@ function friendlyApiError(code: string): string {
     shop_item_archived: '归档商品不能直接编辑，请先恢复为草稿',
     shop_status_transition_invalid: '当前商品状态不允许执行这个操作',
     shop_status_unchanged: '商品已经处于所选状态',
+    growth_rules_shape_invalid: '成长规则必须完整包含 Lv.1 至 Lv.7',
+    growth_rules_level_order_invalid: '成长等级顺序无效，请保持 Lv.1 至 Lv.7',
+    growth_rules_level_one_points_invalid: 'Lv.1 的起始成长值必须为 0',
+    growth_rules_level_one_days_invalid: 'Lv.1 的目标天数必须为 0',
+    growth_rules_threshold_order_invalid: '每一级成长值门槛必须严格高于前一级',
+    growth_rules_daily_cap_order_invalid: '每日成长上限不能低于前一级',
+    growth_rules_target_days_order_invalid: '目标天数不能低于前一级',
+    growth_rules_name_invalid: '请填写 24 字以内的等级名称',
+    growth_rules_effect_invalid: '请填写 120 字以内的等级效果',
+    growth_rules_note_invalid: '请填写本次调整的审核依据',
+    growth_rules_no_changes: '草稿与当前发布规则完全一致',
+    growth_rules_draft_missing: '当前没有可操作的规则草稿',
+    growth_rules_draft_exists: '已有未处理的规则草稿，请先确认是否替换',
+    growth_rules_draft_outdated: '草稿基于旧版本创建，请从当前规则重新编辑',
+    growth_rules_draft_revision_conflict: '规则草稿已被其他管理员修改，请重新加载',
+    growth_rules_impact_acknowledgement_required: '该规则会导致降级或每日上限降低，请确认影响后再发布',
+    growth_rules_revision_not_found: '找不到可恢复的成长规则版本',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

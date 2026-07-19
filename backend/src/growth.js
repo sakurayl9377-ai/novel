@@ -1,6 +1,23 @@
 export const maxLevel = 7;
 export const maxLevelGrowthCap = 99999;
 
+export const growthPrivilegeDefinitions = [
+  { key: "basicComments", label: "评论", unlockLevel: 1 },
+  { key: "basicDanmaku", label: "普通弹幕", unlockLevel: 1 },
+  { key: "chatText", label: "聊天室文字消息", unlockLevel: 1 },
+  { key: "photoWall", label: "照片墙", unlockLevel: 1 },
+  { key: "coinShop", label: "樱花币商店", unlockLevel: 1 },
+  { key: "profileSkins", label: "个人主页皮肤", unlockLevel: 2 },
+  { key: "chatImages", label: "聊天室图片", unlockLevel: 3 },
+  { key: "chatStickers", label: "聊天室表情包", unlockLevel: 4 },
+  { key: "chatEntranceEffect", label: "聊天室入场特效", unlockLevel: 4 },
+  { key: "dynamicAvatar", label: "动态头像", unlockLevel: 5 },
+  { key: "advancedDanmaku", label: "高级弹幕", unlockLevel: 5 },
+  { key: "rareShopItems", label: "稀有商店物品", unlockLevel: 5 },
+  { key: "profileEffects", label: "个人空间背景特效", unlockLevel: 6 },
+  { key: "exclusiveChatBubble", label: "专属聊天气泡", unlockLevel: 7 },
+];
+
 export const levelThresholds = [
   {
     level: 1,
@@ -126,20 +143,17 @@ export function growthFromUser(user, daily = {}) {
 }
 
 export function privilegesForLevel(level) {
-  return {
-    basicComments: level >= 1,
-    basicDanmaku: level >= 1,
-    chatText: level >= 1,
-    dynamicAvatar: level >= 5,
-    advancedDanmaku: level >= 5,
-    profileSkins: level >= 2,
-    profileEffects: level >= 6,
-    photoWall: level >= 1,
-    chatImages: level >= 3,
-    chatStickers: level >= 4,
-    chatEntranceEffect: level >= 4,
-    exclusiveChatBubble: level >= 7,
-    coinShop: level >= 1,
-    rareShopItems: level >= 5,
-  };
+  return Object.fromEntries(
+    growthPrivilegeDefinitions.map((item) => [
+      item.key,
+      level >= item.unlockLevel,
+    ]),
+  );
+}
+
+export function minimumLevelForPrivilege(key) {
+  return (
+    growthPrivilegeDefinitions.find((item) => item.key === key)?.unlockLevel ??
+    maxLevel + 1
+  );
 }

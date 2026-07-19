@@ -11,10 +11,12 @@ import { adminRequired, authOptional, authRequired } from './auth.js';
 import { seedChatBotRooms } from './chat-bot.js';
 import { config } from './config.js';
 import { closeDb, migrate, seedAdmin } from './db.js';
+import { ensureGrowthRulePersistence } from './growth-rule-service.js';
 import { secureLoggerOptions } from './log-security.js';
 import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
+import { adminGrowthRuleRoutes } from './routes-admin-growth-rules.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
 import { adminShopRoutes } from './routes-admin-shop.js';
 import { aiNovelRoutes } from './routes-ai-novels.js';
@@ -34,6 +36,7 @@ import { registerWebSockets } from './websocket.js';
 export async function buildServer() {
   migrate();
   seedAdmin();
+  ensureGrowthRulePersistence();
   seedChatBotRooms();
 
   const app = Fastify({
@@ -108,6 +111,7 @@ export async function buildServer() {
       api.register(adminRoutes);
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
+      api.register(adminGrowthRuleRoutes);
       api.register(adminOperationsRoutes);
       api.register(adminShopRoutes);
       api.register(userRoutes);

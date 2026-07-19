@@ -10,13 +10,13 @@ const ChatView = () => import('@/views/ChatView.vue');
 const UsersView = () => import('@/views/UsersView.vue');
 const FinanceView = () => import('@/views/FinanceView.vue');
 const ShopView = () => import('@/views/ShopView.vue');
+const GrowthRulesView = () => import('@/views/GrowthRulesView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
 const legacyRoutes = [
   ['content', '内容运营', '目录、推荐位、来源与功能开关'],
   ['growth-ops', '增长运营', '推荐、榜单、活动与赛季'],
-  ['growth-rules', '成长规则', '等级、积分与权益规则'],
   ['race', '赛马运营', '轮次、下注、赛季与公平审计'],
   ['notifications', '通知发布', '草稿、分群与发送记录'],
   ['analytics', '质量分析', '错误、性能和功能转化'],
@@ -137,6 +137,17 @@ export const router = createRouter({
           meta: {
             title: '商店与装扮',
             hint: '商品生命周期、素材预览、持有人影响与销售记录',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'growth-rules',
+          name: 'growth-rules',
+          component: GrowthRulesView,
+          meta: {
+            title: '成长规则',
+            hint: '等级阈值、每日上限、用户影响与规则版本',
             requiresAuth: true,
             requiresAdmin: true,
           },
