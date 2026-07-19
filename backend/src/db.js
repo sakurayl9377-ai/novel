@@ -279,9 +279,6 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_system_notifications_user
       ON system_notifications(user_id, read_at, created_at);
 
-    CREATE INDEX IF NOT EXISTS idx_system_notifications_broadcast
-      ON system_notifications(broadcast_id, user_id);
-
     CREATE TABLE IF NOT EXISTS user_follows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       follower_id INTEGER NOT NULL,
@@ -575,9 +572,6 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_time
       ON admin_broadcasts(created_at);
-
-    CREATE INDEX IF NOT EXISTS idx_admin_broadcasts_status
-      ON admin_broadcasts(status, created_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS admin_notification_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
