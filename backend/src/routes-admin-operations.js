@@ -612,7 +612,8 @@ function analyticsOverview(query) {
   const events = one(
     `SELECT COUNT(*) AS event_count,
             COUNT(DISTINCT install_id) AS active_installs,
-            COUNT(DISTINCT session_id) AS sessions
+            COUNT(DISTINCT session_id) AS sessions,
+            MAX(created_at) AS last_event_at
      FROM app_telemetry_events
      WHERE created_at >= datetime('now', ?)`,
     [window],
@@ -621,7 +622,8 @@ function analyticsOverview(query) {
     `SELECT COUNT(*) AS error_count,
             COALESCE(SUM(fatal), 0) AS fatal_count,
             COUNT(DISTINCT CASE WHEN fatal = 1 THEN session_id END) AS crashed_sessions,
-            COUNT(DISTINCT fingerprint) AS error_groups
+            COUNT(DISTINCT fingerprint) AS error_groups,
+            MAX(created_at) AS last_error_at
      FROM app_error_reports
      WHERE created_at >= datetime('now', ?)`,
     [window],
@@ -630,27 +632,51 @@ function analyticsOverview(query) {
   const crashedSessions = Number(errors.crashed_sessions || 0);
 
   const dailyRows = all(
-    `SELECT date(created_at) AS day,
+    `SELECT date(created_at, '+8 hours') AS day,
             COUNT(*) AS event_count,
             COUNT(DISTINCT install_id) AS active_installs,
             COUNT(DISTINCT session_id) AS sessions
      FROM app_telemetry_events
      WHERE created_at >= datetime('now', ?)
-     GROUP BY date(created_at)
+     GROUP BY date(created_at, '+8 hours')
      ORDER BY day`,
     [window],
   );
-  const dailyErrors = new Map(
-    all(
-      `SELECT date(created_at) AS day,
-              COUNT(*) AS error_count,
-              COALESCE(SUM(fatal), 0) AS fatal_count
-       FROM app_error_reports
-       WHERE created_at >= datetime('now', ?)
-       GROUP BY date(created_at)`,
-      [window],
-    ).map((item) => [item.day, item]),
+  const dailyErrors = all(
+    `SELECT date(created_at, '+8 hours') AS day,
+            COUNT(*) AS error_count,
+            COALESCE(SUM(fatal), 0) AS fatal_count
+     FROM app_error_reports
+     WHERE created_at >= datetime('now', ?)
+     GROUP BY date(created_at, '+8 hours')`,
+    [window],
   );
+  const dailyByDay = new Map(
+    dailyRows.map((item) => [
+      item.day,
+      {
+        day: item.day || '',
+        eventCount: Number(item.event_count || 0),
+        activeInstalls: Number(item.active_installs || 0),
+        sessions: Number(item.sessions || 0),
+        errorCount: 0,
+        fatalCount: 0,
+      },
+    ]),
+  );
+  for (const item of dailyErrors) {
+    const current = dailyByDay.get(item.day) || {
+      day: item.day || '',
+      eventCount: 0,
+      activeInstalls: 0,
+      sessions: 0,
+      errorCount: 0,
+      fatalCount: 0,
+    };
+    current.errorCount = Number(item.error_count || 0);
+    current.fatalCount = Number(item.fatal_count || 0);
+    dailyByDay.set(item.day, current);
+  }
 
   const topScreens = all(
     `SELECT screen,
@@ -706,6 +732,13 @@ function analyticsOverview(query) {
   return {
     days,
     generatedAt: new Date().toISOString(),
+    dataQuality: {
+      eventCount: Number(events.event_count || 0),
+      errorCount: Number(errors.error_count || 0),
+      reportingInstalls: Number(events.active_installs || 0),
+      lastEventAt: events.last_event_at || '',
+      lastErrorAt: errors.last_error_at || '',
+    },
     summary: {
       events: Number(events.event_count || 0),
       activeInstalls: Number(events.active_installs || 0),
@@ -718,15 +751,14 @@ function analyticsOverview(query) {
         : 1,
     },
     frameMetrics,
-    daily: dailyRows.map((item) => {
-      const error = dailyErrors.get(item.day) || {};
+    daily: [...dailyByDay.values()].sort((left, right) => left.day.localeCompare(right.day)).map((item) => {
       return {
-        day: item.day || '',
-        events: Number(item.event_count || 0),
-        activeInstalls: Number(item.active_installs || 0),
-        sessions: Number(item.sessions || 0),
-        errors: Number(error.error_count || 0),
-        fatalErrors: Number(error.fatal_count || 0),
+        day: item.day,
+        events: item.eventCount,
+        activeInstalls: item.activeInstalls,
+        sessions: item.sessions,
+        errors: item.errorCount,
+        fatalErrors: item.fatalCount,
       };
     }),
     topScreens: topScreens.map((item) => ({
@@ -800,10 +832,10 @@ function analyticsErrors(query) {
               version_name, version_code, platform, os_version,
               device_model, occurred_at, created_at
        FROM app_error_reports
-       WHERE fingerprint = ?
+       WHERE fingerprint = ? AND ${whereSql}
        ORDER BY id DESC
        LIMIT 1`,
-      [group.fingerprint],
+      [group.fingerprint, ...params],
     ) || {};
     return {
       fingerprint: group.fingerprint || '',

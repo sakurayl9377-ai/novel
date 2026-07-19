@@ -91,13 +91,17 @@ export const navigationGroups: NavigationGroup[] = [
 
 export function visibleNavigation(role: string | undefined): NavigationGroup[] {
   const isAdmin = role === 'admin';
+  const migratedLabels: Record<string, string> = {
+    notifications: '通知发布',
+    analytics: '质量分析',
+  };
   return navigationGroups
     .map((group) => ({
       ...group,
       items: group.items
         .filter((item) => !item.adminOnly || isAdmin)
-        .map((item) => item.route === 'notifications'
-          ? { ...item, label: '通知发布', legacy: false }
+        .map((item) => migratedLabels[item.route]
+          ? { ...item, label: migratedLabels[item.route], legacy: false }
           : item),
     }))
     .filter((group) => group.items.length > 0);

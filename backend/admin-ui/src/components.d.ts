@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AnalyticsErrorDrawer: typeof import('./components/analytics/AnalyticsErrorDrawer.vue')['default']
     CampaignDetailDrawer: typeof import('./components/growth-operations/CampaignDetailDrawer.vue')['default']
     CampaignEditorDrawer: typeof import('./components/growth-operations/CampaignEditorDrawer.vue')['default']
     CampaignStatusDialog: typeof import('./components/growth-operations/CampaignStatusDialog.vue')['default']

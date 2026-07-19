@@ -14,6 +14,7 @@ const GrowthRulesView = () => import('@/views/GrowthRulesView.vue');
 const GrowthOperationsView = () => import('@/views/GrowthOperationsView.vue');
 const RaceOperationsView = () => import('@/views/RaceOperationsView.vue');
 const NotificationsView = () => import('@/views/NotificationsView.vue');
+const AnalyticsView = () => import('@/views/AnalyticsView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
@@ -186,7 +187,18 @@ export const router = createRouter({
             requiresAdmin: true,
           },
         },
-        ...legacyRoutes.filter(([path]) => path !== 'notifications').map(([path, title, hint]) => ({
+        {
+          path: 'analytics',
+          name: 'analytics',
+          component: AnalyticsView,
+          meta: {
+            title: '质量分析',
+            hint: '错误、性能和功能转化',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        ...legacyRoutes.filter(([path]) => !['notifications', 'analytics'].includes(path)).map(([path, title, hint]) => ({
           path,
           name: path,
           component: LegacyModuleView,
