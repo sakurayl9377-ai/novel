@@ -29,6 +29,42 @@ void main() {
   });
 
   test(
+    'requests the canonical latest manifest without intermediary caching',
+    () async {
+      final service = AppUpdateService(
+        httpClient: MockClient((request) async {
+          expect(request.url.scheme, 'https');
+          expect(request.url.host, 'novel.kxhub.xyz');
+          expect(request.url.path, '/app3/version.json');
+          expect(request.url.queryParameters['cacheBust'], matches(r'^\d+$'));
+          expect(request.headers['Cache-Control'], 'no-cache, no-store');
+          expect(request.headers['Pragma'], 'no-cache');
+          expect(request.headers['Accept'], 'application/json');
+          return http.Response(
+            jsonEncode({
+              'versionName': '9.9.9',
+              'versionCode': 999,
+              'apkUrl':
+                  'https://novel.kxhub.xyz/app3/app-release-9.9.9+999.apk',
+              'sha256': List.filled(64, 'a').join(),
+              'notes': ['latest release'],
+            }),
+            200,
+            request: request,
+          );
+        }),
+      );
+
+      final result = await service.checkForUpdate();
+
+      expect(result.currentVersionCode, 1);
+      expect(result.hasUpdate, isTrue);
+      expect(result.update?.versionCode, 999);
+      expect(result.update?.versionName, '9.9.9');
+    },
+  );
+
+  test(
     'reader beta policy never contacts or installs from the release channel',
     () async {
       final service = AppUpdateService(
@@ -761,7 +797,8 @@ void main() {
   test('rejects an insecure APK URL from update metadata', () async {
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
-        expect(request.url.toString(), AppUpdateService.updateJsonUrl);
+        expect(request.url.path, '/app3/version.json');
+        expect(request.url.queryParameters['cacheBust'], isNotEmpty);
         return http.Response(
           jsonEncode({
             'versionName': '2.0.0',

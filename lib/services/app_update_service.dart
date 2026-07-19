@@ -124,7 +124,7 @@ class AppUpdateService {
       );
     }
     final response = await _get(
-      Uri.parse(updateJsonUrl),
+      _freshUpdateMetadataUri(),
     ).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('Update check failed: ${response.statusCode}');
@@ -813,7 +813,13 @@ class AppUpdateService {
     final client = httpClient ?? http.Client();
     final closeClient = httpClient == null;
     try {
-      final request = http.Request('GET', uri)..followRedirects = false;
+      final request = http.Request('GET', uri)
+        ..followRedirects = false
+        ..headers.addAll({
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache, no-store',
+          'Pragma': 'no-cache',
+        });
       final streamed = await client
           .send(request)
           .timeout(const Duration(seconds: 15));
@@ -840,6 +846,16 @@ class AppUpdateService {
     } finally {
       if (closeClient) client.close();
     }
+  }
+
+  Uri _freshUpdateMetadataUri() {
+    final uri = Uri.parse(updateJsonUrl);
+    return uri.replace(
+      queryParameters: {
+        ...uri.queryParameters,
+        'cacheBust': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
+    );
   }
 
   String _decodeBody(http.Response response) {
