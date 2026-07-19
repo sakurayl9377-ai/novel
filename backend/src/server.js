@@ -127,47 +127,61 @@ export async function buildServer() {
 
   registerWebSockets(app, config);
 
+  const adminRuntimeConfig = () => ({
+    apiPrefix: config.apiPrefix,
+    adminPath: config.adminPath,
+    wsChatPath: config.wsChatPath,
+    wsGamePath: config.wsGamePath,
+    wsDanmakuPath: config.wsDanmakuPath,
+  });
+
   const adminConfigHandler = async (_request, reply) => {
     reply.type('application/javascript');
-    return `window.NOVEL_ADMIN_CONFIG = ${JSON.stringify({
-      apiPrefix: config.apiPrefix,
-      adminPath: config.adminPath,
-      wsChatPath: config.wsChatPath,
-      wsGamePath: config.wsGamePath,
-      wsDanmakuPath: config.wsDanmakuPath,
-    })};`;
+    return `window.NOVEL_ADMIN_CONFIG = ${JSON.stringify(adminRuntimeConfig())};`;
+  };
+
+  const adminConfigJsonHandler = async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return adminRuntimeConfig();
   };
 
   app.get(`${config.adminPath}/config.js`, adminConfigHandler);
+  app.get(`${config.adminPath}/legacy/config.js`, adminConfigHandler);
   app.get(`${config.adminPath}/v2/config.js`, adminConfigHandler);
-  app.get(`${config.adminPath}/v2/config.json`, async (_request, reply) => {
-    reply.header('Cache-Control', 'no-store');
-    return {
-      apiPrefix: config.apiPrefix,
-      adminPath: config.adminPath,
-      wsChatPath: config.wsChatPath,
-      wsGamePath: config.wsGamePath,
-      wsDanmakuPath: config.wsDanmakuPath,
-    };
+  app.get(`${config.adminPath}/config.json`, adminConfigJsonHandler);
+  app.get(`${config.adminPath}/v2/config.json`, adminConfigJsonHandler);
+
+  await app.register(fastifyStatic, {
+    root: path.join(config.rootDir, 'public'),
+    prefix: `${config.adminPath}/legacy/`,
+    decorateReply: false,
+  });
+
+  app.get(`${config.adminPath}/legacy`, async (_request, reply) => {
+    return reply.redirect(`${config.adminPath}/legacy/`);
+  });
+
+  app.get(`${config.adminPath}/v2`, async (_request, reply) => {
+    return reply.redirect(`${config.adminPath}/`);
+  });
+
+  app.get(`${config.adminPath}/v2/`, async (_request, reply) => {
+    return reply.redirect(`${config.adminPath}/`);
   });
 
   if (adminV2Available) {
     await app.register(fastifyStatic, {
       root: adminV2Root,
-      prefix: `${config.adminPath}/v2/`,
+      prefix: `${config.adminPath}/`,
+      decorateReply: false,
+    });
+  } else {
+    await app.register(fastifyStatic, {
+      root: path.join(config.rootDir, 'public'),
+      prefix: `${config.adminPath}/`,
       decorateReply: false,
     });
   }
-
-  app.get(`${config.adminPath}/v2`, async (_request, reply) => {
-    return reply.redirect(`${config.adminPath}/v2/`);
-  });
-
-  await app.register(fastifyStatic, {
-    root: path.join(config.rootDir, 'public'),
-    prefix: `${config.adminPath}/`,
-    decorateReply: false,
-  });
 
   app.get(config.adminPath, async (_request, reply) => {
     return reply.redirect(`${config.adminPath}/`);

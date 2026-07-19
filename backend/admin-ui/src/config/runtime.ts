@@ -17,5 +17,5 @@ export async function loadRuntimeConfig(): Promise<void> {
 }
 
 export function legacyAdminUrl(): string {
-  return `${runtimeConfig.adminPath.replace(/\/$/, '')}/`;
+  return `${runtimeConfig.adminPath.replace(/\/$/, '')}/legacy/`;
 }

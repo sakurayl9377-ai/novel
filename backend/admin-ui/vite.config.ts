@@ -27,7 +27,10 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': 'http://127.0.0.1:3010',
-      '/admin/v2/config.json': 'http://127.0.0.1:3010',
+      '/config.json': {
+        target: 'http://127.0.0.1:3010',
+        rewrite: () => '/admin/config.json',
+      },
     },
   },
   build: {

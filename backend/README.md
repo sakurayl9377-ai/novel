@@ -26,8 +26,8 @@ npm run dev
 
 ```text
 健康检查: http://127.0.0.1:3010/health
-后台管理: http://127.0.0.1:3010/admin/
-新版后台（迁移期间与旧版并行）: http://127.0.0.1:3010/admin/v2/
+后台管理（Vue 工作台）: http://127.0.0.1:3010/admin/
+旧版后台（应急回退）: http://127.0.0.1:3010/admin/legacy/
 API 前缀: http://127.0.0.1:3010/api
 ```
 
@@ -38,7 +38,7 @@ npm run dev
 npm run admin:dev
 ```
 
-Vite 开发地址为 `http://127.0.0.1:5174/admin/v2/`。提交前运行：
+Vite 开发地址为 `http://127.0.0.1:5174/`。提交前运行：
 
 ```bash
 npm run admin:typecheck
