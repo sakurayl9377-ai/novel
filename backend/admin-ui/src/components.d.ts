@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AnalyticsErrorDrawer: typeof import('./components/analytics/AnalyticsErrorDrawer.vue')['default']
+    AuditDetailDrawer: typeof import('./components/audit/AuditDetailDrawer.vue')['default']
     CampaignDetailDrawer: typeof import('./components/growth-operations/CampaignDetailDrawer.vue')['default']
     CampaignEditorDrawer: typeof import('./components/growth-operations/CampaignEditorDrawer.vue')['default']
     CampaignStatusDialog: typeof import('./components/growth-operations/CampaignStatusDialog.vue')['default']
@@ -95,6 +96,7 @@ declare module 'vue' {
     UserEconomyDialog: typeof import('./components/users/UserEconomyDialog.vue')['default']
     UserProfileDialog: typeof import('./components/users/UserProfileDialog.vue')['default']
     UserUnbanDialog: typeof import('./components/users/UserUnbanDialog.vue')['default']
+    VersionInstallDrawer: typeof import('./components/versions/VersionInstallDrawer.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

@@ -94,6 +94,9 @@ export function visibleNavigation(role: string | undefined): NavigationGroup[] {
   const migratedLabels: Record<string, string> = {
     notifications: '通知发布',
     analytics: '质量分析',
+    versions: '版本与设备',
+    releases: '发布管理',
+    audit: '审计日志',
   };
   return navigationGroups
     .map((group) => ({

@@ -266,6 +266,10 @@ function friendlyApiError(code: string): string {
     notification_audience_empty: '当前受众没有符合条件的活跃用户',
     notification_delivery_empty: '没有写入任何站内消息，发送已取消',
     notification_recipient_limit_exceeded: '受众人数超过单次发送上限，请缩小筛选范围',
+    audit_period_invalid: '请选择有效的审计时间范围',
+    audit_method_invalid: '请选择有效的审计请求方法',
+    audit_status_invalid: '请选择有效的审计结果',
+    app_version_activity_invalid: '请选择有效的设备活跃度范围',
   };
   return messages[code] || code.replaceAll('_', ' ');
 }

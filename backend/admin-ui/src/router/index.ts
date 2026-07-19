@@ -15,6 +15,9 @@ const GrowthOperationsView = () => import('@/views/GrowthOperationsView.vue');
 const RaceOperationsView = () => import('@/views/RaceOperationsView.vue');
 const NotificationsView = () => import('@/views/NotificationsView.vue');
 const AnalyticsView = () => import('@/views/AnalyticsView.vue');
+const AuditView = () => import('@/views/AuditView.vue');
+const VersionsView = () => import('@/views/VersionsView.vue');
+const ReleasesView = () => import('@/views/ReleasesView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
@@ -198,7 +201,40 @@ export const router = createRouter({
             requiresAdmin: true,
           },
         },
-        ...legacyRoutes.filter(([path]) => !['notifications', 'analytics'].includes(path)).map(([path, title, hint]) => ({
+        {
+          path: 'versions',
+          name: 'versions',
+          component: VersionsView,
+          meta: {
+            title: '版本与设备',
+            hint: '版本覆盖、设备上报与升级滞后',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'releases',
+          name: 'releases',
+          component: ReleasesView,
+          meta: {
+            title: '发布管理',
+            hint: '线上版本、安装包完整性与历史备份',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'audit',
+          name: 'audit',
+          component: AuditView,
+          meta: {
+            title: '审计日志',
+            hint: '管理员敏感操作与请求结果追踪',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        ...legacyRoutes.filter(([path]) => !['notifications', 'analytics', 'versions', 'releases', 'audit'].includes(path)).map(([path, title, hint]) => ({
           path,
           name: path,
           component: LegacyModuleView,

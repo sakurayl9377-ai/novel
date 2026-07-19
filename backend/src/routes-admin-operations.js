@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { config } from "./config.js";
@@ -44,9 +45,21 @@ export async function adminOperationsRoutes(app) {
   );
 
   app.get(
+    "/admin/audit/workbench",
+    { preHandler: app.adminRequired },
+    async (request) => adminAuditWorkbench(request.query || {}),
+  );
+
+  app.get(
     "/admin/app-versions",
     { preHandler: app.adminRequired },
     async () => appVersionDistribution(),
+  );
+
+  app.get(
+    "/admin/app-versions/workbench",
+    { preHandler: app.adminRequired },
+    async (request) => appVersionWorkbench(request.query || {}),
   );
 
   app.get(
@@ -65,6 +78,12 @@ export async function adminOperationsRoutes(app) {
     "/admin/releases",
     { preHandler: app.adminRequired },
     async () => releaseOverview(),
+  );
+
+  app.get(
+    "/admin/releases/workbench",
+    { preHandler: app.adminRequired },
+    async () => releaseWorkbench(),
   );
 
   app.get(
@@ -530,6 +549,150 @@ function adminAuditLogs(query) {
   return { page, pageSize, total, items: rows };
 }
 
+function adminAuditWorkbench(query) {
+  const { page, pageSize, offset } = pageParams(query);
+  const period = normalizeAuditPeriod(query.period);
+  const keyword = optionalString(query.q, 120);
+  const method = optionalString(query.method, 12).toUpperCase();
+  const status = optionalString(query.status, 12).toLowerCase();
+  if (method && !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    throw badRequest("audit_method_invalid");
+  }
+  if (status && !["success", "error"].includes(status)) {
+    throw badRequest("audit_status_invalid");
+  }
+
+  const base = auditWhere({ period, keyword, method });
+  const filtered = auditWhere({ period, keyword, method, status });
+  const total = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM admin_audit_logs l
+       LEFT JOIN users u ON u.id = l.admin_user_id
+       ${filtered.sql}`,
+      filtered.params,
+    )?.count || 0,
+  );
+  const summary = one(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN l.status_code >= 400 THEN 1 ELSE 0 END), 0) AS errors,
+            COALESCE(SUM(CASE WHEN l.method <> 'GET' THEN 1 ELSE 0 END), 0) AS sensitive_actions,
+            COUNT(DISTINCT l.admin_user_id) AS unique_admins,
+            MAX(l.created_at) AS last_at
+     FROM admin_audit_logs l
+     LEFT JOIN users u ON u.id = l.admin_user_id
+     ${base.sql}`,
+    base.params,
+  ) || {};
+  const statusCounts = all(
+    `SELECT CASE WHEN l.status_code >= 400 THEN 'error' ELSE 'success' END AS key,
+            COUNT(*) AS count
+     FROM admin_audit_logs l
+     LEFT JOIN users u ON u.id = l.admin_user_id
+     ${base.sql}
+     GROUP BY key`,
+    base.params,
+  ).reduce((result, row) => ({ ...result, [row.key]: Number(row.count || 0) }), {});
+  const methodCounts = all(
+    `SELECT l.method AS key, COUNT(*) AS count
+     FROM admin_audit_logs l
+     LEFT JOIN users u ON u.id = l.admin_user_id
+     ${base.sql}
+     GROUP BY l.method
+     ORDER BY count DESC, l.method`,
+    base.params,
+  ).map((row) => ({ key: row.key || "", count: Number(row.count || 0) }));
+  const rows = all(
+    `SELECT l.*, u.email, u.nickname
+     FROM admin_audit_logs l
+     LEFT JOIN users u ON u.id = l.admin_user_id
+     ${filtered.sql}
+     ORDER BY l.id DESC
+     LIMIT ? OFFSET ?`,
+    [...filtered.params, pageSize, offset],
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    page,
+    pageSize,
+    total,
+    filters: { period, q: keyword, method, status },
+    summary: {
+      total: Number(summary.total || 0),
+      errors: Number(summary.errors || 0),
+      sensitiveActions: Number(summary.sensitive_actions || 0),
+      uniqueAdmins: Number(summary.unique_admins || 0),
+      lastAt: summary.last_at || "",
+      errorRate: summary.total
+        ? Number((Number(summary.errors || 0) / Number(summary.total)).toFixed(4))
+        : 0,
+    },
+    statusCounts: {
+      success: Number(statusCounts.success || 0),
+      error: Number(statusCounts.error || 0),
+    },
+    methodCounts,
+    items: rows.map(adminAuditWorkbenchItem),
+  };
+}
+
+function normalizeAuditPeriod(value) {
+  const period = optionalString(value, 12) || "7d";
+  if (!["24h", "7d", "30d", "all"].includes(period)) {
+    throw badRequest("audit_period_invalid");
+  }
+  return period;
+}
+
+function auditWhere({ period, keyword, method, status }) {
+  const where = [];
+  const params = [];
+  const periodWindow = {
+    "24h": "-24 hours",
+    "7d": "-7 days",
+    "30d": "-30 days",
+  }[period];
+  if (periodWindow) {
+    where.push("l.created_at >= datetime('now', ?)");
+    params.push(periodWindow);
+  }
+  if (keyword) {
+    where.push("(l.path LIKE ? OR l.request_id LIKE ? OR l.ip LIKE ? OR u.email LIKE ? OR u.nickname LIKE ?)");
+    const like = `%${keyword}%`;
+    params.push(like, like, like, like, like);
+  }
+  if (method) {
+    where.push("l.method = ?");
+    params.push(method);
+  }
+  if (status === "success") where.push("l.status_code < 400");
+  if (status === "error") where.push("l.status_code >= 400");
+  return {
+    sql: where.length ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
+}
+
+function adminAuditWorkbenchItem(row) {
+  return {
+    id: Number(row.id || 0),
+    method: row.method || "",
+    path: row.path || "",
+    statusCode: Number(row.status_code || 0),
+    ip: row.ip || "",
+    userAgent: row.user_agent || "",
+    requestId: row.request_id || "",
+    createdAt: row.created_at || "",
+    admin: row.admin_user_id
+      ? {
+          id: Number(row.admin_user_id),
+          email: row.email || "",
+          nickname: row.nickname || "",
+        }
+      : null,
+  };
+}
+
 function appVersionDistribution() {
   const versions = all(
     `WITH latest AS (
@@ -603,6 +766,199 @@ function appVersionDistribution() {
       lastSeenAt: item.last_seen_at || "",
     })),
     recentInstalls,
+  };
+}
+
+function appVersionWorkbench(query) {
+  const { page, pageSize, offset } = pageParams(query);
+  const keyword = optionalString(query.q, 120);
+  const versionCode = Math.max(0, optionalInt(query.versionCode, 0));
+  const platform = optionalString(query.platform, 40);
+  const activity = optionalString(query.activity, 12) || "all";
+  if (!["all", "7d", "30d", "stale"].includes(activity)) {
+    throw badRequest("app_version_activity_invalid");
+  }
+
+  const where = [];
+  const params = [];
+  if (keyword) {
+    where.push(
+      `(i.install_id LIKE ? OR i.device_model LIKE ? OR i.os_version LIKE ?
+        OR i.version_name LIKE ? OR CAST(i.version_code AS TEXT) LIKE ?
+        OR u.email LIKE ? OR u.nickname LIKE ?)`,
+    );
+    const like = `%${keyword}%`;
+    params.push(like, like, like, like, like, like, like);
+  }
+  if (versionCode > 0) {
+    where.push("i.version_code = ?");
+    params.push(versionCode);
+  }
+  if (platform) {
+    where.push("i.platform = ?");
+    params.push(platform);
+  }
+  if (activity === "7d") where.push("i.last_seen_at >= datetime('now', '-7 days')");
+  if (activity === "30d") where.push("i.last_seen_at >= datetime('now', '-30 days')");
+  if (activity === "stale") where.push("i.last_seen_at < datetime('now', '-30 days')");
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const total = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM user_app_installs i
+       JOIN users u ON u.id = i.user_id
+       ${whereSql}`,
+      params,
+    )?.count || 0,
+  );
+  const items = all(
+    `SELECT i.*, u.email, u.nickname, u.status AS user_status
+     FROM user_app_installs i
+     JOIN users u ON u.id = i.user_id
+     ${whereSql}
+     ORDER BY i.last_seen_at DESC, i.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset],
+  ).map(appVersionInstallItem);
+
+  const latestRows = all(
+    `WITH latest AS (
+       SELECT i.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY i.user_id
+                ORDER BY i.last_seen_at DESC, i.id DESC
+              ) AS row_number
+       FROM user_app_installs i
+     )
+     SELECT *
+     FROM latest
+     WHERE row_number = 1`,
+  );
+  const versionRows = all(
+    `WITH latest AS (
+       SELECT i.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY i.user_id
+                ORDER BY i.last_seen_at DESC, i.id DESC
+              ) AS row_number
+       FROM user_app_installs i
+     )
+     SELECT version_name, version_code, platform,
+            COUNT(*) AS user_count,
+            MAX(last_seen_at) AS last_seen_at
+     FROM latest
+     WHERE row_number = 1
+     GROUP BY version_name, version_code, platform
+     ORDER BY version_code DESC, user_count DESC, platform`,
+  );
+  const platformRows = all(
+    `WITH latest AS (
+       SELECT i.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY i.user_id
+                ORDER BY i.last_seen_at DESC, i.id DESC
+              ) AS row_number
+       FROM user_app_installs i
+     )
+     SELECT platform,
+            COUNT(*) AS user_count,
+            MAX(version_code) AS latest_version_code,
+            MAX(last_seen_at) AS last_seen_at
+     FROM latest
+     WHERE row_number = 1
+     GROUP BY platform
+     ORDER BY user_count DESC, platform`,
+  );
+  const registeredUsers = Number(
+    one("SELECT COUNT(*) AS count FROM users WHERE email <> 'chatbot@system.local'")?.count || 0,
+  );
+  const reportingUsers = latestRows.length;
+  const latestVersionCode = versionRows.reduce(
+    (highest, item) => Math.max(highest, Number(item.version_code || 0)),
+    0,
+  );
+  const currentUsers = versionRows
+    .filter((item) => Number(item.version_code || 0) === latestVersionCode)
+    .reduce((sum, item) => sum + Number(item.user_count || 0), 0);
+  const installStats = one(
+    `SELECT COUNT(*) AS installs,
+            COALESCE(SUM(CASE WHEN last_seen_at < datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS stale_installs,
+            COALESCE(SUM(CASE WHEN last_seen_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS active_7d,
+            MAX(last_seen_at) AS last_seen_at
+     FROM user_app_installs`,
+  ) || {};
+  const latestVersion = versionRows.find(
+    (item) => Number(item.version_code || 0) === latestVersionCode,
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    page,
+    pageSize,
+    total,
+    filters: { q: keyword, versionCode, platform, activity },
+    summary: {
+      registeredUsers,
+      reportingUsers,
+      unreportedUsers: Math.max(0, registeredUsers - reportingUsers),
+      installs: Number(installStats.installs || 0),
+      active7dInstalls: Number(installStats.active_7d || 0),
+      staleInstalls: Number(installStats.stale_installs || 0),
+      latestVersionCode,
+      latestVersionName: latestVersion?.version_name || "",
+      currentUsers,
+      outdatedUsers: Math.max(0, reportingUsers - currentUsers),
+      reportingCoverage: registeredUsers
+        ? Number((reportingUsers / registeredUsers).toFixed(4))
+        : 0,
+      upgradeCoverage: reportingUsers
+        ? Number((currentUsers / reportingUsers).toFixed(4))
+        : 0,
+      lastSeenAt: installStats.last_seen_at || "",
+    },
+    versions: versionRows.map((item) => ({
+      versionName: item.version_name || "",
+      versionCode: Number(item.version_code || 0),
+      platform: item.platform || "",
+      userCount: Number(item.user_count || 0),
+      lastSeenAt: item.last_seen_at || "",
+    })),
+    platforms: platformRows.map((item) => ({
+      platform: item.platform || "",
+      userCount: Number(item.user_count || 0),
+      latestVersionCode: Number(item.latest_version_code || 0),
+      lastSeenAt: item.last_seen_at || "",
+    })),
+    versionOptions: [...new Map(
+      versionRows.map((item) => [
+        Number(item.version_code || 0),
+        {
+          versionName: item.version_name || "",
+          versionCode: Number(item.version_code || 0),
+        },
+      ]),
+    ).values()],
+    items,
+  };
+}
+
+function appVersionInstallItem(row) {
+  return {
+    id: Number(row.id || 0),
+    installId: row.install_id || "",
+    user: {
+      id: Number(row.user_id || 0),
+      email: row.email || "",
+      nickname: row.nickname || "",
+      status: row.user_status || "",
+    },
+    versionName: row.version_name || "",
+    versionCode: Number(row.version_code || 0),
+    platform: row.platform || "",
+    osVersion: row.os_version || "",
+    deviceModel: row.device_model || "",
+    firstSeenAt: row.first_seen_at || "",
+    lastSeenAt: row.last_seen_at || "",
+    lastIp: row.last_ip || "",
   };
 }
 
@@ -909,7 +1265,7 @@ function releaseOverview() {
     .filter(
       (item) =>
         item.isFile() &&
-        /^version-\d+\.\d+\.\d+\.json$/i.test(item.name),
+        /^version-\d+\.\d+\.\d+(?:\+\d+)?\.json$/i.test(item.name),
     )
     .map((item) => readJsonFile(`${releaseDir}/${item.name}`))
     .filter(Boolean)
@@ -933,6 +1289,149 @@ function releaseOverview() {
     history,
     backups,
   };
+}
+
+async function releaseWorkbench() {
+  const releaseDir = config.appReleaseDir;
+  if (!fs.existsSync(releaseDir) || !fs.statSync(releaseDir).isDirectory()) {
+    return emptyReleaseWorkbench();
+  }
+
+  const manifestPath = `${releaseDir}/version.json`;
+  const apkPath = `${releaseDir}/app-release.apk`;
+  const current = readJsonFile(manifestPath);
+  const manifestStatus = releaseManifestStatus(current);
+  const apkStat = fs.existsSync(apkPath) ? fs.statSync(apkPath) : null;
+  let actualSha256 = "";
+  if (apkStat?.isFile() && /^[a-f0-9]{64}$/i.test(String(current?.sha256 || ""))) {
+    try {
+      actualSha256 = await sha256File(apkPath);
+    } catch {
+      actualSha256 = "";
+    }
+  }
+  const expectedSha256 = String(current?.sha256 || "").toLowerCase();
+  const checksumStatus = !expectedSha256
+    ? "missing"
+    : !actualSha256
+      ? "unverified"
+      : actualSha256 === expectedSha256
+        ? "verified"
+        : "mismatch";
+  const history = readReleaseHistory(releaseDir);
+  const backups = fs
+    .readdirSync(releaseDir, { withFileTypes: true })
+    .filter((item) => item.isDirectory() && item.name.startsWith("backup-"))
+    .map((item) => {
+      const filePath = `${releaseDir}/${item.name}`;
+      const stat = fs.statSync(filePath);
+      return {
+        name: item.name,
+        modifiedAt: stat.mtime.toISOString(),
+      };
+    })
+    .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt))
+    .slice(0, 30);
+  const integrityStatus = !manifestStatus.valid || !apkStat?.isFile()
+    ? "blocked"
+    : checksumStatus === "mismatch"
+      ? "blocked"
+      : checksumStatus === "verified"
+        ? "ready"
+        : "warning";
+  return {
+    configured: true,
+    generatedAt: new Date().toISOString(),
+    integrityStatus,
+    checks: {
+      manifest: manifestStatus,
+      artifact: apkStat?.isFile() ? "ready" : "missing",
+      checksum: checksumStatus,
+    },
+    current: current
+      ? {
+          versionName: String(current.versionName || ""),
+          versionCode: Number(current.versionCode || 0),
+          apkUrl: String(current.apkUrl || ""),
+          sha256: expectedSha256,
+          actualSha256,
+          force: Boolean(current.force),
+          notes: Array.isArray(current.notes)
+            ? current.notes.map((note) => String(note || "")).filter(Boolean).slice(0, 30)
+            : [],
+        }
+      : null,
+    apk: {
+      exists: Boolean(apkStat?.isFile()),
+      sizeBytes: Number(apkStat?.size || 0),
+      modifiedAt: apkStat?.mtime?.toISOString() || "",
+    },
+    history,
+    backups,
+  };
+}
+
+function emptyReleaseWorkbench() {
+  return {
+    configured: false,
+    generatedAt: new Date().toISOString(),
+    integrityStatus: "unconfigured",
+    checks: { manifest: "missing", artifact: "missing", checksum: "missing" },
+    current: null,
+    apk: { exists: false, sizeBytes: 0, modifiedAt: "" },
+    history: [],
+    backups: [],
+  };
+}
+
+function releaseManifestStatus(value) {
+  if (!value || typeof value !== "object") {
+    return { valid: false, status: "missing", reason: "manifest_missing" };
+  }
+  const versionCode = Number(value.versionCode || 0);
+  const versionName = String(value.versionName || "").trim();
+  if (!versionName || !Number.isSafeInteger(versionCode) || versionCode <= 0) {
+    return { valid: false, status: "invalid", reason: "manifest_shape_invalid" };
+  }
+  if (value.sha256 && !/^[a-f0-9]{64}$/i.test(String(value.sha256))) {
+    return { valid: false, status: "invalid", reason: "manifest_checksum_invalid" };
+  }
+  return { valid: true, status: "ready", reason: "" };
+}
+
+function readReleaseHistory(releaseDir) {
+  return fs
+    .readdirSync(releaseDir, { withFileTypes: true })
+    .filter(
+      (item) =>
+        item.isFile() &&
+        /^version-\d+\.\d+\.\d+(?:\+\d+)?\.json$/i.test(item.name),
+    )
+    .map((item) => {
+      const filePath = `${releaseDir}/${item.name}`;
+      const stat = fs.statSync(filePath);
+      const manifest = readJsonFile(filePath) || {};
+      return {
+        fileName: item.name,
+        versionName: String(manifest.versionName || ""),
+        versionCode: Number(manifest.versionCode || 0),
+        force: Boolean(manifest.force),
+        sha256: String(manifest.sha256 || ""),
+        modifiedAt: stat.mtime.toISOString(),
+      };
+    })
+    .sort((left, right) => right.versionCode - left.versionCode || right.modifiedAt.localeCompare(left.modifiedAt))
+    .slice(0, 50);
+}
+
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 function auditRows({ keyword = "", method = "", limit = 20, offset = 0 }) {

@@ -63,6 +63,13 @@ describe('role-aware navigation', () => {
         .flatMap((group) => group.items)
         .find((item) => item.route === 'analytics')?.legacy,
     ).toBe(false);
+    for (const route of ['versions', 'releases', 'audit']) {
+      expect(
+        visibleNavigation('admin')
+          .flatMap((group) => group.items)
+          .find((item) => item.route === route)?.legacy,
+      ).toBe(false);
+    }
   });
 
   it('limits ordinary creators to the AI novel workspace', () => {
