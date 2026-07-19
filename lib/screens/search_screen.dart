@@ -29,7 +29,8 @@ class SearchScreen extends StatefulWidget {
   State<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends State<SearchScreen> {
+class _SearchScreenState extends State<SearchScreen>
+    with WidgetsBindingObserver {
   final BookSourceService _service = BookSourceService();
   final AiCreationService _aiCreationService = AiCreationService();
   final TextEditingController _searchController = TextEditingController();
@@ -46,12 +47,14 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _autoOpenedInitial = false;
   int _searchGeneration = 0;
   int _homeLoadGeneration = 0;
+  int _aiLoadGeneration = 0;
 
   bool get _showingSearchResults => _searchedKeyword.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _searchController.text = widget.initialKeyword.trim();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -62,19 +65,30 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _initialize() async {
     await context.read<BookSourceProvider>().loadSources();
     if (!mounted) return;
-    unawaited(_loadAiNovels());
-    await _loadHome();
+    await Future.wait<void>([_loadAiNovels(), _loadHome()]);
     if (!mounted) return;
     final initial = widget.initialKeyword.trim();
     if (initial.isNotEmpty) await _search(initial);
   }
 
   Future<void> _loadAiNovels() async {
-    final novels = await _aiCreationService.fetchNovels().catchError(
-      (_) => <Novel>[],
-    );
-    if (!mounted) return;
-    setState(() => _aiNovels = novels);
+    final loadGeneration = ++_aiLoadGeneration;
+    try {
+      final novels = await _aiCreationService.fetchNovels();
+      if (!mounted || loadGeneration != _aiLoadGeneration) return;
+      setState(() => _aiNovels = novels);
+    } catch (_) {
+      // Keep the last successful list visible when a refresh briefly fails.
+    }
+  }
+
+  Future<void> _refreshHome() async {
+    await Future.wait<void>([_loadHome(forceRefresh: true), _loadAiNovels()]);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_loadAiNovels());
   }
 
   Future<void> _loadHome({bool forceRefresh = false, String? sourceId}) async {
@@ -179,6 +193,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final candidates = <Novel>[
       ..._homeData.featured,
       for (final section in _homeData.sections) ...section.items,
+      ..._aiNovels,
     ];
     return candidates.where((novel) {
       return novel.title.toLowerCase().contains(normalizedKeyword) ||
@@ -281,6 +296,8 @@ class _SearchScreenState extends State<SearchScreen> {
   void dispose() {
     _searchGeneration++;
     _homeLoadGeneration++;
+    _aiLoadGeneration++;
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
   }
@@ -332,7 +349,7 @@ class _SearchScreenState extends State<SearchScreen> {
               tooltip: '刷新',
               onPressed: _isLoadingHome
                   ? null
-                  : () => _loadHome(forceRefresh: true),
+                  : () => unawaited(_refreshHome()),
               icon: const Icon(Icons.refresh),
             ),
         ],
@@ -340,7 +357,7 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: _showingSearchResults
             ? () => _search(_searchedKeyword)
-            : () => _loadHome(forceRefresh: true),
+            : _refreshHome,
         child: _showingSearchResults
             ? _buildSearchBody(isNight)
             : _buildHomeBody(isNight),
@@ -393,23 +410,23 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildHomeBody(bool isNight) {
-    if (_isLoadingHome && _homeData.isEmpty) {
+    if (_isLoadingHome && _homeData.isEmpty && _aiNovels.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_errorMessage != null && _homeData.isEmpty) {
+    if (_errorMessage != null && _homeData.isEmpty && _aiNovels.isEmpty) {
       return _ErrorState(message: _errorMessage!, onRetry: _loadHome);
     }
 
-    if (_homeData.isEmpty) {
-      return _EmptyHomeState(onRetry: () => _loadHome(forceRefresh: true));
+    if (_homeData.isEmpty && _aiNovels.isEmpty) {
+      return _EmptyHomeState(onRetry: _refreshHome);
     }
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 20),
       children: [
-        _buildCategories(isNight),
+        if (_homeData.categories.isNotEmpty) _buildCategories(isNight),
         if (_homeData.featured.isNotEmpty) _buildFeatured(isNight),
         for (final section in _homeData.sections) _buildGridSection(section),
         if (_aiNovels.isNotEmpty) _buildAiCreationSection(isNight),

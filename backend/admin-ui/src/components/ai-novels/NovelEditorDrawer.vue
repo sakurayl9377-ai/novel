@@ -6,10 +6,16 @@ import {
   DocumentAdd,
   Plus,
   UploadFilled,
+  WarningFilled,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import type { UploadRequestOptions } from 'element-plus';
-import { computed, reactive, ref, watch } from 'vue';
+import type {
+  UploadFile,
+  UploadFiles,
+  UploadInstance,
+  UploadRequestOptions,
+} from 'element-plus';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 
 import { ApiError } from '@/services/api';
 import {
@@ -18,10 +24,26 @@ import {
   submitNovel,
   uploadNovelCover,
 } from '@/services/ai-novels';
-import type { AiNovelDetail, EditableChapter } from '@/types/ai-novel';
-import { decodeNovelFile, parseNovelText } from '@/utils/novel-import';
+import type {
+  AiNovelChapter,
+  AiNovelDetail,
+  AiNovelSerializationStatus,
+  EditableChapter,
+} from '@/types/ai-novel';
+import {
+  maxNovelChapterCount,
+  parseNovelFiles,
+} from '@/utils/novel-import';
 
 type UploadAjaxError = Parameters<UploadRequestOptions['onError']>[0];
+type EditorIssueSection = 'metadata' | 'chapters' | 'footer';
+type EditorIssueField = 'title' | 'penName' | 'category' | 'cover' | 'description';
+
+interface EditorIssue {
+  message: string;
+  section: EditorIssueSection;
+  field?: EditorIssueField;
+}
 
 const props = defineProps<{
   modelValue: boolean;
@@ -42,10 +64,16 @@ const uploadingCover = ref(false);
 const importing = ref(false);
 const importSummary = ref('');
 const openSections = ref(['metadata']);
+const comparisonOpen = ref<string[]>([]);
 const chapters = ref<EditableChapter[]>([]);
 const previewChapters = ref<EditableChapter[]>([]);
 const selectedChapterId = ref('');
 const savedSnapshot = ref('');
+const editorIssue = ref<EditorIssue | null>(null);
+const metadataSectionRef = ref<HTMLElement | null>(null);
+const chapterSectionRef = ref<HTMLElement | null>(null);
+const novelUploadRef = ref<UploadInstance>();
+let novelImportTimer: ReturnType<typeof setTimeout> | undefined;
 
 const form = reactive({
   title: '',
@@ -53,6 +81,7 @@ const form = reactive({
   category: 'AI原创',
   coverUrl: '',
   description: '',
+  serializationStatus: 'ongoing' as AiNovelSerializationStatus,
 });
 
 const status = computed(() => detail.value?.item.status || 'draft');
@@ -65,12 +94,15 @@ const activeChapter = computed(() =>
   || visibleChapters.value[0]
   || null,
 );
+const activeChapterLocked = computed(() => isPending.value || Boolean(activeChapter.value?.locked));
 const characterCount = computed(() => chapters.value.reduce(
   (total, chapter) => total + chapter.title.length + chapter.content.length,
   0,
 ));
 const publishedChapterCount = computed(() =>
-  detail.value?.chapters.filter((chapter) => chapter.status === 'published').length || 0,
+  detail.value?.chapters.filter(
+    (chapter) => chapter.status === 'published' && chapter.replacesChapterId == null,
+  ).length || 0,
 );
 const pendingSerialCount = computed(() =>
   detail.value?.chapters.filter((chapter) => chapter.status === 'pending').length || 0,
@@ -81,10 +113,8 @@ const rejectedChapterSummary = computed(() =>
     .map((chapter) => `${chapter.title}：${chapter.reviewNote || '请按审核要求修改'}`)
     .join('；'),
 );
+const reviewableChapterCount = computed(() => chapters.value.filter(isChapterReviewable).length);
 const dirty = computed(() => Boolean(detail.value) && serializeDraft() !== savedSnapshot.value);
-const canSubmit = computed(() =>
-  !isPending.value && chapters.value.length > 0 && pendingSerialCount.value === 0,
-);
 
 watch(
   () => props.modelValue,
@@ -99,6 +129,27 @@ watch(
     if (props.modelValue) void loadDetail();
   },
 );
+
+watch(
+  () => [
+    form.title,
+    form.penName,
+    form.category,
+    form.coverUrl,
+    form.description,
+    form.serializationStatus,
+  ],
+  () => {
+    const current = editorIssue.value;
+    if (!current || current.section !== 'metadata') return;
+    const nextIssue = validateSubmission();
+    if (!nextIssue || nextIssue.message !== current.message) editorIssue.value = null;
+  },
+);
+
+onBeforeUnmount(() => {
+  if (novelImportTimer) clearTimeout(novelImportTimer);
+});
 
 async function loadDetail(): Promise<void> {
   if (!props.novelId) return;
@@ -121,15 +172,18 @@ function applyDetail(data: AiNovelDetail): void {
     category: data.item.category,
     coverUrl: data.item.coverUrl,
     description: data.item.description,
+    serializationStatus: data.item.serializationStatus || 'ongoing',
   });
-  chapters.value = data.chapters
-    .filter((chapter) => chapter.status === 'draft' || chapter.status === 'rejected')
-    .map((chapter) => editableChapter(chapter.title, chapter.content || '', chapter.id));
-  previewChapters.value = data.chapters.map((chapter) =>
-    editableChapter(chapter.title, chapter.content || '', chapter.id),
-  );
+  chapters.value = data.item.status === 'published'
+    ? mergePublishedChapters(data.chapters)
+    : data.chapters
+        .filter((chapter) => chapter.status === 'draft' || chapter.status === 'rejected')
+        .map(chapterToEditable);
+  previewChapters.value = data.chapters.map(chapterToEditable);
   selectedChapterId.value = (isPending.value ? previewChapters.value[0] : chapters.value[0])?.clientId || '';
   importSummary.value = '';
+  comparisonOpen.value = [];
+  editorIssue.value = null;
   savedSnapshot.value = serializeDraft();
 }
 
@@ -137,7 +191,7 @@ async function saveDraft(showMessage = true): Promise<AiNovelDetail | null> {
   if (!props.novelId || !detail.value || isPending.value) return null;
   const issue = validateEditableChapters(false);
   if (issue) {
-    ElMessage.warning(issue);
+    await presentEditorIssue({ message: issue, section: 'chapters' });
     return null;
   }
   saving.value = true;
@@ -149,7 +203,13 @@ async function saveDraft(showMessage = true): Promise<AiNovelDetail | null> {
       category: form.category,
       coverUrl: form.coverUrl,
       description: form.description,
-      chapters: chapters.value.map(({ title, content }) => ({ title, content })),
+      serializationStatus: form.serializationStatus,
+      chapters: chapters.value.map((chapter) => ({
+        id: chapter.id,
+        publishedChapterId: chapter.publishedChapterId,
+        title: chapter.title,
+        content: chapter.content,
+      })),
     });
     applyDetail(data);
     emit('saved');
@@ -167,9 +227,10 @@ async function submitForReview(): Promise<void> {
   if (!props.novelId || !detail.value) return;
   const issue = validateSubmission();
   if (issue) {
-    ElMessage.warning(issue);
+    await presentEditorIssue(issue);
     return;
   }
+  editorIssue.value = null;
   submitting.value = true;
   try {
     const saved = await saveDraft(false);
@@ -177,7 +238,7 @@ async function submitForReview(): Promise<void> {
     const submitted = await submitNovel(props.novelId, saved.item.revision);
     applyDetail(submitted);
     emit('saved');
-    ElMessage.success(isPublished.value ? '新增章节已提交审核' : '作品已提交审核');
+    ElMessage.success(isPublished.value ? '章节变更已提交审核' : '作品已提交审核');
     emit('update:modelValue', false);
   } catch (error) {
     await handleMutationError(error);
@@ -214,63 +275,117 @@ async function handleCoverUpload(options: UploadRequestOptions): Promise<void> {
   }
 }
 
-async function handleNovelImport(options: UploadRequestOptions): Promise<void> {
+function handleNovelFileSelection(_file: UploadFile, uploadFiles: UploadFiles): void {
+  const files = uploadFiles.flatMap((item) => item.raw ? [item.raw] : []);
+  if (!files.length) return;
+  if (novelImportTimer) clearTimeout(novelImportTimer);
+  novelImportTimer = setTimeout(() => {
+    novelImportTimer = undefined;
+    void handleNovelImport(files);
+  }, 0);
+}
+
+function handleNovelImportExceed(): void {
+  ElMessage.warning(`一次最多选择 ${maxNovelChapterCount} 个章节文件`);
+}
+
+async function handleNovelImport(files: File[]): Promise<void> {
+  if (!files.length || importing.value) return;
   importing.value = true;
   try {
-    const extension = options.file.name.split('.').pop()?.toLowerCase();
-    if (!['txt', 'md'].includes(extension || '')) {
-      throw new Error('仅支持 TXT 或 Markdown 文件');
-    }
-    const decoded = await decodeNovelFile(options.file);
-    const parsed = parseNovelText(decoded.text);
-    if (chapters.value.length) {
+    const parsed = await parseNovelFiles(files);
+    const replaceableChapters = isPublished.value
+      ? chapters.value.filter((chapter) => chapter.publishedChapterId == null && !chapter.locked)
+      : chapters.value;
+    if (replaceableChapters.length) {
       await ElMessageBox.confirm(
-        `导入将替换当前 ${chapters.value.length} 个未提交章节，是否继续？`,
+        `导入将替换当前 ${replaceableChapters.length} 个未提交新增章节，是否继续？`,
         '替换章节',
         { type: 'warning', confirmButtonText: '继续导入', cancelButtonText: '取消' },
       );
     }
-    chapters.value = parsed.chapters;
-    selectedChapterId.value = chapters.value[0]?.clientId || '';
-    importSummary.value = `${options.file.name} · ${decoded.encoding} · ${parsed.chapters.length} 章 · ${parsed.characterCount.toLocaleString()} 字符`;
-    if (form.title === '未命名作品') {
-      form.title = options.file.name.replace(/\.(?:txt|md)$/i, '');
+    const importedChapters = parsed.chapters.map((chapter) => ({
+      ...chapter,
+      workflowStatus: 'draft' as const,
+      changeType: 'add' as const,
+      locked: false,
+    }));
+    chapters.value = isPublished.value
+      ? [
+          ...chapters.value.filter(
+            (chapter) => chapter.publishedChapterId != null || chapter.locked,
+          ),
+          ...importedChapters,
+        ]
+      : importedChapters;
+    selectedChapterId.value = importedChapters[0]?.clientId || chapters.value[0]?.clientId || '';
+    clearEditorIssue('chapters');
+    const encodingSummary = [...new Set(parsed.encodings)].join(' / ');
+    importSummary.value = parsed.fileCount === 1
+      ? `${parsed.orderedFileNames[0]} · ${encodingSummary} · ${parsed.chapters.length} 章 · ${parsed.characterCount.toLocaleString()} 字符`
+      : `${parsed.fileCount} 个文件 · 已按文件名排序 · ${encodingSummary} · ${parsed.chapters.length} 章 · ${parsed.characterCount.toLocaleString()} 字符`;
+    if (!isPublished.value && parsed.fileCount === 1 && form.title === '未命名作品') {
+      form.title = parsed.orderedFileNames[0]?.replace(/\.(?:txt|md)$/i, '') || form.title;
     }
-    options.onSuccess(parsed);
-    ElMessage.success(`已识别 ${parsed.chapters.length} 个章节，请预览后保存`);
+    ElMessage.success(
+      parsed.fileCount === 1
+        ? `已识别 ${parsed.chapters.length} 个章节，请预览后保存`
+        : `已导入 ${parsed.fileCount} 个文件为 ${parsed.chapters.length} 个章节，请预览后保存`,
+    );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (reason !== 'cancel' && reason !== 'close') {
-      options.onError(asUploadError(error));
       ElMessage.error(errorMessage(error));
     }
   } finally {
     importing.value = false;
+    novelUploadRef.value?.clearFiles();
   }
 }
 
 function addChapter(): void {
-  const chapter = editableChapter(`第 ${chapters.value.length + 1} 章`, '', Date.now());
+  const chapter = editableChapter(`第 ${chapters.value.length + 1} 章`, '', Date.now(), {
+    workflowStatus: 'draft',
+    changeType: 'add',
+  });
   chapters.value.push(chapter);
   selectedChapterId.value = chapter.clientId;
+  clearEditorIssue('chapters');
 }
 
 function removeChapter(index: number): void {
+  const chapter = chapters.value[index];
+  if (!chapter || chapter.locked) return;
+  if (chapter.publishedChapterId != null) {
+    if (!chapterChanged(chapter)) return;
+    chapter.id = chapter.publishedChapterId;
+    chapter.title = chapter.originalTitle || chapter.title;
+    chapter.content = chapter.originalContent || chapter.content;
+    chapter.workflowStatus = 'published';
+    chapter.changeType = 'published';
+    chapter.reviewNote = '';
+    clearEditorIssue('chapters');
+    return;
+  }
   chapters.value.splice(index, 1);
   selectedChapterId.value = chapters.value[Math.min(index, chapters.value.length - 1)]?.clientId || '';
+  clearEditorIssue('chapters');
 }
 
 function moveChapter(index: number, direction: -1 | 1): void {
+  if (!canMoveChapter(index, direction)) return;
   const target = index + direction;
-  if (target < 0 || target >= chapters.value.length) return;
   const [chapter] = chapters.value.splice(index, 1);
   if (!chapter) return;
   chapters.value.splice(target, 0, chapter);
+  clearEditorIssue('chapters');
 }
 
 function validateEditableChapters(requireOne: boolean): string {
-  if (requireOne && !chapters.value.length) {
-    return isPublished.value ? '请先添加需要连载的新章节' : '请先导入或添加正文章节';
+  if (requireOne && (isPublished.value ? reviewableChapterCount.value === 0 : !chapters.value.length)) {
+    return isPublished.value
+      ? '请先修改已发布章节或添加新的连载章节'
+      : '请先导入或添加正文章节';
   }
   const titles = new Set<string>();
   for (let index = 0; index < chapters.value.length; index += 1) {
@@ -284,17 +399,67 @@ function validateEditableChapters(requireOne: boolean): string {
   return '';
 }
 
-function validateSubmission(): string {
-  if (!form.title.trim() || form.title.trim() === '未命名作品') return '请填写明确的作品名称';
-  if (!form.penName.trim()) return '请填写作者笔名';
-  if (!form.category.trim()) return '请选择作品分类';
-  if (!form.coverUrl) return '请上传作品封面';
-  if (!form.description.trim()) return '请填写作品简介';
-  return validateEditableChapters(true);
+function validateSubmission(): EditorIssue | null {
+  if (pendingSerialCount.value > 0) {
+    return {
+      message: '已有连载章节正在审核，请等待本批次完成后再提交',
+      section: 'chapters',
+    };
+  }
+  if (!form.title.trim() || form.title.trim() === '未命名作品') {
+    return { message: '请填写明确的作品名称', section: 'metadata', field: 'title' };
+  }
+  if (!form.penName.trim()) {
+    return { message: '请填写作者笔名', section: 'metadata', field: 'penName' };
+  }
+  if (!form.category.trim()) {
+    return { message: '请选择作品分类', section: 'metadata', field: 'category' };
+  }
+  if (!form.coverUrl.trim()) {
+    return { message: '请上传作品封面', section: 'metadata', field: 'cover' };
+  }
+  if (!form.description.trim()) {
+    return { message: '请填写作品简介', section: 'metadata', field: 'description' };
+  }
+  const chapterIssue = validateEditableChapters(true);
+  return chapterIssue ? { message: chapterIssue, section: 'chapters' } : null;
+}
+
+async function presentEditorIssue(issue: EditorIssue): Promise<void> {
+  editorIssue.value = issue;
+  ElMessage.warning({ message: issue.message, duration: 5000, showClose: true });
+  if (issue.section === 'footer') return;
+  if (issue.section === 'metadata' && !openSections.value.includes('metadata')) {
+    openSections.value = [...openSections.value, 'metadata'];
+  }
+  await nextTick();
+
+  const container = issue.section === 'metadata'
+    ? metadataSectionRef.value
+    : chapterSectionRef.value;
+  const selector = issue.field ? {
+    title: '.field-title input',
+    penName: '.field-pen-name input',
+    category: '.field-category .el-select__wrapper',
+    cover: '.cover-upload',
+    description: '.field-description textarea',
+  }[issue.field] : '';
+  const target = selector ? container?.querySelector<HTMLElement>(selector) : null;
+  (target || container)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  const focusable = target?.matches('input, textarea, [tabindex]')
+    ? target
+    : target?.querySelector<HTMLElement>('input, textarea, [tabindex]:not([tabindex="-1"])');
+  focusable?.focus({ preventScroll: true });
+}
+
+function clearEditorIssue(section: EditorIssueSection): void {
+  if (editorIssue.value?.section === section) editorIssue.value = null;
 }
 
 async function handleMutationError(error: unknown): Promise<void> {
-  ElMessage.error(errorMessage(error));
+  const message = errorMessage(error);
+  editorIssue.value = { message, section: 'footer' };
+  ElMessage.error(message);
   if (error instanceof ApiError && error.code === 'revision_conflict') {
     await loadDetail();
   }
@@ -323,15 +488,125 @@ async function confirmDiscard(): Promise<boolean> {
 }
 
 function serializeDraft(): string {
-  return JSON.stringify({ ...form, chapters: chapters.value.map(({ title, content }) => ({ title, content })) });
+  return JSON.stringify({
+    ...form,
+    chapters: chapters.value.map((chapter) => ({
+      id: chapter.id,
+      publishedChapterId: chapter.publishedChapterId,
+      title: chapter.title,
+      content: chapter.content,
+    })),
+  });
 }
 
-function editableChapter(title: string, content: string, id: number): EditableChapter {
+function editableChapter(
+  title: string,
+  content: string,
+  key: number | string,
+  options: Partial<EditableChapter> = {},
+): EditableChapter {
   return {
-    clientId: `chapter-${id}-${Math.random().toString(36).slice(2, 8)}`,
+    clientId: `chapter-${key}-${Math.random().toString(36).slice(2, 8)}`,
     title,
     content,
+    workflowStatus: 'draft',
+    changeType: 'add',
+    reviewNote: '',
+    locked: false,
+    ...options,
   };
+}
+
+function chapterToEditable(chapter: AiNovelChapter): EditableChapter {
+  const isPublishedOriginal = chapter.status === 'published' && chapter.replacesChapterId == null;
+  return editableChapter(chapter.title, chapter.content || '', chapter.id, {
+    id: chapter.id,
+    publishedChapterId: chapter.publishedChapterId,
+    workflowStatus: chapter.status,
+    changeType: chapter.changeType,
+    reviewNote: chapter.reviewNote,
+    originalTitle: chapter.originalTitle || (isPublishedOriginal ? chapter.title : ''),
+    originalContent: chapter.originalContent || (isPublishedOriginal ? chapter.content || '' : ''),
+    locked: chapter.status === 'pending',
+  });
+}
+
+function mergePublishedChapters(source: AiNovelChapter[]): EditableChapter[] {
+  const revisions = new Map(
+    source
+      .filter((chapter) => chapter.replacesChapterId != null)
+      .map((chapter) => [chapter.replacesChapterId as number, chapter]),
+  );
+  const originals = source.filter(
+    (chapter) => chapter.status === 'published' && chapter.replacesChapterId == null,
+  );
+  const mergedOriginals = originals.map((original) => {
+    const revision = revisions.get(original.id);
+    return editableChapter(
+      revision?.title || original.title,
+      revision?.content || original.content || '',
+      revision?.id || original.id,
+      {
+        id: revision?.id || original.id,
+        publishedChapterId: original.id,
+        workflowStatus: revision?.status || 'published',
+        changeType: revision ? 'update' : 'published',
+        reviewNote: revision?.reviewNote || '',
+        originalTitle: original.title,
+        originalContent: original.content || '',
+        locked: revision?.status === 'pending',
+      },
+    );
+  });
+  const additions = source
+    .filter((chapter) => chapter.replacesChapterId == null && chapter.status !== 'published')
+    .map(chapterToEditable);
+  return [...mergedOriginals, ...additions];
+}
+
+function chapterChanged(chapter: EditableChapter): boolean {
+  if (chapter.publishedChapterId == null) return true;
+  return chapter.title !== (chapter.originalTitle || '')
+    || chapter.content !== (chapter.originalContent || '');
+}
+
+function isChapterReviewable(chapter: EditableChapter): boolean {
+  if (chapter.locked) return false;
+  return chapter.publishedChapterId != null
+    ? chapterChanged(chapter)
+    : chapter.workflowStatus === 'draft' || chapter.workflowStatus === 'rejected';
+}
+
+function canMoveChapter(index: number, direction: -1 | 1): boolean {
+  const target = index + direction;
+  if (target < 0 || target >= chapters.value.length) return false;
+  const current = chapters.value[index];
+  const adjacent = chapters.value[target];
+  if (!current || !adjacent || current.locked || adjacent.locked) return false;
+  if (!isPublished.value) return true;
+  return current.publishedChapterId == null && adjacent.publishedChapterId == null;
+}
+
+function chapterStateLabel(chapter: EditableChapter): string {
+  if (chapter.publishedChapterId != null) {
+    if (chapter.workflowStatus === 'pending') return '修改审核中';
+    if (chapter.workflowStatus === 'rejected') return '修改被退回';
+    if (chapterChanged(chapter)) return '待提交修改';
+    return '已发布';
+  }
+  return {
+    pending: '新增审核中',
+    rejected: '新增被退回',
+    draft: '待提交新增',
+    published: '已发布',
+  }[chapter.workflowStatus || 'draft'];
+}
+
+function chapterStateType(chapter: EditableChapter): 'info' | 'warning' | 'success' | 'danger' {
+  if (chapter.workflowStatus === 'pending') return 'warning';
+  if (chapter.workflowStatus === 'rejected') return 'danger';
+  if (chapter.publishedChapterId != null && !chapterChanged(chapter)) return 'success';
+  return 'info';
 }
 
 function statusLabel(value: string): string {
@@ -409,14 +684,15 @@ function asUploadError(error: unknown): UploadAjaxError {
         <ElAlert
           v-if="isPublished && !rejectedChapterSummary && pendingSerialCount === 0"
           type="success"
-          :closable="false"
-          show-icon
-          :title="`作品已发布 ${publishedChapterCount} 章`"
-          description="作品资料和已发布章节保持不变；下方仅编辑本次准备追加的连载章节。"
+           :closable="false"
+           show-icon
+           :title="`作品已发布 ${publishedChapterCount} 章`"
+           description="已发布章节会保留线上版本；章节修改和新增内容需分别提交审核，通过后才会在 App 生效。"
         />
 
-        <ElCollapse v-model="openSections" class="editor-collapse">
-          <ElCollapseItem name="metadata" title="作品资料与封面">
+        <div ref="metadataSectionRef">
+          <ElCollapse v-model="openSections" class="editor-collapse">
+            <ElCollapseItem name="metadata" title="作品资料与封面">
             <div class="metadata-grid">
               <div class="cover-column">
                 <ElUpload
@@ -437,18 +713,46 @@ function asUploadError(error: unknown): UploadAjaxError {
                   </div>
                 </ElUpload>
                 <p class="field-help">封面由系统托管，不再要求填写图片 URL。</p>
+                <p v-if="editorIssue?.field === 'cover'" class="field-error" role="alert">
+                  {{ editorIssue.message }}
+                </p>
               </div>
 
               <ElForm label-position="top" class="metadata-form">
                 <div class="form-row two-columns">
-                  <ElFormItem label="作品名称" required>
+                  <ElFormItem
+                    class="field-title"
+                    label="作品名称"
+                    required
+                    :error="editorIssue?.field === 'title' ? editorIssue.message : ''"
+                  >
                     <ElInput v-model="form.title" :disabled="metadataLocked" maxlength="100" show-word-limit />
-                  </ElFormItem>
-                  <ElFormItem label="作者笔名" required>
+                 </ElFormItem>
+                 <ElFormItem label="连载状态">
+                   <ElSegmented
+                     v-model="form.serializationStatus"
+                     :disabled="isPending"
+                     :options="[
+                       { label: '连载中', value: 'ongoing' },
+                       { label: '已完结', value: 'completed' },
+                     ]"
+                   />
+                 </ElFormItem>
+                 <ElFormItem
+                    class="field-pen-name"
+                    label="作者笔名"
+                    required
+                    :error="editorIssue?.field === 'penName' ? editorIssue.message : ''"
+                  >
                     <ElInput v-model="form.penName" :disabled="metadataLocked" maxlength="50" />
                   </ElFormItem>
                 </div>
-                <ElFormItem label="作品分类" required>
+                <ElFormItem
+                  class="field-category"
+                  label="作品分类"
+                  required
+                  :error="editorIssue?.field === 'category' ? editorIssue.message : ''"
+                >
                   <ElSelect
                     v-model="form.category"
                     :disabled="metadataLocked"
@@ -460,7 +764,12 @@ function asUploadError(error: unknown): UploadAjaxError {
                     <ElOption v-for="category in categories" :key="category" :label="category" :value="category" />
                   </ElSelect>
                 </ElFormItem>
-                <ElFormItem label="作品简介" required>
+                <ElFormItem
+                  class="field-description"
+                  label="作品简介"
+                  required
+                  :error="editorIssue?.field === 'description' ? editorIssue.message : ''"
+                >
                   <ElInput
                     v-model="form.description"
                     :disabled="metadataLocked"
@@ -473,15 +782,16 @@ function asUploadError(error: unknown): UploadAjaxError {
                 </ElFormItem>
               </ElForm>
             </div>
-          </ElCollapseItem>
-        </ElCollapse>
+            </ElCollapseItem>
+          </ElCollapse>
+        </div>
 
-        <section class="chapter-workspace">
+        <section ref="chapterSectionRef" class="chapter-workspace">
           <header class="workspace-heading">
             <div>
               <span class="eyebrow">CHAPTERS</span>
-              <h3>{{ isPending ? '提交内容预览' : isPublished ? '新增连载章节' : '正文拆章与预览' }}</h3>
-              <p v-if="!isPending">{{ chapters.length }} 章 · {{ characterCount.toLocaleString() }} 字符</p>
+               <h3>{{ isPending ? '提交内容预览' : isPublished ? '已发布章节与本次变更' : '正文拆章与预览' }}</h3>
+               <p v-if="!isPending">{{ chapters.length }} 章 · {{ characterCount.toLocaleString() }} 字符</p>
             </div>
             <div v-if="!isPending" class="workspace-actions">
               <ElButton :icon="Plus" @click="addChapter">添加章节</ElButton>
@@ -490,18 +800,25 @@ function asUploadError(error: unknown): UploadAjaxError {
 
           <ElUpload
             v-if="!isPending"
+            ref="novelUploadRef"
             drag
+            multiple
             class="novel-file-upload"
             accept=".txt,.md,text/plain,text/markdown"
             :show-file-list="false"
-            :http-request="handleNovelImport"
+            :auto-upload="false"
+            :limit="maxNovelChapterCount"
             :disabled="importing"
+            :on-change="handleNovelFileSelection"
+            :on-exceed="handleNovelImportExceed"
           >
             <ElIcon class="el-icon--upload"><DocumentAdd /></ElIcon>
-            <div class="el-upload__text"><strong>拖入 TXT / Markdown</strong>，或点击选择文件</div>
+            <div class="el-upload__text">
+              <strong>拖入整书文件，或批量选择章节文件</strong>
+            </div>
             <template #tip>
               <div class="el-upload__tip">
-                自动识别 UTF-8、UTF-16 和 GB18030；导入后先预览拆章，不会直接提交。
+                单个文件自动拆章；多文件按文件名中的数字顺序排列，每个文件作为一章。支持 UTF-8、UTF-16 和 GB18030。
               </div>
             </template>
           </ElUpload>
@@ -509,62 +826,108 @@ function asUploadError(error: unknown): UploadAjaxError {
 
           <div v-if="visibleChapters.length" class="chapter-editor">
             <aside class="chapter-list">
-              <button
-                v-for="(chapter, index) in visibleChapters"
+               <button
+                 v-for="(chapter, index) in visibleChapters"
                 :key="chapter.clientId"
                 type="button"
                 :class="{ active: chapter.clientId === activeChapter?.clientId }"
                 @click="selectedChapterId = chapter.clientId"
-              >
-                <span>{{ index + 1 }}</span>
-                <strong>{{ chapter.title || '未命名章节' }}</strong>
-                <small>{{ chapter.content.length.toLocaleString() }} 字</small>
-              </button>
+               >
+                 <span>{{ index + 1 }}</span>
+                 <span class="chapter-list-copy">
+                   <strong>{{ chapter.title || '未命名章节' }}</strong>
+                   <small>{{ chapter.content.length.toLocaleString() }} 字</small>
+                 </span>
+                 <ElTag
+                   v-if="isPublished"
+                   size="small"
+                   effect="plain"
+                   :type="chapterStateType(chapter)"
+                 >{{ chapterStateLabel(chapter) }}</ElTag>
+               </button>
             </aside>
 
             <div v-if="activeChapter" class="chapter-content-editor">
-              <div v-if="!isPending" class="chapter-order-actions">
+               <div v-if="!isPending" class="chapter-order-actions">
+                 <ElTag
+                   size="small"
+                   effect="plain"
+                   :type="chapterStateType(activeChapter)"
+                 >{{ chapterStateLabel(activeChapter) }}</ElTag>
+                 <ElButton
+                   text
+                   :icon="ArrowUp"
+                   :disabled="!canMoveChapter(chapters.indexOf(activeChapter), -1)"
+                   @click="moveChapter(chapters.indexOf(activeChapter), -1)"
+                 >上移</ElButton>
                 <ElButton
-                  text
-                  :icon="ArrowUp"
-                  :disabled="chapters.indexOf(activeChapter) <= 0"
-                  @click="moveChapter(chapters.indexOf(activeChapter), -1)"
-                >上移</ElButton>
-                <ElButton
-                  text
-                  :icon="ArrowDown"
-                  :disabled="chapters.indexOf(activeChapter) >= chapters.length - 1"
-                  @click="moveChapter(chapters.indexOf(activeChapter), 1)"
-                >下移</ElButton>
-                <ElPopconfirm
-                  title="删除这个章节？"
-                  confirm-button-text="删除"
-                  cancel-button-text="取消"
-                  @confirm="removeChapter(chapters.indexOf(activeChapter))"
-                >
-                  <template #reference>
-                    <ElButton text type="danger" :icon="Delete">删除</ElButton>
-                  </template>
-                </ElPopconfirm>
-              </div>
-              <ElInput
+                   text
+                   :icon="ArrowDown"
+                   :disabled="!canMoveChapter(chapters.indexOf(activeChapter), 1)"
+                   @click="moveChapter(chapters.indexOf(activeChapter), 1)"
+                 >下移</ElButton>
+                 <ElPopconfirm
+                   v-if="!activeChapterLocked && (activeChapter.publishedChapterId == null || chapterChanged(activeChapter))"
+                   :title="activeChapter.publishedChapterId != null ? '撤销这个章节的全部修改？' : '删除这个待新增章节？'"
+                   :confirm-button-text="activeChapter.publishedChapterId != null ? '撤销修改' : '删除'"
+                   cancel-button-text="取消"
+                   @confirm="removeChapter(chapters.indexOf(activeChapter))"
+                 >
+                   <template #reference>
+                     <ElButton text type="danger" :icon="Delete">
+                       {{ activeChapter.publishedChapterId != null ? '撤销修改' : '删除' }}
+                     </ElButton>
+                   </template>
+                 </ElPopconfirm>
+               </div>
+               <ElAlert
+                 v-if="activeChapter.workflowStatus === 'rejected'"
+                 class="chapter-status-alert"
+                 type="error"
+                 :closable="false"
+                 show-icon
+                 title="本次章节变更被退回"
+                 :description="activeChapter.reviewNote || '请根据审核意见修改后重新提交。'"
+               />
+               <ElAlert
+                 v-else-if="activeChapterLocked && isPublished"
+                 class="chapter-status-alert"
+                 type="warning"
+                 :closable="false"
+                 show-icon
+                 title="该章节变更正在审核"
+                 description="当前提交内容已锁定，线上版本会继续正常展示。"
+               />
+               <ElCollapse
+                 v-if="activeChapter.publishedChapterId != null && chapterChanged(activeChapter)"
+                 v-model="comparisonOpen"
+                 class="online-version-collapse"
+               >
+                 <ElCollapseItem name="online-version" title="对照当前线上版本">
+                   <strong>{{ activeChapter.originalTitle }}</strong>
+                   <article>{{ activeChapter.originalContent }}</article>
+                 </ElCollapseItem>
+               </ElCollapse>
+               <ElInput
                 v-model="activeChapter.title"
                 class="chapter-title-input"
-                :disabled="isPending"
+                 :disabled="activeChapterLocked"
                 maxlength="120"
                 placeholder="章节标题"
+                @input="clearEditorIssue('chapters')"
               />
               <ElInput
                 v-model="activeChapter.content"
                 class="chapter-body-input"
-                :disabled="isPending"
+                 :disabled="activeChapterLocked"
                 type="textarea"
                 :autosize="{ minRows: 18, maxRows: 32 }"
                 placeholder="章节正文"
+                @input="clearEditorIssue('chapters')"
               />
             </div>
           </div>
-          <ElEmpty v-else :description="isPublished ? '还没有待追加的章节' : '导入文件或手动添加第一个章节'">
+           <ElEmpty v-else :description="isPublished ? '还没有已发布或待新增章节' : '导入文件或手动添加第一个章节'">
             <ElButton v-if="!isPending" type="primary" :icon="Plus" @click="addChapter">添加章节</ElButton>
           </ElEmpty>
         </section>
@@ -573,8 +936,12 @@ function asUploadError(error: unknown): UploadAjaxError {
 
     <template #footer>
       <div class="drawer-footer">
-        <span v-if="dirty" class="unsaved-indicator">有未保存修改</span>
-        <span v-else-if="detail && !isPending" class="saved-indicator">草稿已保存</span>
+        <span v-if="editorIssue" class="action-error" role="alert">
+          <ElIcon><WarningFilled /></ElIcon>
+          {{ editorIssue.message }}
+        </span>
+        <span v-else-if="dirty" class="unsaved-indicator">有未保存修改</span>
+         <span v-else-if="detail && !isPending" class="saved-indicator">内容已保存</span>
         <ElButton @click="requestClose">关闭</ElButton>
         <ElButton
           v-if="detail && !isPending"
@@ -586,9 +953,9 @@ function asUploadError(error: unknown): UploadAjaxError {
           v-if="detail && !isPending"
           type="primary"
           :loading="submitting"
-          :disabled="saving || !canSubmit"
+          :disabled="saving || submitting"
           @click="submitForReview"
-        >{{ isPublished ? '提交新增章节' : status === 'rejected' ? '修改并重新提交' : '提交审核' }}</ElButton>
+         >{{ isPublished ? `提交章节变更${reviewableChapterCount ? ` (${reviewableChapterCount})` : ''}` : status === 'rejected' ? '修改并重新提交' : '提交审核' }}</ElButton>
       </div>
     </template>
   </ElDrawer>
@@ -689,6 +1056,13 @@ function asUploadError(error: unknown): UploadAjaxError {
   margin: 8px 4px 0;
 }
 
+.field-error {
+  margin: 6px 4px 0;
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .form-row.two-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -697,6 +1071,10 @@ function asUploadError(error: unknown): UploadAjaxError {
 
 .metadata-form :deep(.el-select) {
   width: 100%;
+}
+
+.metadata-form :deep(.el-segmented) {
+  width: min(320px, 100%);
 }
 
 .chapter-workspace {
@@ -733,7 +1111,7 @@ function asUploadError(error: unknown): UploadAjaxError {
 .chapter-editor {
   min-height: 520px;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 310px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -767,7 +1145,7 @@ function asUploadError(error: unknown): UploadAjaxError {
   background: white;
 }
 
-.chapter-list button > span {
+.chapter-list button > span:first-child {
   width: 26px;
   height: 26px;
   display: grid;
@@ -775,6 +1153,12 @@ function asUploadError(error: unknown): UploadAjaxError {
   border-radius: 8px;
   background: var(--sakura-100);
   font-size: 12px;
+}
+
+.chapter-list-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
 .chapter-list strong {
@@ -789,6 +1173,12 @@ function asUploadError(error: unknown): UploadAjaxError {
   font-size: 10px;
 }
 
+.chapter-list :deep(.el-tag) {
+  max-width: 76px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chapter-content-editor {
   min-width: 0;
   padding: 18px;
@@ -797,6 +1187,32 @@ function asUploadError(error: unknown): UploadAjaxError {
 .chapter-order-actions {
   justify-content: flex-end;
   margin-bottom: 10px;
+}
+
+.chapter-order-actions > :deep(.el-tag) {
+  margin-right: auto;
+}
+
+.chapter-status-alert,
+.online-version-collapse {
+  margin-bottom: 12px;
+}
+
+.online-version-collapse {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: var(--surface-muted);
+}
+
+.online-version-collapse article {
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 10px;
+  color: var(--ink-500);
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
 }
 
 .chapter-title-input {
@@ -826,13 +1242,23 @@ function asUploadError(error: unknown): UploadAjaxError {
 }
 
 .unsaved-indicator,
-.saved-indicator {
+.saved-indicator,
+.action-error {
   margin-right: auto;
   font-size: 12px;
 }
 
 .unsaved-indicator { color: #c87825; }
 .saved-indicator { color: #4c936f; }
+
+.action-error {
+  max-width: min(520px, 58%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--el-color-danger);
+  line-height: 1.45;
+}
 
 @media (max-width: 760px) {
   .metadata-grid,
@@ -863,8 +1289,10 @@ function asUploadError(error: unknown): UploadAjaxError {
   }
 
   .unsaved-indicator,
-  .saved-indicator {
+  .saved-indicator,
+  .action-error {
     width: 100%;
+    max-width: none;
   }
 }
 </style>

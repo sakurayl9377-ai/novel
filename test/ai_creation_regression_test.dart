@@ -19,8 +19,11 @@ void main() {
                   'id': 'ai-7',
                   'title': '星海录',
                   'author': '星河',
+                  'coverUrl': '/novel-api/uploads/content/novel-covers/7.png',
                   'description': 'AI 原创连载',
                   'sourceId': 'ai-creation',
+                  'serializationStatus': 'completed',
+                  'status': '已完结',
                   'chapterCount': 2,
                 },
               ],
@@ -50,27 +53,35 @@ void main() {
 
       expect(novels.single.sourceId, AiCreationService.sourceId);
       expect(novels.single.title, '星海录');
+      expect(novels.single.status, '已完结');
+      expect(Uri.parse(novels.single.coverUrl).isAbsolute, isTrue);
+      expect(
+        Uri.parse(novels.single.coverUrl).path,
+        '/novel-api/uploads/content/novel-covers/7.png',
+      );
       expect(chapters.map((item) => item.title), ['第一章', '第二章']);
     },
   );
 
-  test(
-    'novel home shows AI section last and only when published items exist',
-    () {
-      final source = File('lib/screens/search_screen.dart').readAsStringSync();
-      final normalSections = source.indexOf(
-        'for (final section in _homeData.sections) _buildGridSection(section)',
-      );
-      final aiSection = source.indexOf(
-        'if (_aiNovels.isNotEmpty) _buildAiCreationSection(isNight)',
-      );
+  test('novel home shows and refreshes published AI novels', () {
+    final source = File('lib/screens/search_screen.dart').readAsStringSync();
+    final normalSections = source.indexOf(
+      'for (final section in _homeData.sections) _buildGridSection(section)',
+    );
+    final aiSection = source.indexOf(
+      'if (_aiNovels.isNotEmpty) _buildAiCreationSection(isNight)',
+    );
 
-      expect(normalSections, greaterThanOrEqualTo(0));
-      expect(aiSection, greaterThan(normalSections));
-      expect(source, contains("subtitle: '本站后台审核发布'"));
-      expect(source, isNot(contains("tooltip: 'AI 创作区'")));
-    },
-  );
+    expect(normalSections, greaterThanOrEqualTo(0));
+    expect(aiSection, greaterThan(normalSections));
+    expect(source, contains("subtitle: '本站后台审核发布'"));
+    expect(source, isNot(contains("tooltip: 'AI 创作区'")));
+    expect(source, contains('Future<void> _refreshHome() async'));
+    expect(source, contains('onRefresh: _showingSearchResults'));
+    expect(source, contains(': _refreshHome,'));
+    expect(source, contains('state == AppLifecycleState.resumed'));
+    expect(source, contains('..._aiNovels,'));
+  });
 
   test('book source provider routes AI novels through the private backend', () {
     final source = File(

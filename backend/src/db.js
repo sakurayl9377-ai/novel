@@ -1246,6 +1246,7 @@ export function migrate() {
       cover_url TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'draft',
+      serialization_status TEXT NOT NULL DEFAULT 'ongoing',
       review_note TEXT NOT NULL DEFAULT '',
       revision INTEGER NOT NULL DEFAULT 1,
       submitted_at TEXT NOT NULL DEFAULT '',
@@ -1277,6 +1278,7 @@ export function migrate() {
       reviewed_by INTEGER,
       reviewed_at TEXT NOT NULL DEFAULT '',
       published_at TEXT NOT NULL DEFAULT '',
+      replaces_chapter_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (novel_id, sort_order),
@@ -1584,6 +1586,11 @@ function migrateAiNovelWorkflowSchema() {
   addMissingColumn("ai_novels", "revision", "INTEGER NOT NULL DEFAULT 1");
   addMissingColumn("ai_novels", "submitted_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn(
+    "ai_novels",
+    "serialization_status",
+    "TEXT NOT NULL DEFAULT 'ongoing'",
+  );
+  addMissingColumn(
     "ai_novel_chapters",
     "revision",
     "INTEGER NOT NULL DEFAULT 1",
@@ -1593,7 +1600,14 @@ function migrateAiNovelWorkflowSchema() {
     "submitted_at",
     "TEXT NOT NULL DEFAULT ''",
   );
+  addMissingColumn("ai_novel_chapters", "replaces_chapter_id", "INTEGER");
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_chapter_revisions
+      ON ai_novel_chapters(novel_id, replaces_chapter_id, status, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_novel_chapter_active_revision
+      ON ai_novel_chapters(novel_id, replaces_chapter_id)
+      WHERE replaces_chapter_id IS NOT NULL
+        AND status IN ('draft', 'pending', 'rejected');
     CREATE TABLE IF NOT EXISTS ai_novel_review_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       novel_id INTEGER NOT NULL,

@@ -213,6 +213,200 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
     );
     assert.match(publicChapter.item.content, /生物密钥/);
 
+    const publishedDetail = await jsonRequest(
+      app,
+      "GET",
+      `/creator/ai-novels/${draft.item.numericId}`,
+      undefined,
+      writer.token,
+    );
+    const publishedOriginals = publishedDetail.chapters.filter(
+      (chapter) => chapter.status === "published" && chapter.replacesChapterId == null,
+    );
+    assert.equal(publishedOriginals.length, 2);
+    assert.ok(publishedOriginals.every((chapter) => chapter.changeType === "published"));
+    const secondPublishedChapter = publishedOriginals[1];
+
+    const revisionDraft = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${draft.item.numericId}/draft`,
+      {
+        expectedRevision: publishedDetail.item.revision,
+        serializationStatus: "completed",
+        chapters: publishedOriginals.map((chapter) => ({
+          id: chapter.id,
+          publishedChapterId: chapter.id,
+          title: chapter.title,
+          content: chapter.id === secondPublishedChapter.id
+            ? "舰长修订了生物密钥的触发规则，旧协议重新开始解密。"
+            : chapter.content,
+        })),
+      },
+      writer.token,
+    );
+    assert.equal(revisionDraft.item.serializationStatus, "completed");
+    const revisionProposal = revisionDraft.chapters.find(
+      (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
+    );
+    assert.equal(revisionProposal?.status, "draft");
+    assert.equal(revisionProposal?.changeType, "update");
+
+    const revisionSubmitted = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${draft.item.numericId}/submit`,
+      { expectedRevision: revisionDraft.item.revision },
+      writer.token,
+    );
+    const pendingRevision = revisionSubmitted.chapters.find(
+      (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
+    );
+    assert.equal(pendingRevision?.status, "pending");
+
+    const publicDuringRevision = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${draft.item.numericId}/chapters/${secondPublishedChapter.id}`,
+    );
+    assert.match(publicDuringRevision.item.content, /生物密钥/);
+    assert.doesNotMatch(publicDuringRevision.item.content, /修订了/);
+
+    const revisionQueue = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-chapters?status=pending",
+      undefined,
+      admin.token,
+    );
+    assert.equal(revisionQueue.total, 1);
+    assert.equal(revisionQueue.items[0].changeType, "update");
+    const revisionReviewDetail = await jsonRequest(
+      app,
+      "GET",
+      `/admin/ai-novel-chapters/${revisionQueue.items[0].id}`,
+      undefined,
+      admin.token,
+    );
+    assert.match(revisionReviewDetail.item.originalContent, /生物密钥/);
+    assert.match(revisionReviewDetail.item.content, /修订了/);
+
+    await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-chapters/${revisionQueue.items[0].id}/review`,
+      {
+        decision: "reject",
+        reviewNote: "触发规则还需交代来源。",
+        expectedRevision: revisionQueue.items[0].revision,
+      },
+      admin.token,
+    );
+    const publicAfterRevisionRejection = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${draft.item.numericId}/chapters/${secondPublishedChapter.id}`,
+    );
+    assert.doesNotMatch(publicAfterRevisionRejection.item.content, /修订了/);
+
+    const rejectedRevisionDetail = await jsonRequest(
+      app,
+      "GET",
+      `/creator/ai-novels/${draft.item.numericId}`,
+      undefined,
+      writer.token,
+    );
+    const rejectedRevision = rejectedRevisionDetail.chapters.find(
+      (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
+    );
+    const revisedAgain = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${draft.item.numericId}/draft`,
+      {
+        expectedRevision: rejectedRevisionDetail.item.revision,
+        serializationStatus: "completed",
+        chapters: publishedOriginals.map((chapter) => ({
+          id: chapter.id === secondPublishedChapter.id ? rejectedRevision.id : chapter.id,
+          publishedChapterId: chapter.id,
+          title: chapter.title,
+          content: chapter.id === secondPublishedChapter.id
+            ? "舰长从航行日志找到生物密钥来源，触发旧协议并完成解密。"
+            : chapter.content,
+        })),
+      },
+      writer.token,
+    );
+    const revisedProposal = revisedAgain.chapters.find(
+      (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
+    );
+    assert.equal(revisedProposal.id, rejectedRevision.id);
+    assert.equal(revisedProposal.status, "draft");
+
+    const revisedAgainSubmitted = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${draft.item.numericId}/submit`,
+      { expectedRevision: revisedAgain.item.revision },
+      writer.token,
+    );
+    const resubmittedRevision = revisedAgainSubmitted.chapters.find(
+      (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
+    );
+    await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-chapters/${resubmittedRevision.id}/review`,
+      {
+        decision: "approve",
+        expectedRevision: resubmittedRevision.revision,
+      },
+      admin.token,
+    );
+
+    const publicAfterRevisionApproval = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${draft.item.numericId}/chapters/${secondPublishedChapter.id}`,
+    );
+    assert.match(publicAfterRevisionApproval.item.content, /航行日志/);
+    const publicAfterCompletion = await jsonRequest(app, "GET", "/ai-novels");
+    assert.equal(publicAfterCompletion.items[0].serializationStatus, "completed");
+    assert.equal(publicAfterCompletion.items[0].status, "已完结");
+
+    const afterRevisionApproval = await jsonRequest(
+      app,
+      "GET",
+      `/creator/ai-novels/${draft.item.numericId}`,
+      undefined,
+      writer.token,
+    );
+    assert.equal(afterRevisionApproval.chapters.length, 2);
+    assert.ok(afterRevisionApproval.chapters.every(
+      (chapter) => chapter.status === "published" && chapter.replacesChapterId == null,
+    ));
+
+    const approvedRevisionQueue = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-chapters?status=published",
+      undefined,
+      admin.token,
+    );
+    assert.equal(approvedRevisionQueue.total, 1);
+    assert.equal(approvedRevisionQueue.items[0].changeType, "update");
+    const approvedRevisionDetail = await jsonRequest(
+      app,
+      "GET",
+      `/admin/ai-novel-chapters/${approvedRevisionQueue.items[0].id}`,
+      undefined,
+      admin.token,
+    );
+    assert.deepEqual(
+      approvedRevisionDetail.reviews.map((event) => event.decision),
+      ["approve", "reject"],
+    );
+
     const coverResponse = await app.inject({
       method: "GET",
       url: cover.url,
@@ -226,21 +420,21 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       "PUT",
       `/creator/ai-novels/${draft.item.numericId}/draft`,
       {
-        expectedRevision: 7,
+        expectedRevision: afterRevisionApproval.item.revision,
         chapters: [{ title: "第三章 回声", content: "深空回声指向失联的前哨站。" }],
       },
       writer.token,
     );
-    assert.equal(serialDraft.item.revision, 8);
+    assert.equal(serialDraft.item.revision, afterRevisionApproval.item.revision + 1);
     const serialSubmitted = await jsonRequest(
       app,
       "POST",
       `/creator/ai-novels/${draft.item.numericId}/submit`,
-      { expectedRevision: 8 },
+      { expectedRevision: serialDraft.item.revision },
       writer.token,
     );
     assert.equal(serialSubmitted.item.status, "published");
-    assert.equal(serialSubmitted.item.revision, 9);
+    assert.equal(serialSubmitted.item.revision, serialDraft.item.revision + 1);
 
     const serialQueue = await jsonRequest(
       app,
@@ -265,7 +459,7 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       "PUT",
       `/creator/ai-novels/${draft.item.numericId}/draft`,
       {
-        expectedRevision: 9,
+        expectedRevision: serialSubmitted.item.revision,
         chapters: [{ title: "第四章 前哨", content: "舰队抵达沉默的前哨站。" }],
       },
       writer.token,

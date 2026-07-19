@@ -6,6 +6,7 @@ import type {
   AiNovelSummary,
   CoverUploadResponse,
   EditableChapter,
+  AiNovelSerializationStatus,
   PageResponse,
 } from '@/types/ai-novel';
 
@@ -23,7 +24,11 @@ export interface SaveNovelDraftPayload {
   category: string;
   coverUrl: string;
   description: string;
-  chapters: Array<Pick<EditableChapter, 'title' | 'content'>>;
+  serializationStatus: AiNovelSerializationStatus;
+  chapters: Array<Pick<EditableChapter, 'title' | 'content'> & {
+    id?: number;
+    publishedChapterId?: number | null;
+  }>;
 }
 
 export function listCreatorNovels(query: NovelListQuery): Promise<PageResponse<AiNovelSummary>> {

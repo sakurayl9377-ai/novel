@@ -52,7 +52,8 @@ export async function aiNovelRoutes(app) {
               COUNT(c.id) AS chapter_count
        FROM ai_novels n
        JOIN users u ON u.id = n.user_id
-       LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id AND c.status = 'published'
+       LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+         AND c.status = 'published' AND c.replaces_chapter_id IS NULL
        WHERE n.status = 'published'
          ${searchSql}
        GROUP BY n.id
@@ -79,7 +80,7 @@ export async function aiNovelRoutes(app) {
     const items = all(
       `SELECT id, title, sort_order
        FROM ai_novel_chapters
-       WHERE novel_id = ? AND status = 'published'
+       WHERE novel_id = ? AND status = 'published' AND replaces_chapter_id IS NULL
        ORDER BY sort_order, id`,
       [numericNovelId(request.params.id)],
     ).map((row) => chapterJson(row, novel.id));
@@ -92,7 +93,8 @@ export async function aiNovelRoutes(app) {
     const row = one(
       `SELECT id, title, content, sort_order
        FROM ai_novel_chapters
-       WHERE id = ? AND novel_id = ? AND status = 'published'`,
+       WHERE id = ? AND novel_id = ? AND status = 'published'
+         AND replaces_chapter_id IS NULL`,
       [Number(request.params.chapterId), novelId],
     );
     if (!row) throw notFound("chapter_not_found");
@@ -129,14 +131,26 @@ export async function aiNovelRoutes(app) {
       const title = optionalString(body.title, 100) || "未命名作品";
       const penName = optionalString(body.penName, 50) || request.user.nickname || "匿名作者";
       const category = optionalString(body.category, 40) || "AI原创";
+      const serializationStatus = novelSerializationStatus(body.serializationStatus, {
+        optional: true,
+      }) || "ongoing";
       let coverUrl = optionalString(body.coverUrl, 1000);
       if (coverUrl) coverUrl = requireOwnedNovelCover(coverUrl, request.user.id);
       const description = optionalString(body.description, 2000);
       const result = run(
         `INSERT INTO ai_novels
-           (user_id, title, pen_name, category, cover_url, description, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
-        [request.user.id, title, penName, category, coverUrl, description],
+           (user_id, title, pen_name, category, cover_url, description,
+            status, serialization_status)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`,
+        [
+          request.user.id,
+          title,
+          penName,
+          category,
+          coverUrl,
+          description,
+          serializationStatus,
+        ],
       );
       return creatorNovelDetail(Number(result.lastInsertRowid), request.user.id);
     },
@@ -173,7 +187,8 @@ export async function aiNovelRoutes(app) {
       requireExpectedRevision(body.expectedRevision, current.revision);
       if (current.status === "pending") throw conflict("novel_review_in_progress");
 
-      const chapters = Object.hasOwn(body, "chapters")
+      const chaptersProvided = Object.hasOwn(body, "chapters");
+      const chapters = chaptersProvided
         ? structuredChapters(body.chapters)
         : all(
             `SELECT title, content
@@ -183,6 +198,9 @@ export async function aiNovelRoutes(app) {
             [id],
           );
       const published = current.status === "published";
+      const nextSerializationStatus = Object.hasOwn(body, "serializationStatus")
+        ? novelSerializationStatus(body.serializationStatus)
+        : current.serialization_status || "ongoing";
       const nextMetadata = published
         ? {
             title: current.title,
@@ -205,7 +223,8 @@ export async function aiNovelRoutes(app) {
           run(
             `UPDATE ai_novels
              SET title = ?, pen_name = ?, category = ?, cover_url = ?,
-                 description = ?, status = 'draft', revision = revision + 1,
+                 description = ?, serialization_status = ?, status = 'draft',
+                 revision = revision + 1,
                  updated_at = datetime('now')
              WHERE id = ?`,
             [
@@ -214,33 +233,29 @@ export async function aiNovelRoutes(app) {
               nextMetadata.category,
               nextMetadata.coverUrl,
               nextMetadata.description,
+              nextSerializationStatus,
               id,
             ],
           );
         } else {
           run(
             `UPDATE ai_novels
-             SET revision = revision + 1, updated_at = datetime('now')
+             SET serialization_status = ?, revision = revision + 1,
+                 updated_at = datetime('now')
              WHERE id = ?`,
-            [id],
+            [nextSerializationStatus, id],
           );
         }
-        run(
-          `DELETE FROM ai_novel_chapters
-           WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
-          [id],
-        );
-        const startOrder = published
-          ? Number(
-              one(
-                `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
-                 FROM ai_novel_chapters
-                 WHERE novel_id = ?`,
-                [id],
-              )?.next_order || 0,
-            )
-          : 0;
-        insertChapters(id, chapters, "draft", null, startOrder);
+        if (published) {
+          if (chaptersProvided) savePublishedChapterDrafts(id, chapters);
+        } else {
+          run(
+            `DELETE FROM ai_novel_chapters
+             WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
+            [id],
+          );
+          insertChapters(id, chapters, "draft");
+        }
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
@@ -283,7 +298,10 @@ export async function aiNovelRoutes(app) {
       ) {
         throw conflict("serial_chapter_review_in_progress");
       }
-      validateNovelForSubmission(current, chapterRows, {
+      const chaptersForValidation = current.status === "published"
+        ? effectivePublishedChapters(id, chapterRows)
+        : chapterRows;
+      validateNovelForSubmission(current, chaptersForValidation, {
         requireManagedCover: current.status !== "published",
       });
       const nextChapterStatus = publish ? "published" : "pending";
@@ -308,6 +326,11 @@ export async function aiNovelRoutes(app) {
             id,
           ],
         );
+        if (publish) {
+          for (const chapter of chapterRows) {
+            applyApprovedChapterRevision(chapter, request.user.id);
+          }
+        }
         if (current.status !== "published") {
           const nextNovelStatus = publish ? "published" : "pending";
           run(
@@ -387,8 +410,8 @@ export async function aiNovelRoutes(app) {
       const where = filters.join(" AND ");
       const items = all(
         `SELECT n.*, u.nickname AS owner_nickname, u.email AS owner_email,
-                COUNT(c.id) AS chapter_count,
-                SUM(CASE WHEN c.status = 'published' THEN 1 ELSE 0 END) AS published_chapter_count,
+                COUNT(CASE WHEN c.replaces_chapter_id IS NULL THEN c.id END) AS chapter_count,
+                SUM(CASE WHEN c.status = 'published' AND c.replaces_chapter_id IS NULL THEN 1 ELSE 0 END) AS published_chapter_count,
                 SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) AS pending_chapter_count
          FROM ai_novels n
          JOIN users u ON u.id = n.user_id
@@ -462,7 +485,9 @@ export async function aiNovelRoutes(app) {
       const publish = request.user.role === "admin";
       const startOrder = Number(
         one(
-          "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM ai_novel_chapters WHERE novel_id = ?",
+          `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
+           FROM ai_novel_chapters
+           WHERE novel_id = ? AND replaces_chapter_id IS NULL`,
           [novelId],
         )?.next_order || 0,
       );
@@ -505,7 +530,7 @@ export async function aiNovelRoutes(app) {
       const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
       const items = all(
         `SELECT n.*, u.nickname AS owner_nickname, u.email AS owner_email,
-                COUNT(c.id) AS chapter_count
+                COUNT(CASE WHEN c.replaces_chapter_id IS NULL THEN c.id END) AS chapter_count
          FROM ai_novels n
          JOIN users u ON u.id = n.user_id
          LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
@@ -540,13 +565,24 @@ export async function aiNovelRoutes(app) {
         ? "AND (c.title LIKE ? OR n.title LIKE ? OR u.nickname LIKE ? OR u.email LIKE ?)"
         : "";
       const searchParams = q ? Array(4).fill(`%${q}%`) : [];
+      const reviewedOnlySql = status === "pending"
+        ? ""
+        : `AND EXISTS (
+             SELECT 1 FROM ai_novel_review_events event
+             WHERE event.chapter_id = c.id
+           )`;
       const items = all(
-        `SELECT c.*, n.title AS novel_title, n.user_id,
-                u.nickname AS owner_nickname, u.email AS owner_email
-         FROM ai_novel_chapters c
-         JOIN ai_novels n ON n.id = c.novel_id
-         JOIN users u ON u.id = n.user_id
-         WHERE c.status = ? AND n.status = 'published' ${searchSql}
+         `SELECT c.*, n.title AS novel_title, n.user_id,
+                 original.title AS original_title,
+                 original.content AS original_content,
+                 original.sort_order AS original_sort_order,
+                 u.nickname AS owner_nickname, u.email AS owner_email
+          FROM ai_novel_chapters c
+          JOIN ai_novels n ON n.id = c.novel_id
+          JOIN users u ON u.id = n.user_id
+          LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
+          WHERE c.status = ? AND n.status = 'published'
+            ${reviewedOnlySql} ${searchSql}
          ORDER BY c.updated_at, c.id
          LIMIT ? OFFSET ?`,
         [status, ...searchParams, pageSize, offset],
@@ -557,7 +593,8 @@ export async function aiNovelRoutes(app) {
            FROM ai_novel_chapters c
            JOIN ai_novels n ON n.id = c.novel_id
            JOIN users u ON u.id = n.user_id
-           WHERE c.status = ? AND n.status = 'published' ${searchSql}`,
+            WHERE c.status = ? AND n.status = 'published'
+              ${reviewedOnlySql} ${searchSql}`,
           [status, ...searchParams],
         )?.count || 0,
       );
@@ -583,17 +620,21 @@ export async function aiNovelRoutes(app) {
       const chapterId = positiveInteger(request.params.chapterId, "chapter id");
       const chapter = one(
         `SELECT c.*, n.title AS novel_title, n.user_id,
+                original.title AS original_title,
+                original.content AS original_content,
+                original.sort_order AS original_sort_order,
                 u.nickname AS owner_nickname, u.email AS owner_email
          FROM ai_novel_chapters c
          JOIN ai_novels n ON n.id = c.novel_id
          JOIN users u ON u.id = n.user_id
+         LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
          WHERE c.id = ?`,
         [chapterId],
       );
       if (!chapter) throw notFound("chapter_not_found");
       return {
         item: creatorChapterJson(chapter, true),
-        reviews: reviewEventRows(chapter.novel_id),
+        reviews: reviewEventRows(chapter.novel_id, chapterId),
       };
     },
   );
@@ -701,8 +742,12 @@ export async function aiNovelRoutes(app) {
         requireExpectedRevision(request.body.expectedRevision, chapter.revision);
       }
       const status = decision === "approve" ? "published" : "rejected";
+      const isRevision = chapter.replaces_chapter_id != null;
       db.exec("BEGIN IMMEDIATE");
       try {
+        if (decision === "approve") {
+          applyApprovedChapterRevision(chapter, request.user.id);
+        }
         run(
           `UPDATE ai_novel_chapters
            SET status = ?, review_note = ?, reviewed_by = ?,
@@ -731,10 +776,12 @@ export async function aiNovelRoutes(app) {
            VALUES (?, ?, ?, 'ai_novel_review')`,
           [
             chapter.user_id,
-            status === "published" ? "连载章节审核通过" : "连载章节需要修改",
             status === "published"
-              ? `《${chapter.novel_title}》的“${chapter.title}”已发布。`
-              : `《${chapter.novel_title}》的“${chapter.title}”未通过审核：${reviewNote}`,
+              ? (isRevision ? "章节修改审核通过" : "连载章节审核通过")
+              : (isRevision ? "章节修改需要调整" : "连载章节需要修改"),
+            status === "published"
+              ? `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改已生效" : "已发布"}。`
+              : `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改" : "章节"}未通过审核：${reviewNote}`,
           ],
         );
         db.exec("COMMIT");
@@ -744,10 +791,14 @@ export async function aiNovelRoutes(app) {
       }
       const updated = one(
         `SELECT c.*, n.title AS novel_title, n.user_id,
+                original.title AS original_title,
+                original.content AS original_content,
+                original.sort_order AS original_sort_order,
                 u.nickname AS owner_nickname, u.email AS owner_email
          FROM ai_novel_chapters c
          JOIN ai_novels n ON n.id = c.novel_id
          JOIN users u ON u.id = n.user_id
+         LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
          WHERE c.id = ?`,
         [chapterId],
       );
@@ -983,8 +1034,223 @@ function structuredChapters(value) {
     if (totalCharacters > maxNovelCharacters) {
       throw badRequest("novel content is too long");
     }
-    return { title, content };
+    const id = chapter.id == null ? null : positiveInteger(chapter.id, `chapter ${index + 1} id`);
+    const publishedChapterId = chapter.publishedChapterId == null
+      ? null
+      : positiveInteger(
+          chapter.publishedChapterId,
+          `chapter ${index + 1} publishedChapterId`,
+        );
+    return { id, publishedChapterId, title, content };
   });
+}
+
+function savePublishedChapterDrafts(novelId, chapters) {
+  const publishedRows = all(
+    `SELECT * FROM ai_novel_chapters
+     WHERE novel_id = ? AND status = 'published' AND replaces_chapter_id IS NULL`,
+    [novelId],
+  );
+  const publishedById = new Map(publishedRows.map((row) => [Number(row.id), row]));
+  const editableRows = all(
+    `SELECT * FROM ai_novel_chapters
+     WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
+    [novelId],
+  );
+  const pendingRows = all(
+    `SELECT * FROM ai_novel_chapters
+     WHERE novel_id = ? AND status = 'pending'`,
+    [novelId],
+  );
+  const editableRevisions = new Map(
+    editableRows
+      .filter((row) => row.replaces_chapter_id != null)
+      .map((row) => [Number(row.replaces_chapter_id), row]),
+  );
+  const pendingRevisions = new Map(
+    pendingRows
+      .filter((row) => row.replaces_chapter_id != null)
+      .map((row) => [Number(row.replaces_chapter_id), row]),
+  );
+  const seenPublishedIds = new Set();
+
+  for (const chapter of chapters.filter((item) => item.publishedChapterId != null)) {
+    const publishedChapterId = Number(chapter.publishedChapterId);
+    if (seenPublishedIds.has(publishedChapterId)) {
+      throw badRequest("published chapter is duplicated");
+    }
+    seenPublishedIds.add(publishedChapterId);
+    const original = publishedById.get(publishedChapterId);
+    if (!original) throw badRequest("published chapter is invalid");
+
+    const pendingRevision = pendingRevisions.get(publishedChapterId);
+    if (pendingRevision) {
+      if (
+        pendingRevision.title !== chapter.title
+        || pendingRevision.content !== chapter.content
+      ) {
+        throw conflict("chapter_revision_in_progress");
+      }
+      continue;
+    }
+
+    const editableRevision = editableRevisions.get(publishedChapterId);
+    const unchanged = original.title === chapter.title && original.content === chapter.content;
+    if (unchanged) {
+      if (editableRevision) {
+        run("DELETE FROM ai_novel_chapters WHERE id = ?", [editableRevision.id]);
+      }
+      continue;
+    }
+
+    if (editableRevision) {
+      run(
+        `UPDATE ai_novel_chapters
+         SET title = ?, content = ?, status = 'draft', review_note = '',
+             revision = revision + 1, updated_at = datetime('now')
+         WHERE id = ?`,
+        [chapter.title, chapter.content, editableRevision.id],
+      );
+      continue;
+    }
+
+    const revisionOrder = Number(
+      one(
+        `SELECT COALESCE(MIN(sort_order), 0) - 1 AS next_order
+         FROM ai_novel_chapters WHERE novel_id = ?`,
+        [novelId],
+      )?.next_order ?? -1,
+    );
+    run(
+      `INSERT INTO ai_novel_chapters
+       (novel_id, title, content, sort_order, status, replaces_chapter_id)
+       VALUES (?, ?, ?, ?, 'draft', ?)`,
+      [novelId, chapter.title, chapter.content, revisionOrder, publishedChapterId],
+    );
+  }
+
+  const additions = chapters.filter((item) => item.publishedChapterId == null);
+  const editableAdditions = editableRows.filter((row) => row.replaces_chapter_id == null);
+  const editableAdditionsById = new Map(
+    editableAdditions.map((row) => [Number(row.id), row]),
+  );
+  const pendingAdditionsById = new Map(
+    pendingRows
+      .filter((row) => row.replaces_chapter_id == null)
+      .map((row) => [Number(row.id), row]),
+  );
+  const retainedIds = new Set();
+  const maximumOrder = Number(
+    one(
+      "SELECT COALESCE(MAX(sort_order), -1) AS maximum_order FROM ai_novel_chapters WHERE novel_id = ?",
+      [novelId],
+    )?.maximum_order ?? -1,
+  );
+  editableAdditions.forEach((row, index) => {
+    run("UPDATE ai_novel_chapters SET sort_order = ? WHERE id = ?", [
+      maximumOrder + maxChapterCount + index + 1,
+      row.id,
+    ]);
+  });
+  let nextAdditionOrder = Number(
+    one(
+      `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
+       FROM ai_novel_chapters
+       WHERE novel_id = ? AND replaces_chapter_id IS NULL
+         AND status NOT IN ('draft', 'rejected')`,
+      [novelId],
+    )?.next_order ?? 0,
+  );
+
+  for (const chapter of additions) {
+    const existingId = chapter.id == null ? null : Number(chapter.id);
+    const pendingAddition = existingId == null ? null : pendingAdditionsById.get(existingId);
+    if (pendingAddition) {
+      if (pendingAddition.title !== chapter.title || pendingAddition.content !== chapter.content) {
+        throw conflict("serial_chapter_review_in_progress");
+      }
+      continue;
+    }
+    const editableAddition = existingId == null ? null : editableAdditionsById.get(existingId);
+    if (existingId != null && !editableAddition) {
+      throw badRequest("draft chapter is invalid");
+    }
+    if (editableAddition) {
+      retainedIds.add(existingId);
+      run(
+        `UPDATE ai_novel_chapters
+         SET title = ?, content = ?, sort_order = ?, status = 'draft',
+             review_note = '', revision = revision + 1,
+             updated_at = datetime('now')
+         WHERE id = ?`,
+        [chapter.title, chapter.content, nextAdditionOrder, existingId],
+      );
+    } else {
+      run(
+        `INSERT INTO ai_novel_chapters
+         (novel_id, title, content, sort_order, status)
+         VALUES (?, ?, ?, ?, 'draft')`,
+        [novelId, chapter.title, chapter.content, nextAdditionOrder],
+      );
+    }
+    nextAdditionOrder += 1;
+  }
+
+  for (const row of editableAdditions) {
+    if (!retainedIds.has(Number(row.id))) {
+      run("DELETE FROM ai_novel_chapters WHERE id = ?", [row.id]);
+    }
+  }
+}
+
+function effectivePublishedChapters(novelId, submittedRows) {
+  const publishedRows = all(
+    `SELECT * FROM ai_novel_chapters
+     WHERE novel_id = ? AND status = 'published' AND replaces_chapter_id IS NULL
+     ORDER BY sort_order, id`,
+    [novelId],
+  );
+  const replacements = new Map();
+  const additions = [];
+  for (const chapter of submittedRows) {
+    if (chapter.replaces_chapter_id == null) {
+      additions.push(chapter);
+      continue;
+    }
+    const sourceId = Number(chapter.replaces_chapter_id);
+    if (replacements.has(sourceId)) throw badRequest("published chapter is duplicated");
+    replacements.set(sourceId, chapter);
+  }
+  const publishedIds = new Set(publishedRows.map((chapter) => Number(chapter.id)));
+  for (const sourceId of replacements.keys()) {
+    if (!publishedIds.has(sourceId)) throw badRequest("published chapter is invalid");
+  }
+  return [
+    ...publishedRows.map((chapter) => replacements.get(Number(chapter.id)) || chapter),
+    ...additions,
+  ];
+}
+
+function applyApprovedChapterRevision(chapter, reviewerId) {
+  if (chapter.replaces_chapter_id == null) return;
+  const result = run(
+    `UPDATE ai_novel_chapters
+     SET title = ?, content = ?, revision = revision + 1,
+         reviewed_by = ?, reviewed_at = datetime('now'),
+         published_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ? AND novel_id = ? AND status = 'published'
+       AND replaces_chapter_id IS NULL`,
+    [
+      chapter.title,
+      chapter.content,
+      reviewerId,
+      chapter.replaces_chapter_id,
+      chapter.novel_id,
+    ],
+  );
+  if (Number(result.changes || 0) !== 1) {
+    throw conflict("published_chapter_revision_conflict");
+  }
 }
 
 function draftNovelMetadata(body, user, current = {}) {
@@ -1085,10 +1351,21 @@ function novelPayload(body, user) {
   const category = optionalString(body.category, 40) || "AI原创";
   const coverUrl = optionalString(body.coverUrl, 1000);
   const description = requiredString(body.description, "description", 2000);
+  const serializationStatus = novelSerializationStatus(body.serializationStatus, {
+    optional: true,
+  }) || "ongoing";
   const content = requiredString(body.content, "content", maxNovelCharacters);
   const chapters = splitNovelChapters(content);
   if (!chapters.length) throw badRequest("novel content is empty");
-  return { title, penName, category, coverUrl, description, chapters };
+  return {
+    title,
+    penName,
+    category,
+    coverUrl,
+    description,
+    serializationStatus,
+    chapters,
+  };
 }
 
 function splitNovelChapters(rawContent) {
@@ -1120,11 +1397,12 @@ function insertNovel(payload) {
   try {
     const result = run(
       `INSERT INTO ai_novels
-       (user_id, title, pen_name, category, cover_url, description, status,
-        submitted_at, reviewed_by, reviewed_at, published_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?,
-                CASE WHEN ? IS NULL THEN '' ELSE datetime('now') END,
-                CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END)`,
+       (user_id, title, pen_name, category, cover_url, description,
+        serialization_status, status, submitted_at, reviewed_by, reviewed_at,
+        published_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?,
+                 CASE WHEN ? IS NULL THEN '' ELSE datetime('now') END,
+                 CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END)`,
       [
         payload.userId,
         payload.title,
@@ -1132,6 +1410,7 @@ function insertNovel(payload) {
         payload.category,
         payload.coverUrl,
         payload.description,
+        payload.serializationStatus,
         payload.status,
         payload.reviewerId,
         payload.reviewerId,
@@ -1157,9 +1436,10 @@ function replaceNovel(id, payload, publish, reviewerId) {
   db.exec("BEGIN IMMEDIATE");
   try {
     run(
-      `UPDATE ai_novels
-       SET title = ?, pen_name = ?, category = ?, cover_url = ?, description = ?,
-           status = ?, review_note = '', reviewed_by = ?,
+       `UPDATE ai_novels
+        SET title = ?, pen_name = ?, category = ?, cover_url = ?, description = ?,
+            serialization_status = ?,
+            status = ?, review_note = '', reviewed_by = ?,
            revision = revision + 1, submitted_at = datetime('now'),
            reviewed_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
            published_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
@@ -1171,6 +1451,7 @@ function replaceNovel(id, payload, publish, reviewerId) {
         payload.category,
         payload.coverUrl,
         payload.description,
+        payload.serializationStatus,
         publish ? "published" : "pending",
         publish ? reviewerId : null,
         publish ? 1 : 0,
@@ -1231,7 +1512,8 @@ function requirePublicNovel(rawId) {
             COUNT(c.id) AS chapter_count
      FROM ai_novels n
      JOIN users u ON u.id = n.user_id
-     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id AND c.status = 'published'
+     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+       AND c.status = 'published' AND c.replaces_chapter_id IS NULL
      WHERE n.id = ? AND n.status = 'published'
      GROUP BY n.id`,
     [id],
@@ -1243,9 +1525,9 @@ function requirePublicNovel(rawId) {
 function creatorNovelRow(id) {
   return one(
     `SELECT n.*, u.nickname AS owner_nickname, u.email AS owner_email,
-            COUNT(c.id) AS chapter_count,
-            SUM(CASE WHEN c.status = 'published' THEN 1 ELSE 0 END) AS published_chapter_count,
-            SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) AS pending_chapter_count
+             COUNT(CASE WHEN c.replaces_chapter_id IS NULL THEN c.id END) AS chapter_count,
+             SUM(CASE WHEN c.status = 'published' AND c.replaces_chapter_id IS NULL THEN 1 ELSE 0 END) AS published_chapter_count,
+             SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) AS pending_chapter_count
      FROM ai_novels n
      JOIN users u ON u.id = n.user_id
      LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
@@ -1265,7 +1547,8 @@ function publicNovelJson(row) {
     category: row.category || "AI原创",
     sourceId: "ai-creation",
     sourceName: "AI 创作区",
-    status: "连载中",
+    serializationStatus: row.serialization_status || "ongoing",
+    status: row.serialization_status === "completed" ? "已完结" : "连载中",
     chapterCount: Number(row.chapter_count || 0),
     totalChapters: Number(row.chapter_count || 0),
     publishedAt: row.published_at || "",
@@ -1276,11 +1559,19 @@ function publicNovelJson(row) {
 
 function creatorChapterRows(novelId) {
   return all(
-    `SELECT c.*, n.title AS novel_title, n.user_id
+    `SELECT c.*, n.title AS novel_title, n.user_id,
+            original.title AS original_title,
+            original.content AS original_content,
+            original.sort_order AS original_sort_order
      FROM ai_novel_chapters c
      JOIN ai_novels n ON n.id = c.novel_id
+     LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
      WHERE c.novel_id = ?
-     ORDER BY c.sort_order, c.id`,
+       AND (c.replaces_chapter_id IS NULL
+            OR c.status IN ('draft', 'pending', 'rejected'))
+     ORDER BY COALESCE(original.sort_order, c.sort_order),
+              CASE WHEN c.replaces_chapter_id IS NULL THEN 0 ELSE 1 END,
+              c.id`,
     [novelId],
   );
 }
@@ -1291,8 +1582,19 @@ function creatorChapterJson(row, includeContent = false) {
     novelId: Number(row.novel_id),
     novelTitle: row.novel_title || "",
     title: row.title,
-    index: Number(row.sort_order || 0),
+    index: Number(row.original_sort_order ?? row.sort_order ?? 0),
     status: row.status,
+    replacesChapterId: row.replaces_chapter_id == null
+      ? null
+      : Number(row.replaces_chapter_id),
+    publishedChapterId: row.replaces_chapter_id == null
+      ? (row.status === "published" ? Number(row.id) : null)
+      : Number(row.replaces_chapter_id),
+    changeType: row.replaces_chapter_id != null
+      ? "update"
+      : row.status === "published"
+        ? "published"
+        : "add",
     reviewNote: row.review_note || "",
     revision: Number(row.revision || 1),
     submittedAt: row.submitted_at || "",
@@ -1304,7 +1606,11 @@ function creatorChapterJson(row, includeContent = false) {
     createdAt: row.created_at || "",
     updatedAt: row.updated_at || "",
   };
-  if (includeContent) item.content = row.content || "";
+  if (includeContent) {
+    item.content = row.content || "";
+    item.originalTitle = row.original_title || "";
+    item.originalContent = row.original_content || "";
+  }
   return item;
 }
 
@@ -1316,6 +1622,7 @@ function creatorNovelJson(row) {
     ownerNickname: row.owner_nickname || "",
     ownerEmail: row.owner_email || "",
     status: row.status,
+    serializationStatus: row.serialization_status || "ongoing",
     reviewNote: row.review_note || "",
     revision: Number(row.revision || 1),
     submittedAt: row.submitted_at || "",
@@ -1349,6 +1656,15 @@ function aiNovelStatus(value, { optional = false } = {}) {
   if (!status && optional) return "";
   if (!["draft", "pending", "published", "rejected"].includes(status)) {
     throw badRequest("status is invalid");
+  }
+  return status;
+}
+
+function novelSerializationStatus(value, { optional = false } = {}) {
+  const status = optionalString(value, 30);
+  if (!status && optional) return "";
+  if (!["ongoing", "completed"].includes(status)) {
+    throw badRequest("serialization status is invalid");
   }
   return status;
 }

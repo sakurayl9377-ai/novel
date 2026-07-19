@@ -90,7 +90,7 @@ class AiCreationService {
       id: json['id']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
       author: json['author']?.toString() ?? 'AI 创作者',
-      coverUrl: json['coverUrl']?.toString() ?? '',
+      coverUrl: _resolveBackendUrl(json['coverUrl']),
       description: json['description']?.toString() ?? '',
       sourceId: sourceId,
       sourceName: sourceName,
@@ -100,6 +100,28 @@ class AiCreationService {
       chapterCount: chapterCount,
       totalChapters: chapterCount,
     );
+  }
+
+  String _resolveBackendUrl(Object? rawValue) {
+    final value = rawValue?.toString().trim() ?? '';
+    if (value.isEmpty) return '';
+    final uri = Uri.tryParse(value);
+    if (uri?.hasScheme ?? false) return value;
+
+    final baseUri = Uri.parse(InteractionAuthService.baseUrl);
+    if (value.startsWith('//')) return baseUri.resolve(value).toString();
+    if (value.startsWith('/')) {
+      return baseUri
+          .replace(path: value, query: null, fragment: null)
+          .toString();
+    }
+    final basePath = baseUri.path.endsWith('/')
+        ? baseUri.path
+        : '${baseUri.path}/';
+    return baseUri
+        .replace(path: basePath, query: null, fragment: null)
+        .resolve(value)
+        .toString();
   }
 
   String _numericId(String value) => value.replaceFirst(RegExp(r'^ai-'), '');

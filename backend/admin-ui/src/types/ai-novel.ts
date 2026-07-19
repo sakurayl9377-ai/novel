@@ -1,4 +1,6 @@
 export type AiNovelStatus = 'draft' | 'pending' | 'published' | 'rejected';
+export type AiNovelSerializationStatus = 'ongoing' | 'completed';
+export type AiChapterChangeType = 'published' | 'add' | 'update';
 export type AiReviewDecision = 'approve' | 'reject' | 'direct_publish';
 
 export interface AiNovelSummary {
@@ -10,6 +12,7 @@ export interface AiNovelSummary {
   description: string;
   category: string;
   status: AiNovelStatus;
+  serializationStatus: AiNovelSerializationStatus;
   reviewNote: string;
   revision: number;
   chapterCount: number;
@@ -33,6 +36,11 @@ export interface AiNovelChapter {
   content?: string;
   index: number;
   status: AiNovelStatus;
+  replacesChapterId: number | null;
+  publishedChapterId: number | null;
+  changeType: AiChapterChangeType;
+  originalTitle?: string;
+  originalContent?: string;
   reviewNote: string;
   revision: number;
   ownerId: number;
@@ -80,6 +88,14 @@ export interface EditableChapter {
   clientId: string;
   title: string;
   content: string;
+  id?: number;
+  publishedChapterId?: number | null;
+  workflowStatus?: AiNovelStatus;
+  changeType?: AiChapterChangeType;
+  reviewNote?: string;
+  originalTitle?: string;
+  originalContent?: string;
+  locked?: boolean;
 }
 
 export interface CoverUploadResponse {

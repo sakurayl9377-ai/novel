@@ -95,6 +95,7 @@ test("AI novel migration preserves legacy submissions and enables drafts", () =>
     const migrated = one("SELECT * FROM ai_novels WHERE title = '旧版投稿'");
     assert.equal(migrated.status, "pending");
     assert.equal(migrated.revision, 1);
+    assert.equal(migrated.serialization_status, "ongoing");
     assert.ok(migrated.submitted_at);
     assert.equal(
       one("SELECT content FROM ai_novel_chapters WHERE novel_id = ?", [migrated.id])
@@ -123,6 +124,22 @@ test("AI novel migration preserves legacy submissions and enables drafts", () =>
            AND name = 'trg_active_upload_ai_novels_cover_url_retirement'`,
       ),
       "managed upload reference trigger must be rebuilt after table migration",
+    );
+    assert.ok(
+      one(
+        `SELECT 1 AS present
+         FROM pragma_table_info('ai_novel_chapters')
+         WHERE name = 'replaces_chapter_id'`,
+      ),
+      "chapter revision linkage must be added to legacy databases",
+    );
+    assert.ok(
+      one(
+        `SELECT 1 AS present
+         FROM sqlite_master
+         WHERE type = 'index' AND name = 'idx_ai_novel_chapter_active_revision'`,
+      ),
+      "only one active revision may exist for each published chapter",
     );
   } finally {
     closeDb();

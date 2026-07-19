@@ -112,6 +112,8 @@ function friendlyApiError(code: string): string {
     novel_cannot_be_deleted: '审核中或已发布的作品不能删除',
     chapter_requires_novel_review: '该章节属于整书投稿，请在整书审核队列中处理',
     serial_chapter_review_in_progress: '已有连载章节正在审核，请等待本批次完成后再提交',
+    chapter_revision_in_progress: '该章节已有修改稿正在审核，审核完成前不能再次变更',
+    published_chapter_revision_conflict: '线上章节已发生变化，请重新加载后再修改',
     chat_room_exists: '这个房间 ID 已存在，请使用自动生成或换一个 ID',
     chat_room_id_invalid: '房间 ID 格式不正确，请仅使用字母、数字、点、冒号、下划线或短横线',
     chat_room_dissolved: '房间已经解散，成员关系已移除，不能再编辑',

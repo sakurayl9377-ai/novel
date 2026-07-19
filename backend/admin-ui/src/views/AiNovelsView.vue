@@ -218,6 +218,15 @@ function editorActionLabel(status: AiNovelStatus): string {
   }[status];
 }
 
+function serializationLabel(status: string): string {
+  return status === 'completed' ? '已完结' : '连载中';
+}
+
+function chapterChangeLabel(value: unknown): string {
+  const chapter = value as AiNovelChapter;
+  return chapter.changeType === 'update' ? '修改' : '新增';
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败，请稍后重试';
 }
@@ -229,7 +238,7 @@ function errorMessage(error: unknown): string {
       <div class="workflow-copy">
         <span class="eyebrow">AI NOVEL WORKFLOW</span>
         <h2>从文件导入到发布，每一步都可预览、可修改、可追踪</h2>
-        <p>封面直接上传，TXT / Markdown 自动识别编码和章节；审核员能阅读全文，驳回后保留意见并支持重新提交。</p>
+        <p>封面直接上传，TXT / Markdown 自动识别编码和章节；已发布章节可修订和续写，每次变更均经过审核并保留记录。</p>
       </div>
       <div class="workflow-steps" aria-label="AI 小说工作流">
         <div><b>1</b><span><strong>上传与拆章</strong><small>先预览，不直接发布</small></span></div>
@@ -281,14 +290,22 @@ function errorMessage(error: unknown): string {
                 </div>
               </template>
             </ElTableColumn>
-            <ElTableColumn label="状态" width="112">
+            <ElTableColumn label="状态" width="170">
               <template #default="scope">
-                <ElTag :type="statusType(scope.row.status)" effect="light">{{ statusLabel(scope.row.status) }}</ElTag>
+                <div class="status-tags">
+                  <ElTag :type="statusType(scope.row.status)" effect="light">{{ statusLabel(scope.row.status) }}</ElTag>
+                  <ElTag v-if="scope.row.status === 'published'" type="info" effect="plain">
+                    {{ serializationLabel(scope.row.serializationStatus) }}
+                  </ElTag>
+                </div>
               </template>
             </ElTableColumn>
             <ElTableColumn label="章节" width="126">
               <template #default="scope">
-                <div class="chapter-count"><strong>{{ scope.row.chapterCount }}</strong><small>总章节</small></div>
+                <div class="chapter-count">
+                  <strong>{{ scope.row.publishedChapterCount }}</strong>
+                  <small>已发布 / {{ scope.row.chapterCount }} 当前</small>
+                </div>
               </template>
             </ElTableColumn>
             <ElTableColumn label="最近更新" width="150">
@@ -336,7 +353,7 @@ function errorMessage(error: unknown): string {
               <UploadFilled /><span><strong>整书首发审核</strong><small>{{ pendingNovelCount }} 项待处理</small></span>
             </button>
             <button :class="{ active: reviewMode === 'chapter' }" type="button" @click="changeReviewMode('chapter')">
-              <Reading /><span><strong>连载章节审核</strong><small>{{ pendingChapterCount }} 项待处理</small></span>
+              <Reading /><span><strong>章节新增与修改</strong><small>{{ pendingChapterCount }} 项待处理</small></span>
             </button>
           </div>
 
@@ -404,6 +421,13 @@ function errorMessage(error: unknown): string {
             </ElTableColumn>
             <ElTableColumn label="投稿人" min-width="200">
               <template #default="scope"><div class="owner-cell"><strong>{{ scope.row.ownerNickname }}</strong><small>{{ scope.row.ownerEmail }}</small></div></template>
+            </ElTableColumn>
+            <ElTableColumn label="变更" width="88">
+              <template #default="scope">
+                <ElTag :type="scope.row.changeType === 'update' ? 'warning' : 'success'" effect="plain">
+                  {{ chapterChangeLabel(scope.row) }}
+                </ElTag>
+              </template>
             </ElTableColumn>
             <ElTableColumn label="状态" width="100">
               <template #default="scope"><ElTag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</ElTag></template>
@@ -686,6 +710,13 @@ function errorMessage(error: unknown): string {
 .chapter-count small {
   color: var(--ink-500);
   font-size: 10px;
+}
+
+.status-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .pagination-row {

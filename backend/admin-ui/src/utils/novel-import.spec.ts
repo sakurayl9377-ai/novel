@@ -1,4 +1,11 @@
-import { decodeNovelFile, NovelImportError, parseNovelText } from './novel-import';
+import {
+  chapterTitleFromFileName,
+  decodeNovelFile,
+  NovelImportError,
+  parseNovelFiles,
+  parseNovelText,
+  type NovelImportFile,
+} from './novel-import';
 
 describe('novel import', () => {
   it('detects UTF-8 and splits Chinese and Markdown chapter headings', async () => {
@@ -37,4 +44,62 @@ describe('novel import', () => {
 
     expect(() => parseNovelText(source)).toThrowError(NovelImportError);
   });
+
+  it('sorts multiple chapter files naturally and imports one chapter per file', async () => {
+    const parsed = await parseNovelFiles([
+      namedFile('010_第十章_终点.txt', '第十章 终点\n第十章正文'),
+      namedFile('002_第二章_购物清单.txt', '第二章 购物清单\n第二章正文'),
+      namedFile('001_第一章_饿死的人、_醒了.txt', '第一章 饿死的人、醒了\n第一章正文'),
+    ]);
+
+    expect(parsed.orderedFileNames).toEqual([
+      '001_第一章_饿死的人、_醒了.txt',
+      '002_第二章_购物清单.txt',
+      '010_第十章_终点.txt',
+    ]);
+    expect(parsed.chapters.map((chapter) => chapter.title)).toEqual([
+      '第一章 饿死的人、醒了',
+      '第二章 购物清单',
+      '第十章 终点',
+    ]);
+    expect(parsed.chapters.map((chapter) => chapter.content)).toEqual([
+      '第一章正文',
+      '第二章正文',
+      '第十章正文',
+    ]);
+  });
+
+  it('builds readable chapter titles from numbered file names', () => {
+    expect(chapterTitleFromFileName('001_第一章_饿死的人、_醒了.txt')).toBe(
+      '第一章 饿死的人、醒了',
+    );
+    expect(chapterTitleFromFileName('023-第二十三章-陈浩的价码.md')).toBe(
+      '第二十三章-陈浩的价码',
+    );
+  });
+
+  it('keeps full-book auto splitting when only one file is selected', async () => {
+    const parsed = await parseNovelFiles([
+      namedFile('整本小说.txt', '第一章 开始\n正文一\n\n第二章 继续\n正文二'),
+    ]);
+
+    expect(parsed.fileCount).toBe(1);
+    expect(parsed.chapters.map((chapter) => chapter.title)).toEqual([
+      '第一章 开始',
+      '第二章 继续',
+    ]);
+  });
+
+  it('rejects the whole batch when a chapter file has no body', async () => {
+    await expect(parseNovelFiles([
+      namedFile('001_第一章.txt', '第一章 开始\n正文'),
+      namedFile('002_第二章.txt', '第二章 空章'),
+    ])).rejects.toThrow('“002_第二章.txt”缺少章节正文');
+  });
 });
+
+function namedFile(name: string, content: BlobPart): NovelImportFile {
+  const file = new Blob([content]) as NovelImportFile;
+  Object.defineProperty(file, 'name', { value: name });
+  return file;
+}

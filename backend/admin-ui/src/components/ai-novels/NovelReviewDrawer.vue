@@ -49,6 +49,11 @@ const title = computed(() => isNovel.value
 const pending = computed(() => isNovel.value
   ? novelDetail.value?.item.status === 'pending'
   : chapterDetail.value?.item.status === 'pending');
+const isChapterRevision = computed(() =>
+  !isNovel.value && chapterDetail.value?.item.changeType === 'update',
+);
+const chapterChangeLabel = computed(() => isChapterRevision.value ? '修改已发布章节' : '新增连载章节');
+const approveLabel = computed(() => isChapterRevision.value ? '通过并更新' : '通过并发布');
 const reviews = computed<AiNovelReviewEvent[]>(() =>
   isNovel.value ? novelDetail.value?.reviews || [] : chapterDetail.value?.reviews || [],
 );
@@ -119,7 +124,9 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
     rejectionOpen.value = false;
     emit('reviewed');
     emit('update:modelValue', false);
-    ElMessage.success(decision === 'approve' ? '审核通过，内容已发布' : '已退回创作者修改');
+    ElMessage.success(decision === 'approve'
+      ? (isChapterRevision.value ? '审核通过，线上章节已更新' : '审核通过，内容已发布')
+      : '已退回创作者修改');
   } catch (error) {
     ElMessage.error(errorMessage(error));
     if (error instanceof ApiError && error.code === 'revision_conflict') {
@@ -157,7 +164,7 @@ function errorMessage(error: unknown): string {
         <div>
           <span class="eyebrow">REVIEW WORKBENCH</span>
           <h2>{{ title }}</h2>
-          <p>{{ isNovel ? '整书首次发布审核' : `《${chapterDetail?.item.novelTitle || ''}》连载章节审核` }}</p>
+          <p>{{ isNovel ? '整书首次发布审核' : `《${chapterDetail?.item.novelTitle || ''}》${chapterChangeLabel}` }}</p>
         </div>
       </div>
     </template>
@@ -171,6 +178,9 @@ function errorMessage(error: unknown): string {
             <ElDescriptions :column="2" border>
               <ElDescriptionsItem label="作者">{{ novelDetail.item.author }}</ElDescriptionsItem>
               <ElDescriptionsItem label="分类">{{ novelDetail.item.category }}</ElDescriptionsItem>
+              <ElDescriptionsItem label="连载状态">
+                {{ novelDetail.item.serializationStatus === 'completed' ? '已完结' : '连载中' }}
+              </ElDescriptionsItem>
               <ElDescriptionsItem label="投稿人">
                 {{ novelDetail.item.ownerNickname }} · {{ novelDetail.item.ownerEmail }}
               </ElDescriptionsItem>
@@ -214,8 +224,31 @@ function errorMessage(error: unknown): string {
             {{ chapterDetail.item.ownerNickname }} · {{ chapterDetail.item.ownerEmail }}
           </ElDescriptionsItem>
           <ElDescriptionsItem label="提交版本">R{{ chapterDetail.item.revision }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="变更类型">
+            <ElTag :type="isChapterRevision ? 'warning' : 'success'" effect="plain">
+              {{ chapterChangeLabel }}
+            </ElTag>
+          </ElDescriptionsItem>
         </ElDescriptions>
-        <section class="review-section chapter-only-section">
+        <section v-if="isChapterRevision" class="review-section chapter-comparison-section">
+          <header>
+            <div><span class="eyebrow">REVISION DIFF</span><h3>线上版本与修改稿对照</h3></div>
+            <ElTag type="warning" effect="plain">审核通过后替换线上内容</ElTag>
+          </header>
+          <div class="chapter-comparison">
+            <section>
+              <span>当前线上版本</span>
+              <h4>{{ chapterDetail.item.originalTitle }}</h4>
+              <article class="chapter-text">{{ chapterDetail.item.originalContent }}</article>
+            </section>
+            <section>
+              <span>待审修改稿</span>
+              <h4>{{ chapterDetail.item.title }}</h4>
+              <article class="chapter-text">{{ chapterDetail.item.content }}</article>
+            </section>
+          </div>
+        </section>
+        <section v-else class="review-section chapter-only-section">
           <header><div><span class="eyebrow">CHAPTER TEXT</span><h3>{{ chapterDetail.item.title }}</h3></div></header>
           <article class="chapter-text">{{ chapterDetail.item.content }}</article>
         </section>
@@ -240,20 +273,22 @@ function errorMessage(error: unknown): string {
 
     <template #footer>
       <div class="review-footer">
-        <span v-if="pending">请确认正文完整、章节边界正确、封面与简介合规。</span>
+        <span v-if="pending">
+          {{ isChapterRevision ? '请对照线上版本确认修改内容。' : '请确认正文完整、章节边界正确、封面与简介合规。' }}
+        </span>
         <span v-else>该内容已完成审核。</span>
         <ElButton @click="emit('update:modelValue', false)">关闭</ElButton>
         <ElButton v-if="pending" type="danger" plain :icon="CloseBold" @click="openRejection">退回修改</ElButton>
         <ElPopconfirm
           v-if="pending"
-          title="确认审核通过并立即发布？"
+          :title="isChapterRevision ? '确认通过并替换当前线上章节？' : '确认审核通过并立即发布？'"
           width="220"
-          confirm-button-text="通过并发布"
+          :confirm-button-text="approveLabel"
           cancel-button-text="取消"
           @confirm="decide('approve')"
         >
           <template #reference>
-            <ElButton type="primary" :icon="Check" :loading="deciding">通过并发布</ElButton>
+            <ElButton type="primary" :icon="Check" :loading="deciding">{{ approveLabel }}</ElButton>
           </template>
         </ElPopconfirm>
       </div>
@@ -449,6 +484,38 @@ function errorMessage(error: unknown): string {
   min-height: 360px;
 }
 
+.chapter-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.chapter-comparison > section {
+  min-width: 0;
+}
+
+.chapter-comparison > section + section {
+  border-left: 1px solid var(--line);
+}
+
+.chapter-comparison > section > span {
+  display: block;
+  padding: 12px 18px 0;
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chapter-comparison h4 {
+  margin: 5px 18px 0;
+  font-size: 15px;
+}
+
+.chapter-comparison .chapter-text {
+  min-height: 360px;
+  max-height: 560px;
+  padding-top: 14px;
+}
+
 .history-section :deep(.el-timeline) {
   margin: 0;
   padding: 22px 28px 10px;
@@ -495,6 +562,15 @@ function errorMessage(error: unknown): string {
 
   .review-footer > span:first-child {
     width: 100%;
+  }
+
+  .chapter-comparison {
+    grid-template-columns: 1fr;
+  }
+
+  .chapter-comparison > section + section {
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
 }
 </style>
