@@ -11,6 +11,10 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CampaignDetailDrawer: typeof import('./components/growth-operations/CampaignDetailDrawer.vue')['default']
+    CampaignEditorDrawer: typeof import('./components/growth-operations/CampaignEditorDrawer.vue')['default']
+    CampaignStatusDialog: typeof import('./components/growth-operations/CampaignStatusDialog.vue')['default']
+    CampaignTaskDialog: typeof import('./components/growth-operations/CampaignTaskDialog.vue')['default']
     ChatKeywordDrawer: typeof import('./components/chat/ChatKeywordDrawer.vue')['default']
     ChatMembersDrawer: typeof import('./components/chat/ChatMembersDrawer.vue')['default']
     ChatMessageDrawer: typeof import('./components/chat/ChatMessageDrawer.vue')['default']
@@ -25,6 +29,7 @@ declare module 'vue' {
     ElCollapse: typeof import('element-plus/es')['ElCollapse']
     ElCollapseItem: typeof import('element-plus/es')['ElCollapseItem']
     ElConfigProvider: typeof import('element-plus/es')['ElConfigProvider']
+    ElDatePicker: typeof import('element-plus/es')['ElDatePicker']
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
@@ -43,6 +48,7 @@ declare module 'vue' {
     ElOption: typeof import('element-plus/es')['ElOption']
     ElPagination: typeof import('element-plus/es')['ElPagination']
     ElPopconfirm: typeof import('element-plus/es')['ElPopconfirm']
+    ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
     ElRadioGroup: typeof import('element-plus/es')['ElRadioGroup']
     ElScrollbar: typeof import('element-plus/es')['ElScrollbar']
@@ -66,6 +72,7 @@ declare module 'vue' {
     MetricCard: typeof import('./components/MetricCard.vue')['default']
     NovelEditorDrawer: typeof import('./components/ai-novels/NovelEditorDrawer.vue')['default']
     NovelReviewDrawer: typeof import('./components/ai-novels/NovelReviewDrawer.vue')['default']
+    RankingControlDialog: typeof import('./components/growth-operations/RankingControlDialog.vue')['default']
     ReportDetailDrawer: typeof import('./components/moderation/ReportDetailDrawer.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

@@ -332,7 +332,7 @@ export function rankingBoard({ period = "weekly", metric = "hot", contentType = 
      GROUP BY c.stable_key`,
     [`-${days - 1} days`, ...(["novel", "manga", "anime"].includes(contentType) ? [contentType] : [])],
   );
-  const controls = rankingControls(`${period}_${metric}`, metric);
+  const controls = rankingControls(metric, `${period}_${metric}`);
   const now = Date.now();
   return rows
     .map((row) => {
@@ -398,9 +398,16 @@ export function activityFeed({ userId = 0, versionCode = 0 } = {}) {
     }));
 }
 
-export function claimActivityReward({ userId, campaignId, taskId, idempotencyKey = "" }) {
+export function claimActivityReward({
+  userId,
+  campaignId,
+  taskId,
+  idempotencyKey = "",
+  versionCode = 0,
+}) {
   const task = one(
-    `SELECT t.*, c.status AS campaign_status, c.starts_at, c.ends_at
+    `SELECT t.*, c.status AS campaign_status, c.starts_at, c.ends_at,
+            c.audience_json, c.min_version_code, c.max_version_code
      FROM activity_tasks t JOIN campaigns c ON c.id = t.campaign_id
      WHERE t.id = ? AND t.campaign_id = ?`,
     [taskId, campaignId],
@@ -408,6 +415,9 @@ export function claimActivityReward({ userId, campaignId, taskId, idempotencyKey
   if (!task || task.status !== "active") throw badRequest("activity task not found");
   if (task.campaign_status !== "active" || !dateWindowActive(task.starts_at, task.ends_at)) {
     throw badRequest("campaign is not active");
+  }
+  if (!campaignTaskAllows(task, userId, { versionCode })) {
+    throw badRequest("campaign is not available for this user");
   }
   const existing = one(
     "SELECT * FROM reward_claims WHERE task_id = ? AND user_id = ?",
@@ -997,18 +1007,20 @@ function creditDynamicReward({ userId, points, coins, action, description, relat
 }
 
 function rankingControls(...keys) {
+  const orderedKeys = ["all", ...keys];
   const rows = all(
     `SELECT * FROM content_ranking_controls
-     WHERE ranking_key IN (${["all", ...keys].map(() => "?").join(",")})
-     ORDER BY CASE WHEN ranking_key = 'all' THEN 0 ELSE 1 END`,
-    ["all", ...keys],
+     WHERE ranking_key IN (${orderedKeys.map(() => "?").join(",")})`,
+    orderedKeys,
+  ).sort(
+    (left, right) => orderedKeys.indexOf(left.ranking_key) - orderedKeys.indexOf(right.ranking_key),
   );
   const result = new Map();
   for (const row of rows) {
     const current = result.get(row.content_key) || {};
     result.set(row.content_key, {
-      pinned: Boolean(row.pinned) || Boolean(current.pinned),
-      excluded: Boolean(row.excluded) || Boolean(current.excluded),
+      pinned: Boolean(row.pinned),
+      excluded: Boolean(row.excluded),
       manualWeight: Number(current.manualWeight || 0) + Number(row.manual_weight || 0),
     });
   }

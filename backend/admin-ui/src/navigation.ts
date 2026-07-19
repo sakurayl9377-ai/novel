@@ -70,7 +70,7 @@ export const navigationGroups: NavigationGroup[] = [
     key: 'operations',
     label: '增长与运营',
     items: [
-      { label: '增长运营', route: 'growth-ops', icon: Histogram, adminOnly: true, legacy: true },
+      { label: '增长运营', route: 'growth-ops', icon: Histogram, adminOnly: true },
       { label: '赛马运营', route: 'race', icon: Promotion, adminOnly: true, legacy: true },
       { label: '通知发布', route: 'notifications', icon: Bell, adminOnly: true, legacy: true },
     ],

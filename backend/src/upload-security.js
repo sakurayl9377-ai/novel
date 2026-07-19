@@ -18,6 +18,7 @@ export const managedUploadFolders = new Set([
   "chat-files",
   "novel-covers",
   "shop-previews",
+  "campaign-banners",
 ]);
 
 export function validateUploadBytes(mimeType, bytes) {

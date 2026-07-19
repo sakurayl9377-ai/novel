@@ -898,6 +898,7 @@ export function migrate() {
       excluded INTEGER NOT NULL DEFAULT 0,
       manual_weight REAL NOT NULL DEFAULT 0,
       note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
       updated_by INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1008,12 +1009,30 @@ export function migrate() {
       revision INTEGER NOT NULL,
       campaign_json TEXT NOT NULL,
       tasks_json TEXT NOT NULL DEFAULT '[]',
+      note TEXT NOT NULL DEFAULT '',
       changed_by INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (campaign_id, revision),
       FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
       FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS growth_operation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (entity_type IN ('ranking_control', 'campaign', 'campaign_task'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_growth_operation_events_entity
+      ON growth_operation_events(entity_type, entity_key, created_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS horse_race_seasons (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1280,6 +1299,7 @@ export function migrate() {
   addMissingColumn("content_source_health", "observed_latency_total_ms", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("content_source_health", "last_observed_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("content_source_health", "last_observation_error", "TEXT NOT NULL DEFAULT ''");
+  migrateGrowthOperationsSchema();
   migrateShopWorkflowSchema();
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
@@ -1539,6 +1559,42 @@ function addMissingColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (columns.some((item) => item.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function migrateGrowthOperationsSchema() {
+  addMissingColumn(
+    "content_ranking_controls",
+    "revision",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
+  addMissingColumn(
+    "campaign_revisions",
+    "note",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  run(
+    `UPDATE content_ranking_controls
+     SET excluded = 0
+     WHERE pinned = 1 AND excluded = 1`,
+  );
+  run("UPDATE campaigns SET status = 'paused' WHERE status = 'rolled_back'");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS growth_operation_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      entity_key TEXT NOT NULL,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (entity_type IN ('ranking_control', 'campaign', 'campaign_task'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_growth_operation_events_entity
+      ON growth_operation_events(entity_type, entity_key, created_at DESC, id DESC);
+  `);
 }
 
 function migrateShopWorkflowSchema() {

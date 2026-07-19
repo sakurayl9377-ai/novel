@@ -90,6 +90,7 @@ export async function growthRoutes(app) {
         taskId: optionalInt(request.params.taskId, 0),
         idempotencyKey:
           request.body?.idempotencyKey || request.headers["idempotency-key"] || "",
+        versionCode: Math.max(0, optionalInt(request.body?.versionCode, 0)),
       }),
     }),
   );

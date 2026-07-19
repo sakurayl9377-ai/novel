@@ -51,6 +51,11 @@ export function referencedUploadUrls() {
      UNION ALL
      SELECT banner_url AS url FROM campaigns WHERE banner_url <> ''
      UNION ALL
+     SELECT json_extract(campaign_json, '$.banner_url') AS url
+       FROM campaign_revisions
+      WHERE json_valid(campaign_json)
+        AND COALESCE(json_extract(campaign_json, '$.banner_url'), '') <> ''
+     UNION ALL
      SELECT cover_url AS url FROM ai_novels WHERE cover_url <> ''
      UNION ALL
      SELECT asset_value AS url FROM shop_items WHERE asset_value <> ''
@@ -231,6 +236,16 @@ function isManagedUploadStorageKeyReferenced(storageKey) {
     )) {
       return true;
     }
+  }
+  if (one(
+    `SELECT 1
+     FROM campaign_revisions
+     WHERE json_valid(campaign_json)
+       AND managed_upload_key(json_extract(campaign_json, '$.banner_url')) = ?
+     LIMIT 1`,
+    [storageKey],
+  )) {
+    return true;
   }
   if (
     one(
