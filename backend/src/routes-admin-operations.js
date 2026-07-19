@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { all, db, one, run } from "./db.js";
 import {
   normalizeProxyGroupSelection,
+  normalizeProxyNodeSelection,
   normalizeProxySubscriptionId,
   normalizeProxySubscriptionName,
   normalizeProxySubscriptionUrl,
@@ -166,6 +167,16 @@ export async function adminOperationsRoutes(app) {
       );
       return proxyControl({ action: "set-group", ...selection });
     },
+  );
+
+  app.patch(
+    "/admin/proxy/node",
+    { preHandler: app.adminRequired },
+    async (request) =>
+      proxyControl({
+        action: "set-node",
+        choice: normalizeProxyNodeSelection(request.body?.choice),
+      }),
   );
 }
 

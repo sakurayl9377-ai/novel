@@ -18,6 +18,8 @@ const AnalyticsView = () => import('@/views/AnalyticsView.vue');
 const AuditView = () => import('@/views/AuditView.vue');
 const VersionsView = () => import('@/views/VersionsView.vue');
 const ReleasesView = () => import('@/views/ReleasesView.vue');
+const ProxyView = () => import('@/views/ProxyView.vue');
+const SettingsView = () => import('@/views/SettingsView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 
@@ -234,7 +236,29 @@ export const router = createRouter({
             requiresAdmin: true,
           },
         },
-        ...legacyRoutes.filter(([path]) => !['notifications', 'analytics', 'versions', 'releases', 'audit'].includes(path)).map(([path, title, hint]) => ({
+        {
+          path: 'proxy',
+          name: 'proxy',
+          component: ProxyView,
+          meta: {
+            title: '代理管理',
+            hint: 'Mihomo 服务、订阅源、策略组与节点切换',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: SettingsView,
+          meta: {
+            title: '系统配置',
+            hint: '公告、AI 机器人、语音服务与凭据状态',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        ...legacyRoutes.filter(([path]) => !['notifications', 'analytics', 'versions', 'releases', 'audit', 'proxy', 'settings'].includes(path)).map(([path, title, hint]) => ({
           path,
           name: path,
           component: LegacyModuleView,

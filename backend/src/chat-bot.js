@@ -1,4 +1,5 @@
 import { all, one, run } from "./db.js";
+import { existingChatBotAvatarOrEmpty } from "./routes-admin-settings-assets.js";
 import { decryptSettingSecret } from "./settings-secrets.js";
 
 const botEmail = "chatbot@system.local";
@@ -114,7 +115,7 @@ export function chatBotSettings() {
     apiKey: secretSetting("chat_bot.apiKey", ""),
     model: setting("chat_bot.model", ""),
     botName: setting("chat_bot.botName", defaultBotName) || defaultBotName,
-    avatarUrl: setting("chat_bot.avatarUrl", ""),
+    avatarUrl: existingChatBotAvatarOrEmpty(setting("chat_bot.avatarUrl", "")),
     skinId,
     skin: chatBotSkin(skinId),
     triggerMode: setting("chat_bot.triggerMode", "mention") || "mention",

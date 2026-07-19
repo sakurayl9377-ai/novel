@@ -5,7 +5,7 @@ const maxOutputBytes = 1024 * 1024;
 
 export function normalizeProxySubscriptionUrl(value) {
   const text = String(value || "").trim();
-  if (!text || text.length > 2000 || /[\u0000-\u001f\u007f]/.test(text)) {
+  if (!text || text.length > 2000 || /\s|[\u0000-\u001f\u007f]/.test(text)) {
     throw new Error("proxy_subscription_url_invalid");
   }
   let parsed;
@@ -43,6 +43,14 @@ export function normalizeProxyGroupSelection(group, choice) {
     throw new Error("proxy_group_selection_invalid");
   }
   return { group: safeGroup, choice: safeChoice };
+}
+
+export function normalizeProxyNodeSelection(choice) {
+  const safeChoice = String(choice || "").trim();
+  if (!safeChoice || safeChoice.length > 300) {
+    throw new Error("proxy_group_selection_invalid");
+  }
+  return safeChoice;
 }
 
 export function runProxyControl(payload, { timeoutMs = 90000 } = {}) {

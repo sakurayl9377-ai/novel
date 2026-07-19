@@ -19,6 +19,7 @@ export const managedUploadFolders = new Set([
   "novel-covers",
   "shop-previews",
   "campaign-banners",
+  "chatbot-avatars",
 ]);
 
 export function validateUploadBytes(mimeType, bytes) {

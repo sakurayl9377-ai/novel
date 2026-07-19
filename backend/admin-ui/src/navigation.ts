@@ -97,6 +97,8 @@ export function visibleNavigation(role: string | undefined): NavigationGroup[] {
     versions: '版本与设备',
     releases: '发布管理',
     audit: '审计日志',
+    proxy: '代理管理',
+    settings: '系统配置',
   };
   return navigationGroups
     .map((group) => ({

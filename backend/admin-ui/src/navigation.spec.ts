@@ -7,6 +7,7 @@ describe('role-aware navigation', () => {
     const routes = visibleNavigation('admin').flatMap((group) => group.items.map((item) => item.route));
     expect(routes).toContain('dashboard');
     expect(routes).toContain('settings');
+    expect(routes).toContain('proxy');
     expect(routes).toContain('ai-novels');
     expect(
       visibleNavigation('admin')
@@ -63,7 +64,7 @@ describe('role-aware navigation', () => {
         .flatMap((group) => group.items)
         .find((item) => item.route === 'analytics')?.legacy,
     ).toBe(false);
-    for (const route of ['versions', 'releases', 'audit']) {
+    for (const route of ['versions', 'releases', 'audit', 'proxy', 'settings']) {
       expect(
         visibleNavigation('admin')
           .flatMap((group) => group.items)

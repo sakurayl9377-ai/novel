@@ -67,6 +67,82 @@ class FakeConnection:
 
 
 class SubscriptionUpdateTests(unittest.TestCase):
+    def test_admin_helper_switches_manual_node_and_mode_together(self):
+        calls = []
+        proxies = {
+            ADMIN_MODULE.MANUAL_GROUP: {
+                "type": "Selector",
+                "now": "Tokyo-01",
+                "all": ["Tokyo-01", "Singapore-02"],
+            },
+            ADMIN_MODULE.MODE_GROUP: {
+                "type": "Selector",
+                "now": "US-AUTO",
+                "all": ["US-AUTO", ADMIN_MODULE.MANUAL_GROUP, "DIRECT"],
+            },
+        }
+
+        def request(method, path, payload=None, **_kwargs):
+            calls.append((method, path, payload))
+            if method == "GET":
+                return {"proxies": proxies}
+            return {}
+
+        with mock.patch.object(ADMIN_MODULE, "controller_request", side_effect=request), mock.patch.object(
+            ADMIN_MODULE, "status", return_value={"manualModeEnabled": True}
+        ):
+            result = ADMIN_MODULE.set_manual_node("Singapore-02")
+
+        self.assertEqual(result, {"manualModeEnabled": True})
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/proxies", None),
+                ("PUT", "/proxies/NODE-MANUAL", {"name": "Singapore-02"}),
+                ("PUT", "/proxies/PROXY-MODE", {"name": "NODE-MANUAL"}),
+            ],
+        )
+
+    def test_admin_helper_rolls_back_when_mode_switch_fails(self):
+        calls = []
+        proxies = {
+            ADMIN_MODULE.MANUAL_GROUP: {
+                "type": "Selector",
+                "now": "Tokyo-01",
+                "all": ["Tokyo-01", "Singapore-02"],
+            },
+            ADMIN_MODULE.MODE_GROUP: {
+                "type": "Selector",
+                "now": "US-AUTO",
+                "all": ["US-AUTO", ADMIN_MODULE.MANUAL_GROUP, "DIRECT"],
+            },
+        }
+
+        def request(method, path, payload=None, **_kwargs):
+            calls.append((method, path, payload))
+            if method == "GET":
+                return {"proxies": proxies}
+            if path.endswith("PROXY-MODE") and payload == {"name": ADMIN_MODULE.MANUAL_GROUP}:
+                raise ADMIN_MODULE.ControlError("controller_write_failed")
+            return {}
+
+        with mock.patch.object(ADMIN_MODULE, "controller_request", side_effect=request), self.assertRaisesRegex(
+            ADMIN_MODULE.ControlError,
+            "proxy_node_switch_failed",
+        ):
+            ADMIN_MODULE.set_manual_node("Singapore-02")
+
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/proxies", None),
+                ("PUT", "/proxies/NODE-MANUAL", {"name": "Singapore-02"}),
+                ("PUT", "/proxies/PROXY-MODE", {"name": ADMIN_MODULE.MANUAL_GROUP}),
+                ("PUT", "/proxies/PROXY-MODE", {"name": "US-AUTO"}),
+                ("PUT", "/proxies/NODE-MANUAL", {"name": "Tokyo-01"}),
+            ],
+        )
+
     def test_admin_helper_rejects_whitespace_and_cgnat(self):
         with self.assertRaisesRegex(
             ADMIN_MODULE.ControlError,

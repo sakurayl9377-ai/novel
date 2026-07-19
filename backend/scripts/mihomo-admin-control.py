@@ -450,6 +450,48 @@ def set_group(group, choice):
     return status()
 
 
+def set_manual_node(choice):
+    choice = str(choice or "").strip()
+    if not choice or len(choice) > 300:
+        raise ControlError("proxy_group_selection_invalid")
+    proxies = controller_request("GET", "/proxies").get("proxies", {})
+    manual = proxies.get(MANUAL_GROUP)
+    mode = proxies.get(MODE_GROUP)
+    if (
+        not manual
+        or manual.get("type") != "Selector"
+        or choice not in (manual.get("all") or [])
+        or not mode
+        or mode.get("type") != "Selector"
+        or MANUAL_GROUP not in (mode.get("all") or [])
+    ):
+        raise ControlError("proxy_group_selection_invalid")
+
+    previous_manual = str(manual.get("now") or "").strip()
+    previous_mode = str(mode.get("now") or "").strip()
+    manual_path = "/proxies/" + urllib.parse.quote(MANUAL_GROUP, safe="")
+    mode_path = "/proxies/" + urllib.parse.quote(MODE_GROUP, safe="")
+    controller_request("PUT", manual_path, {"name": choice})
+    try:
+        controller_request("PUT", mode_path, {"name": MANUAL_GROUP})
+    except Exception as error:
+        rollback_failed = False
+        if previous_mode and previous_mode in (mode.get("all") or []):
+            try:
+                controller_request("PUT", mode_path, {"name": previous_mode})
+            except Exception:
+                rollback_failed = True
+        if previous_manual and previous_manual in (manual.get("all") or []):
+            try:
+                controller_request("PUT", manual_path, {"name": previous_manual})
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise ControlError("proxy_node_switch_rollback_failed") from error
+        raise ControlError("proxy_node_switch_failed") from error
+    return status()
+
+
 def test_nodes():
     if not service_active():
         raise ControlError("mihomo_service_inactive")
@@ -523,6 +565,8 @@ def main():
         response = set_service(request.get("enabled") is True)
     elif action == "set-group":
         response = set_group(request.get("group"), request.get("choice"))
+    elif action == "set-node":
+        response = set_manual_node(request.get("choice"))
     elif action == "test":
         response = test_proxy()
     elif action == "test-nodes":

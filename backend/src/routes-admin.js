@@ -39,6 +39,7 @@ import {
 } from "./routes-content.js";
 import { defaultAsrHostUrl, iflytekSpeechDefaults } from "./speech-defaults.js";
 import { encryptSettingSecret } from "./settings-secrets.js";
+import { requireExistingChatBotAvatar } from "./routes-admin-settings-assets.js";
 import {
   badRequest,
   optionalInt,
@@ -452,65 +453,75 @@ export async function adminRoutes(app) {
     async () => adminSettingsPayload(),
   );
 
+  app.get(
+    "/admin/settings/workbench",
+    { preHandler: app.adminRequired },
+    async () => adminSettingsWorkbenchPayload(),
+  );
+
   app.patch(
     "/admin/settings",
     { preHandler: app.adminRequired },
     async (request) => {
       const body = request.body || {};
-      saveSettingGroup(
-        "iflytek_asr",
-        normalizeIflytekAsrSettings(body.iflytekAsr || {}),
-        [
-          "productType",
-          "appId",
-          "apiKey",
-          "secretKey",
-          "apiSecret",
-          "hostUrl",
-          "enabled",
-        ],
-      );
-      saveSettingGroup(
-        "iflytek_tts",
-        normalizeIflytekTtsSettings(body.iflytekTts || {}),
-        ["appId", "apiKey", "apiSecret", "hostUrl", "enabled"],
-      );
-      const appAnnouncementBody = normalizeAppAnnouncementSettings(
-        body.appAnnouncement || {},
-      );
-      if (appAnnouncementChanged(appAnnouncementBody)) {
-        appAnnouncementBody.version = String(Date.now());
+      if (Object.hasOwn(body, "iflytekAsr")) {
+        saveIflytekAsrSettings(body.iflytekAsr);
       }
-      saveSettingGroup("app_announcement", appAnnouncementBody, [
-        "enabled",
-        "title",
-        "content",
-        "version",
-      ]);
-      const rawChatBotBody = {
-        ...(body.chatBot || {}),
-        skinId: normalizeChatBotSkinId(body.chatBot?.skinId),
-      };
-      const chatBotBody = resolveChatBotProviderSettings({
-        ...rawChatBotBody,
-        ...(String(rawChatBotBody.apiKey || "").trim() &&
-        rawChatBotBody.enabled === undefined
-          ? { enabled: true }
-          : {}),
-      });
-      saveSettingGroup("chat_bot", chatBotBody, [
-        "enabled",
-        "provider",
-        "baseUrl",
-        "apiKey",
-        "model",
-        "botName",
-        "avatarUrl",
-        "skinId",
-        "triggerMode",
-        "systemPrompt",
-      ]);
+      if (Object.hasOwn(body, "iflytekTts")) {
+        saveIflytekTtsSettings(body.iflytekTts);
+      }
+      if (Object.hasOwn(body, "appAnnouncement")) {
+        saveAppAnnouncementSettings(body.appAnnouncement);
+      }
+      if (Object.hasOwn(body, "chatBot")) {
+        saveChatBotSettings(body.chatBot);
+      }
       return adminSettingsPayload();
+    },
+  );
+
+  app.patch(
+    "/admin/settings/app-announcement",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      saveAppAnnouncementSettings(request.body);
+      return adminSettingsWorkbenchPayload();
+    },
+  );
+
+  app.patch(
+    "/admin/settings/chat-bot",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      saveChatBotSettings(request.body);
+      return adminSettingsWorkbenchPayload();
+    },
+  );
+
+  app.patch(
+    "/admin/settings/iflytek-asr",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      saveIflytekAsrSettings(request.body);
+      return adminSettingsWorkbenchPayload();
+    },
+  );
+
+  app.patch(
+    "/admin/settings/iflytek-tts",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      saveIflytekTtsSettings(request.body);
+      return adminSettingsWorkbenchPayload();
+    },
+  );
+
+  app.delete(
+    "/admin/settings/secrets/:group/:field",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      clearSettingSecret(request.params?.group, request.params?.field);
+      return adminSettingsWorkbenchPayload();
     },
   );
 
@@ -3202,6 +3213,307 @@ function chatBotTestErrorMessage(error) {
   return `机器人测试失败：${message.slice(0, 160)}`;
 }
 
+const iflytekAsrSettingFields = [
+  "productType",
+  "appId",
+  "apiKey",
+  "secretKey",
+  "apiSecret",
+  "hostUrl",
+  "enabled",
+];
+const iflytekTtsSettingFields = [
+  "appId",
+  "apiKey",
+  "apiSecret",
+  "hostUrl",
+  "enabled",
+];
+const chatBotSettingFields = [
+  "enabled",
+  "provider",
+  "baseUrl",
+  "apiKey",
+  "credentialProvider",
+  "model",
+  "botName",
+  "avatarUrl",
+  "skinId",
+  "triggerMode",
+  "systemPrompt",
+];
+
+function saveAppAnnouncementSettings(rawValues) {
+  const values = settingsObject(rawValues);
+  const current = appAnnouncementSettings();
+  const next = normalizeAppAnnouncementSettings({
+    enabled: settingEnabled(values.enabled, current.enabled),
+    title: Object.hasOwn(values, "title")
+      ? optionalString(values.title, 80)
+      : current.title,
+    content: Object.hasOwn(values, "content")
+      ? optionalString(values.content, 4000)
+      : current.content,
+  });
+  next.title ||= "公告";
+  if (next.enabled && !next.content) {
+    throw badRequest("app_announcement_content_required");
+  }
+  if (appAnnouncementChanged(next)) next.version = String(Date.now());
+  else next.version = current.version || "";
+  saveSettingTransaction(() => {
+    saveSettingGroup("app_announcement", next, [
+      "enabled",
+      "title",
+      "content",
+      "version",
+    ]);
+  });
+}
+
+function saveIflytekAsrSettings(rawValues) {
+  const values = settingsObject(rawValues);
+  const current = adminSettingsPayload().iflytekAsr;
+  const productType = Object.hasOwn(values, "productType")
+    ? optionalString(values.productType, 20)
+    : current.productType;
+  if (!Object.hasOwn(iflytekSpeechDefaults.asrHostUrls, productType)) {
+    throw badRequest("iflytek_asr_product_type_invalid");
+  }
+  const appId = Object.hasOwn(values, "appId")
+    ? optionalString(values.appId, 120)
+    : current.appId;
+  const hostUrl = normalizeSettingsEndpoint(
+    Object.hasOwn(values, "hostUrl") ? values.hostUrl : current.hostUrl,
+    new Set(["wss:"]),
+    "iflytek_asr_host_invalid",
+    defaultAsrHostUrl(productType),
+  );
+  const apiKey = optionalSettingSecret(values.apiKey);
+  const secretKey = optionalSettingSecret(values.secretKey);
+  const apiSecret = optionalSettingSecret(values.apiSecret);
+  const enabled = settingEnabled(values.enabled, current.enabled === "true");
+  const apiKeyConfigured = Boolean(apiKey) || current.apiKey.configured;
+  const signingSecretConfigured =
+    Boolean(secretKey || apiSecret) ||
+    current.secretKey.configured ||
+    current.apiSecret.configured;
+  if (
+    enabled &&
+    (!appId || !apiKeyConfigured || (productType !== "rtasr" && !signingSecretConfigured))
+  ) {
+    throw badRequest("iflytek_asr_enable_requires_credentials");
+  }
+  const next = normalizeIflytekAsrSettings({
+    productType,
+    appId,
+    hostUrl,
+    enabled,
+    ...(apiKey ? { apiKey } : {}),
+    ...(secretKey ? { secretKey } : {}),
+    ...(apiSecret ? { apiSecret } : {}),
+  });
+  saveSettingTransaction(() => {
+    saveSettingGroup("iflytek_asr", next, iflytekAsrSettingFields);
+  });
+}
+
+function saveIflytekTtsSettings(rawValues) {
+  const values = settingsObject(rawValues);
+  const current = adminSettingsPayload().iflytekTts;
+  const appId = Object.hasOwn(values, "appId")
+    ? optionalString(values.appId, 120)
+    : current.appId;
+  const hostUrl = normalizeSettingsEndpoint(
+    Object.hasOwn(values, "hostUrl") ? values.hostUrl : current.hostUrl,
+    new Set(["wss:"]),
+    "iflytek_tts_host_invalid",
+    iflytekSpeechDefaults.ttsHostUrl,
+  );
+  const apiKey = optionalSettingSecret(values.apiKey);
+  const apiSecret = optionalSettingSecret(values.apiSecret);
+  const enabled = settingEnabled(values.enabled, current.enabled === "true");
+  if (
+    enabled &&
+    (!appId || !(apiKey || current.apiKey.configured) ||
+      !(apiSecret || current.apiSecret.configured))
+  ) {
+    throw badRequest("iflytek_tts_enable_requires_credentials");
+  }
+  const next = normalizeIflytekTtsSettings({
+    appId,
+    hostUrl,
+    enabled,
+    ...(apiKey ? { apiKey } : {}),
+    ...(apiSecret ? { apiSecret } : {}),
+  });
+  saveSettingTransaction(() => {
+    saveSettingGroup("iflytek_tts", next, iflytekTtsSettingFields);
+  });
+}
+
+function saveChatBotSettings(rawValues) {
+  const values = settingsObject(rawValues);
+  const current = adminSettingsPayload().chatBot;
+  const provider = Object.hasOwn(values, "provider")
+    ? optionalString(values.provider, 40).toLowerCase()
+    : current.provider;
+  const preset = chatBotProviderPresets.find((item) => item.id === provider);
+  if (!preset) throw badRequest("chat_bot_provider_invalid");
+
+  const providerChanged = provider !== current.provider;
+  const rawBaseUrl = Object.hasOwn(values, "baseUrl")
+    ? values.baseUrl
+    : providerChanged
+      ? preset.baseUrl
+      : current.baseUrl;
+  const rawModel = Object.hasOwn(values, "model")
+    ? values.model
+    : providerChanged
+      ? preset.model
+      : current.model;
+  const baseUrl = provider === "nvidia"
+    ? preset.baseUrl
+    : rawBaseUrl
+      ? normalizeSettingsEndpoint(
+          rawBaseUrl,
+          new Set(["https:"]),
+          "chat_bot_base_url_invalid",
+        )
+      : "";
+  const model = provider === "nvidia"
+    ? preset.model
+    : optionalString(rawModel, 120);
+  const botName = Object.hasOwn(values, "botName")
+    ? optionalString(values.botName, 40)
+    : current.botName;
+  if (!botName) throw badRequest("chat_bot_name_required");
+  const skinId = Object.hasOwn(values, "skinId")
+    ? optionalString(values.skinId, 40)
+    : current.skinId;
+  if (!chatBotSkins.some((item) => item.id === skinId)) {
+    throw badRequest("chat_bot_skin_invalid");
+  }
+  const triggerMode = Object.hasOwn(values, "triggerMode")
+    ? optionalString(values.triggerMode, 20)
+    : current.triggerMode;
+  if (!new Set(["mention", "smart"]).has(triggerMode)) {
+    throw badRequest("chat_bot_trigger_mode_invalid");
+  }
+  const avatarUrl = Object.hasOwn(values, "avatarUrl")
+    ? requireExistingChatBotAvatar(optionalString(values.avatarUrl, 800))
+    : current.avatarUrl;
+  const systemPrompt = Object.hasOwn(values, "systemPrompt")
+    ? optionalString(values.systemPrompt, 4000)
+    : current.systemPrompt;
+  const apiKey = optionalSettingSecret(values.apiKey);
+  const storedCredentialProvider =
+    settingValue("chat_bot.credentialProvider") || current.provider;
+  const apiKeyConfigured = Boolean(apiKey) ||
+    (current.apiKey.configured && storedCredentialProvider === provider);
+  const enabled = settingEnabled(values.enabled, current.enabled === "true");
+  if (enabled && (!apiKeyConfigured || !baseUrl || !model)) {
+    throw badRequest("chat_bot_enable_requires_credentials");
+  }
+  const next = resolveChatBotProviderSettings({
+    enabled,
+    provider,
+    baseUrl,
+    model,
+    botName,
+    avatarUrl,
+    skinId,
+    triggerMode,
+    systemPrompt,
+    credentialProvider: apiKey ? provider : storedCredentialProvider,
+    ...(apiKey ? { apiKey } : {}),
+  });
+  saveSettingTransaction(() => {
+    saveSettingGroup("chat_bot", next, chatBotSettingFields);
+  });
+}
+
+function clearSettingSecret(rawGroup, rawField) {
+  const group = String(rawGroup || "").trim();
+  const field = String(rawField || "").trim();
+  const groups = {
+    "iflytek-asr": {
+      prefix: "iflytek_asr",
+      fields: new Set(["apiKey", "secretKey", "apiSecret"]),
+    },
+    "iflytek-tts": {
+      prefix: "iflytek_tts",
+      fields: new Set(["apiKey", "apiSecret"]),
+    },
+    "chat-bot": { prefix: "chat_bot", fields: new Set(["apiKey"]) },
+  };
+  const target = groups[group];
+  if (!target?.fields.has(field)) {
+    throw badRequest("settings_secret_not_clearable");
+  }
+  saveSettingTransaction(() => {
+    run("DELETE FROM app_settings WHERE key = ?", [`${target.prefix}.${field}`]);
+    if (target.prefix === "chat_bot" && field === "apiKey") {
+      run("DELETE FROM app_settings WHERE key = 'chat_bot.credentialProvider'");
+    }
+    saveSettingGroup(target.prefix, { enabled: false }, ["enabled"]);
+  });
+}
+
+function settingsObject(values) {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    throw badRequest("settings_payload_invalid");
+  }
+  return values;
+}
+
+function settingEnabled(value, fallback = false) {
+  if (value === undefined) return Boolean(fallback);
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  throw badRequest("settings_enabled_invalid");
+}
+
+function optionalSettingSecret(value, maxLength = 1000) {
+  if (value == null || value === "") return "";
+  if (typeof value !== "string") {
+    throw badRequest("settings_secret_value_invalid");
+  }
+  return optionalString(value, maxLength);
+}
+
+function normalizeSettingsEndpoint(value, protocols, errorCode, fallback = "") {
+  const text = optionalString(value, 800) || fallback;
+  if (!text || /\s|[\u0000-\u001f\u007f]/.test(text)) {
+    throw badRequest(errorCode);
+  }
+  try {
+    const parsed = new URL(text);
+    if (
+      !protocols.has(parsed.protocol) ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new Error("invalid");
+    }
+    return parsed.href;
+  } catch {
+    throw badRequest(errorCode);
+  }
+}
+
+function saveSettingTransaction(task) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    task();
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function normalizeIflytekAsrSettings(values) {
   const rawProductType = optionalString(values.productType, 20);
   const productType = Object.hasOwn(
@@ -3243,6 +3555,7 @@ function adminSettingsPayload() {
     ["systemPrompt", false],
   ]);
   const normalizedChatBot = resolveChatBotProviderSettings(chatBot);
+  normalizedChatBot.avatarUrl = storedChatBotAvatar(normalizedChatBot.avatarUrl);
   const iflytekAsr = settingGroup("iflytek_asr", [
     ["productType", false],
     ["appId", false],
@@ -3296,6 +3609,102 @@ function adminSettingsPayload() {
   };
 }
 
+function adminSettingsWorkbenchPayload() {
+  const payload = adminSettingsPayload();
+  const credentialProvider =
+    settingValue("chat_bot.credentialProvider") || payload.chatBot.provider;
+  const groups = {
+    appAnnouncement: settingHealth({
+      enabled: payload.appAnnouncement.enabled === "true",
+      missing: payload.appAnnouncement.content ? [] : ["content"],
+      updatedAt: settingGroupUpdatedAt("app_announcement"),
+    }),
+    chatBot: settingHealth({
+      enabled: payload.chatBot.enabled === "true",
+      missing: [
+        ...(!payload.chatBot.apiKey.configured ||
+        credentialProvider !== payload.chatBot.provider
+          ? ["apiKey"]
+          : []),
+        ...(!payload.chatBot.baseUrl ? ["baseUrl"] : []),
+        ...(!payload.chatBot.model ? ["model"] : []),
+      ],
+      updatedAt: settingGroupUpdatedAt("chat_bot"),
+    }),
+    iflytekAsr: settingHealth({
+      enabled: payload.iflytekAsr.enabled === "true",
+      missing: [
+        ...(!payload.iflytekAsr.appId ? ["appId"] : []),
+        ...(!payload.iflytekAsr.apiKey.configured ? ["apiKey"] : []),
+        ...(payload.iflytekAsr.productType !== "rtasr" &&
+        !payload.iflytekAsr.secretKey.configured &&
+        !payload.iflytekAsr.apiSecret.configured
+          ? ["secretKey"]
+          : []),
+      ],
+      updatedAt: settingGroupUpdatedAt("iflytek_asr"),
+    }),
+    iflytekTts: settingHealth({
+      enabled: payload.iflytekTts.enabled === "true",
+      missing: [
+        ...(!payload.iflytekTts.appId ? ["appId"] : []),
+        ...(!payload.iflytekTts.apiKey.configured ? ["apiKey"] : []),
+        ...(!payload.iflytekTts.apiSecret.configured ? ["apiSecret"] : []),
+      ],
+      updatedAt: settingGroupUpdatedAt("iflytek_tts"),
+    }),
+  };
+  return {
+    ...payload,
+    generatedAt: new Date().toISOString(),
+    health: {
+      enabledCount: Object.values(groups).filter((group) => group.enabled).length,
+      readyCount: Object.values(groups).filter(
+        (group) => group.enabled && group.ready,
+      ).length,
+      attentionCount: Object.values(groups).filter(
+        (group) => group.enabled && !group.ready,
+      ).length,
+      groups,
+    },
+  };
+}
+
+function settingHealth({ enabled, missing, updatedAt }) {
+  const uniqueMissing = [...new Set(missing)];
+  return {
+    enabled,
+    ready: uniqueMissing.length === 0,
+    missing: uniqueMissing,
+    updatedAt,
+  };
+}
+
+function storedChatBotAvatar(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    return requireExistingChatBotAvatar(text);
+  } catch {
+    return "";
+  }
+}
+
+function settingGroupUpdatedAt(prefix) {
+  return (
+    one(
+      `SELECT MAX(updated_at) AS updated_at
+       FROM app_settings
+       WHERE key LIKE ?`,
+      [`${prefix}.%`],
+    )?.updated_at || ""
+  );
+}
+
+function settingValue(key) {
+  return one("SELECT value FROM app_settings WHERE key = ?", [key])?.value || "";
+}
+
 function settingGroup(prefix, fields) {
   const rows = all(
     `SELECT key, value, is_secret, updated_at
@@ -3326,6 +3735,9 @@ function saveSettingGroup(prefix, values, allowedFields) {
     if (!Object.hasOwn(values, field)) continue;
     const raw = values[field];
     if (raw == null) continue;
+    if (secretFields.has(field) && typeof raw !== "string") {
+      throw badRequest("settings_secret_value_invalid");
+    }
     const plainValue =
       field === "enabled" ? (raw === true || raw === "true" ? "true" : "false") : String(raw).trim();
     if (secretFields.has(field) && !plainValue) continue;

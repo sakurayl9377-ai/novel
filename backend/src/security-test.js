@@ -80,9 +80,9 @@ try {
     normalizeProxySubscriptionUrl("https://subscription.example/path?token=test"),
     "https://subscription.example/path?token=test",
   );
-  assert.equal(
-    normalizeProxySubscriptionUrl("https://subscription.example/path with space"),
-    "https://subscription.example/path%20with%20space",
+  assert.throws(
+    () => normalizeProxySubscriptionUrl("https://subscription.example/path with space"),
+    /proxy_subscription_url_invalid/,
   );
   assert.throws(
     () => normalizeProxySubscriptionUrl("http://subscription.example/path"),
