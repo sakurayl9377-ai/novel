@@ -19,7 +19,6 @@ import '../providers/reading_provider.dart';
 import '../providers/book_source_provider.dart';
 import '../providers/interaction_auth_provider.dart';
 import '../providers/tts_provider.dart';
-import '../services/tts_media_control_service.dart';
 import '../services/app_telemetry_service.dart';
 import '../services/novel_offline_cache_service.dart';
 import '../services/reader_platform_service.dart';
@@ -88,12 +87,11 @@ class _ReadingScreenState extends State<ReadingScreen>
   int? _pausedTtsChapterIndex;
   int? _pausedTtsPageIndex;
   int? _pausedTtsCharPosition;
-  bool _ttsMediaControlsBound = false;
+  bool _ttsProviderBound = false;
+  bool _syncingTtsSession = false;
   bool _readerPlatformBound = false;
-  bool _handlingTtsMediaChapterChange = false;
   bool _isAutoReading = false;
   int _continuousReaderSession = 0;
-  TtsMediaControlService? _ttsMediaControlService;
   TtsProvider? _ttsProvider;
   String get _ttsOwnerKey => 'novel:${widget.novel.id}';
   late ReadingProvider _readingProvider;
@@ -203,8 +201,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     // which point using its BuildContext would be unsafe.
     _readingProvider = context.read<ReadingProvider>();
     _bookshelfProvider = context.read<BookshelfProvider>();
-    if (!_ttsMediaControlsBound) {
-      _ttsMediaControlsBound = true;
+    if (!_ttsProviderBound) {
+      _ttsProviderBound = true;
       final ttsProvider = context.read<TtsProvider>();
       _ttsProvider = ttsProvider;
       if ((ttsProvider.isSpeaking ||
@@ -213,24 +211,12 @@ class _ReadingScreenState extends State<ReadingScreen>
           !ttsProvider.isOwnedBy(_ttsOwnerKey)) {
         unawaited(ttsProvider.stopSpeaking());
       }
-      final mediaControlService = ttsProvider.mediaControlService;
-      _ttsMediaControlService = mediaControlService;
-      mediaControlService.bindControls(
-        owner: this,
-        onPrevious: _handleMediaPrevious,
-        onPlay: _handleMediaPlay,
-        onPause: _handleMediaPause,
-        onNext: _handleMediaNext,
-        onStop: _stopTts,
-      );
-      ttsProvider.bindSleepTimer(
-        owner: this,
-        onElapsed: _handleSleepTimerElapsed,
-      );
-      ttsProvider.bindCompletion(
-        owner: this,
-        onComplete: _handleTtsChapterComplete,
-      );
+      if (ttsProvider.hasActiveReadingSession &&
+          ttsProvider.isOwnedBy(_ttsOwnerKey)) {
+        _showTtsPanel = true;
+      }
+      ttsProvider.addListener(_handleTtsProviderChanged);
+      _handleTtsProviderChanged();
     }
     if (!_readerPlatformBound) {
       _readerPlatformBound = true;
@@ -239,6 +225,64 @@ class _ReadingScreenState extends State<ReadingScreen>
           .pageCommands
           .listen(_handleReaderPageCommand);
     }
+  }
+
+  void _handleTtsProviderChanged() {
+    final ttsProvider = _ttsProvider;
+    if (!mounted || ttsProvider == null) return;
+    final ownsSession =
+        ttsProvider.hasActiveReadingSession &&
+        ttsProvider.isOwnedBy(_ttsOwnerKey);
+    if (!ownsSession) {
+      if (_showTtsPanel && !_syncingTtsSession) {
+        _syncingTtsSession = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _syncingTtsSession = false;
+          if (mounted && _showTtsPanel) {
+            setState(() => _showTtsPanel = false);
+          }
+        });
+      }
+      return;
+    }
+
+    final targetIndex = ttsProvider.activeChapterIndex;
+    final targetContent = ttsProvider.activeChapterContent;
+    if (_syncingTtsSession ||
+        targetIndex < 0 ||
+        targetIndex >= _chapters.length ||
+        targetContent.isEmpty ||
+        targetIndex == _currentChapterIndex) {
+      return;
+    }
+
+    _syncingTtsSession = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncingTtsSession = false;
+      if (!mounted ||
+          !ttsProvider.hasActiveReadingSession ||
+          !ttsProvider.isOwnedBy(_ttsOwnerKey) ||
+          ttsProvider.activeChapterIndex != targetIndex) {
+        return;
+      }
+      final position = ttsProvider.currentStartOffset
+          .clamp(0, targetContent.length)
+          .toInt();
+      setState(() {
+        _currentChapterIndex = targetIndex;
+        _content = targetContent;
+        _restoreCharPosition = position;
+        _lastCharPosition = position;
+        _lastScrollPosition = position / targetContent.length;
+        _currentPageIndex = _pageIndexForCharPosition(targetContent, position);
+        _continuousReaderSession++;
+        _showControls = false;
+        _showTtsPanel = true;
+        _clearPausedTtsAnchor();
+      });
+      _readingProvider.setCurrentChapter(_chapters[targetIndex]);
+      _publishReadingProgress();
+    });
   }
 
   void _handleReaderPageCommand(ReaderPageCommand command) {
@@ -1121,9 +1165,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   Future<void> _showTtsMediaControls({required bool playing}) async {
-    final service =
-        _ttsMediaControlService ??
-        context.read<TtsProvider>().mediaControlService;
+    final service = context.read<TtsProvider>().mediaControlService;
     await service.show(
       novel: widget.novel,
       chapterTitle: _currentChapterTitle,
@@ -1131,112 +1173,18 @@ class _ReadingScreenState extends State<ReadingScreen>
     );
   }
 
-  Future<void> _handleMediaPlay() async {
-    if (!mounted) return;
-    final ttsProvider = context.read<TtsProvider>();
-    if (ttsProvider.isPaused || _pausedTtsCharPosition != null) {
-      await _resumeTtsFromCurrentPosition();
-    } else if (!ttsProvider.isSpeaking && !ttsProvider.isStarting) {
-      await _startTts(startPosition: _lastCharPosition);
-    } else {
-      await _showTtsMediaControls(playing: true);
-    }
-  }
-
-  Future<void> _handleMediaPause() async {
-    if (!mounted) return;
-    final ttsProvider = context.read<TtsProvider>();
-    if (ttsProvider.isSpeaking && !ttsProvider.isPaused) {
-      await _pauseTts();
-    }
-  }
-
-  Future<void> _handleMediaPrevious() => _handleMediaChapterChange(-1);
-
-  Future<void> _handleMediaNext() => _handleMediaChapterChange(1);
-
-  Future<void> _handleMediaChapterChange(int delta) async {
-    if (!mounted || _handlingTtsMediaChapterChange || delta == 0) return;
-    final targetIndex = _currentChapterIndex + delta;
-    if (targetIndex < 0 || targetIndex >= _chapters.length) {
-      final ttsProvider = context.read<TtsProvider>();
-      await _showTtsMediaControls(
-        playing: ttsProvider.isSpeaking && !ttsProvider.isPaused,
-      );
-      return;
-    }
-
-    _handlingTtsMediaChapterChange = true;
-    try {
-      final canOpen = await _ensureChapterUnlocked(targetIndex);
-      if (!canOpen || !mounted) return;
-
-      final ttsProvider = context.read<TtsProvider>();
-      await _saveProgressNow(
-        charPosition: _currentProgressPosition(ttsProvider),
-      );
-      await ttsProvider.stopSpeaking(clearSleepTimer: false);
-      _clearPausedTtsAnchor();
-      if (!mounted) return;
-
-      setState(() {
-        _currentChapterIndex = targetIndex;
-        _showControls = false;
-        _showTtsPanel = true;
-        _resetChapterPosition();
-      });
-      await _loadCurrentChapter();
-      if (!mounted || _content.isEmpty) return;
-
-      await _saveProgressNow(charPosition: 0, scrollPosition: 0);
-      await _startTts(startPosition: 0);
-    } finally {
-      _handlingTtsMediaChapterChange = false;
-    }
-  }
-
-  Future<bool> _handleTtsChapterComplete() async {
-    if (!mounted) return false;
-
-    final hasNext = _currentChapterIndex < _chapters.length - 1;
-    if (!hasNext) {
-      await _saveProgressNow(
-        charPosition: _content.length,
-        scrollPosition: _lastScrollPosition,
-      );
-      if (mounted) {
-        setState(() => _showTtsPanel = false);
-      }
-      return false;
-    }
-
-    final nextChapterIndex = _currentChapterIndex + 1;
-    final canOpen = await _ensureChapterUnlocked(nextChapterIndex);
-    if (!canOpen) {
-      if (mounted) {
-        setState(() => _showTtsPanel = false);
-      }
-      return false;
-    }
-
-    await _saveProgressNow(
-      charPosition: _content.length,
-      scrollPosition: _lastScrollPosition,
-    );
-    if (!mounted) return false;
-
-    setState(() {
-      _currentChapterIndex = nextChapterIndex;
-      _showControls = false;
-      _showTtsPanel = true;
-      _resetChapterPosition();
-    });
-
-    await _loadCurrentChapter();
-    if (!mounted || _content.isEmpty) return false;
-
-    await _saveProgressNow(charPosition: 0, scrollPosition: 0);
-    return _startTts(startPosition: 0);
+  Future<void> _updateTtsSettings(
+    TtsProvider ttsProvider,
+    TtsSettings settings,
+  ) async {
+    final updated = await ttsProvider.updateSettings(settings);
+    if (!mounted || updated) return;
+    final message = ttsProvider.lastErrorMessage.isNotEmpty
+        ? ttsProvider.lastErrorMessage
+        : '朗读引擎切换失败，请稍后重试';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<bool> _startTts({int? startPosition}) async {
@@ -1249,15 +1197,38 @@ class _ReadingScreenState extends State<ReadingScreen>
       final startOffset =
           startPosition ?? (_lastCharPosition > 0 ? _lastCharPosition : 0);
       final speechStartOffset = _cleanSpeechStartOffset(startOffset);
-      final textToRead = _content.substring(
-        speechStartOffset.clamp(0, _content.length),
-      );
+      final novel = widget.novel;
+      final chapters = List<Chapter>.of(_chapters);
+      final bookSourceProvider = context.read<BookSourceProvider>();
+      final authProvider = context.read<InteractionAuthProvider>();
+      final readingProvider = _readingProvider;
+      final bookshelfProvider = _bookshelfProvider;
       setState(() => _showTtsPanel = true);
-      await _showTtsMediaControls(playing: true);
-      final started = await ttsProvider.startSpeaking(
-        textToRead,
+      final started = await ttsProvider.startReadingSession(
+        novel: novel,
+        chapters: chapters,
+        chapterIndex: _currentChapterIndex,
+        content: _content,
         startOffset: speechStartOffset,
-        ownerKey: _ttsOwnerKey,
+        loadChapterContent: (chapter) async {
+          if (novel.isLocal) return chapter.content;
+          final content = await bookSourceProvider.getChapterContent(
+            novel,
+            chapter,
+          );
+          return _formatChapterContent(content);
+        },
+        saveProgress: (progress) async {
+          await readingProvider.saveProgress(novel, progress);
+          await bookshelfProvider.updateNovel(
+            novel.copyWith(
+              currentChapterIndex: progress.chapterIndex,
+              lastReadAt: DateTime.now(),
+            ),
+          );
+        },
+        canOpenChapter: (chapterIndex) =>
+            chapterIndex < _guestChapterLimit || authProvider.isLoggedIn,
       );
       if (started) {
         await _showTtsMediaControls(playing: true);
@@ -1281,16 +1252,6 @@ class _ReadingScreenState extends State<ReadingScreen>
     await ttsProvider.stopSpeaking();
     _clearPausedTtsAnchor();
     setState(() => _showTtsPanel = false);
-  }
-
-  Future<void> _handleSleepTimerElapsed() async {
-    if (!mounted) return;
-    final ttsProvider = context.read<TtsProvider>();
-    await _saveProgressNow(charPosition: _currentProgressPosition(ttsProvider));
-    _clearPausedTtsAnchor();
-    if (mounted) {
-      setState(() => _showTtsPanel = false);
-    }
   }
 
   Future<void> _pauseTts() async {
@@ -1377,9 +1338,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     _novelChapterProgress.dispose();
     _novelBookProgress.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    _ttsMediaControlService?.unbindControls(this);
-    _ttsProvider?.unbindSleepTimer(this);
-    _ttsProvider?.unbindCompletion(this);
+    _ttsProvider?.removeListener(_handleTtsProviderChanged);
     _telemetryTrace.close(
       metadata: {
         'chapterIndex': _currentChapterIndex,
@@ -1482,7 +1441,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     return start;
   }
 
-  String _formatChapterContent(String content) {
+  static String _formatChapterContent(String content) {
     return content
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n')
@@ -1498,9 +1457,14 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Future<void> _handleBack() async {
     final ttsProvider = context.read<TtsProvider>();
+    final keepReadingSession =
+        ttsProvider.hasActiveReadingSession &&
+        ttsProvider.isOwnedBy(_ttsOwnerKey);
     _isLeaving = true;
     await _saveVisibleProgressNow(ttsProvider, true);
-    await ttsProvider.stopSpeaking();
+    if (!keepReadingSession) {
+      await ttsProvider.stopSpeaking();
+    }
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -1725,8 +1689,20 @@ class _ReadingScreenState extends State<ReadingScreen>
               bottom: 0,
               child: Builder(
                 builder: (context) {
-                  context.select<TtsProvider, (bool, bool, bool)>(
-                    (tts) => (tts.isSpeaking, tts.isPaused, tts.isStarting),
+                  context.select<
+                    TtsProvider,
+                    (bool, bool, bool, bool, double, TtsSettings, bool, int)
+                  >(
+                    (tts) => (
+                      tts.isSpeaking,
+                      tts.isPaused,
+                      tts.isStarting,
+                      tts.isUpdatingSettings,
+                      tts.speed,
+                      tts.settings,
+                      tts.hasSleepTimer,
+                      tts.sleepTimerRemaining.inSeconds,
+                    ),
                   );
                   return _buildTtsPanel(context.read<TtsProvider>());
                 },
@@ -2370,13 +2346,15 @@ class _ReadingScreenState extends State<ReadingScreen>
                     icon: ttsProvider.isPaused ? Icons.play_arrow : Icons.pause,
                     label: ttsProvider.isPaused ? '继续' : '暂停',
                     isNight: isNight,
-                    onPressed: () {
-                      if (ttsProvider.isPaused) {
-                        _resumeTtsFromCurrentPosition();
-                      } else {
-                        _pauseTts();
-                      }
-                    },
+                    onPressed: ttsProvider.isUpdatingSettings
+                        ? null
+                        : () {
+                            if (ttsProvider.isPaused) {
+                              _resumeTtsFromCurrentPosition();
+                            } else {
+                              _pauseTts();
+                            }
+                          },
                   ),
                   const SizedBox(width: 24),
                   _ttsActionButton(
@@ -2396,6 +2374,7 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   Widget _buildTtsEngineControls(TtsProvider ttsProvider, bool isNight) {
     final settings = ttsProvider.settings;
+    final updating = ttsProvider.isUpdatingSettings;
     final secondary = isNight ? Colors.white70 : AppTheme.textSecondary;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2418,13 +2397,20 @@ class _ReadingScreenState extends State<ReadingScreen>
               ),
             ],
             selected: {settings.engine},
-            onSelectionChanged: (values) => unawaited(
-              ttsProvider.updateSettings(
-                settings.copyWith(engine: values.first),
-              ),
-            ),
+            onSelectionChanged: updating
+                ? null
+                : (values) => unawaited(
+                    _updateTtsSettings(
+                      ttsProvider,
+                      settings.copyWith(engine: values.first),
+                    ),
+                  ),
           ),
         ),
+        if (updating) ...[
+          const SizedBox(height: 6),
+          const LinearProgressIndicator(minHeight: 2),
+        ],
         const SizedBox(height: 10),
         if (settings.useIflytek)
           DropdownButtonFormField<String>(
@@ -2441,20 +2427,23 @@ class _ReadingScreenState extends State<ReadingScreen>
                   child: Text('${voice.label} · ${voice.language}'),
                 ),
             ],
-            onChanged: (value) {
-              if (value == null) return;
-              final voice = iflytekBasicVoices.firstWhere(
-                (item) => item.name == value,
-              );
-              unawaited(
-                ttsProvider.updateSettings(
-                  settings.copyWith(
-                    iflytekVoiceName: voice.name,
-                    iflytekVoiceLabel: voice.label,
-                  ),
-                ),
-              );
-            },
+            onChanged: updating
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    final voice = iflytekBasicVoices.firstWhere(
+                      (item) => item.name == value,
+                    );
+                    unawaited(
+                      _updateTtsSettings(
+                        ttsProvider,
+                        settings.copyWith(
+                          iflytekVoiceName: voice.name,
+                          iflytekVoiceLabel: voice.label,
+                        ),
+                      ),
+                    );
+                  },
           )
         else
           FutureBuilder<List<TtsSystemVoice>>(
@@ -2493,18 +2482,21 @@ class _ReadingScreenState extends State<ReadingScreen>
                       child: Text(voice.label, overflow: TextOverflow.ellipsis),
                     ),
                 ],
-                onChanged: (value) {
-                  if (value == null) return;
-                  final separator = value.lastIndexOf('|');
-                  unawaited(
-                    ttsProvider.updateSettings(
-                      settings.copyWith(
-                        systemVoiceName: value.substring(0, separator),
-                        systemVoiceLocale: value.substring(separator + 1),
-                      ),
-                    ),
-                  );
-                },
+                onChanged: updating
+                    ? null
+                    : (value) {
+                        if (value == null) return;
+                        final separator = value.lastIndexOf('|');
+                        unawaited(
+                          _updateTtsSettings(
+                            ttsProvider,
+                            settings.copyWith(
+                              systemVoiceName: value.substring(0, separator),
+                              systemVoiceLocale: value.substring(separator + 1),
+                            ),
+                          ),
+                        );
+                      },
               );
             },
           ),
@@ -2516,9 +2508,11 @@ class _ReadingScreenState extends State<ReadingScreen>
     required IconData icon,
     required String label,
     required bool isNight,
-    required VoidCallback onPressed,
+    required VoidCallback? onPressed,
   }) {
-    final color = isNight ? Colors.white : AppTheme.textPrimary;
+    final color = (isNight ? Colors.white : AppTheme.textPrimary).withValues(
+      alpha: onPressed == null ? 0.38 : 1,
+    );
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onPressed,

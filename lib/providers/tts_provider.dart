@@ -2,19 +2,30 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import '../models/chapter.dart';
+import '../models/novel.dart';
+import '../models/reading_progress.dart';
 import '../models/tts_settings.dart';
 import '../services/storage_service.dart';
 import '../services/tts_media_control_service.dart';
 import '../services/tts_service.dart';
 
+typedef TtsChapterContentLoader = Future<String> Function(Chapter chapter);
+typedef TtsProgressSaver = Future<void> Function(ReadingProgress progress);
+typedef TtsChapterAccessCheck = bool Function(int chapterIndex);
+
 class TtsProvider extends ChangeNotifier {
-  TtsProvider({TtsMediaControlService? mediaControlService})
-    : _mediaControlService =
-          mediaControlService ?? TtsMediaControlService.disabled() {
+  TtsProvider({
+    TtsMediaControlService? mediaControlService,
+    TtsService? ttsService,
+  }) : _ttsService = ttsService ?? TtsService(),
+       _mediaControlService =
+           mediaControlService ?? TtsMediaControlService.disabled() {
     _ttsService.onStart = () {
       _isSpeaking = true;
       _isPaused = false;
       unawaited(_setWakelockEnabled(true));
+      unawaited(_syncReadingMediaControls());
       notifyListeners();
     };
     _ttsService.onComplete = () {
@@ -23,9 +34,16 @@ class TtsProvider extends ChangeNotifier {
       unawaited(_handleSpeakingComplete());
     };
     _ttsService.onError = () {
+      final readingSession = _readingSession;
+      if (readingSession != null) {
+        unawaited(_persistReadingProgress(readingSession));
+      }
       _isSpeaking = false;
       _isPaused = false;
       _lastErrorMessage = _ttsService.lastErrorMessage;
+      _readingSession = null;
+      _speechOwnerKey = '';
+      _restartReadingOnPlay = false;
       _clearSleepTimer(notify: false);
       unawaited(_setWakelockEnabled(false));
       unawaited(_mediaControlService.stop());
@@ -37,10 +55,26 @@ class TtsProvider extends ChangeNotifier {
       _currentWord = word;
       notifyListeners();
     };
+    _mediaControlService.bindControls(
+      owner: this,
+      onPrevious: () async {
+        await skipReadingChapter(-1);
+      },
+      onPlay: () async {
+        await playReadingSession();
+      },
+      onPause: () async {
+        await pauseSpeaking();
+      },
+      onNext: () async {
+        await skipReadingChapter(1);
+      },
+      onStop: stopSpeaking,
+    );
     _settingsLoadFuture = loadSettings();
   }
 
-  final TtsService _ttsService = TtsService();
+  final TtsService _ttsService;
   final TtsMediaControlService _mediaControlService;
   final StorageService _storage = StorageService();
   late final Future<void> _settingsLoadFuture;
@@ -56,16 +90,17 @@ class TtsProvider extends ChangeNotifier {
   String _lastErrorMessage = '';
   Timer? _sleepTimer;
   DateTime? _sleepTimerEndsAt;
-  Object? _sleepTimerOwner;
-  Future<void> Function()? _onSleepTimerElapsed;
-  Object? _completionOwner;
-  Future<bool> Function()? _onSpeakingComplete;
   bool _handlingServiceComplete = false;
   String _speechOwnerKey = '';
+  _TtsReadingSession? _readingSession;
+  bool _changingReadingChapter = false;
+  bool _isUpdatingSettings = false;
+  bool _restartReadingOnPlay = false;
 
   bool get isSpeaking => _isSpeaking;
   bool get isPaused => _isPaused;
   bool get isStarting => _isStarting;
+  bool get isUpdatingSettings => _isUpdatingSettings;
   double get speed => _speed;
   int get textStartOffset => _textStartOffset;
   int get currentStartOffset => _currentStartOffset;
@@ -75,6 +110,35 @@ class TtsProvider extends ChangeNotifier {
   TtsSettings get settings => _settings;
   Future<void> get settingsLoaded => _settingsLoadFuture;
   TtsMediaControlService get mediaControlService => _mediaControlService;
+  bool get hasActiveReadingSession => _readingSession != null;
+  Novel? get activeNovel => _readingSession?.novel;
+  List<Chapter> get activeChapters =>
+      _readingSession?.chapters ?? const <Chapter>[];
+  int get activeChapterIndex => _readingSession?.chapterIndex ?? -1;
+  String get activeChapterTitle => _readingSession?.chapter.title ?? '';
+  String get activeChapterContent => _readingSession?.content ?? '';
+  bool get canSkipToPreviousChapter {
+    final session = _readingSession;
+    if (session == null || session.chapterIndex <= 0) return false;
+    return session.canOpenChapter(session.chapterIndex - 1);
+  }
+
+  bool get canSkipToNextChapter {
+    final session = _readingSession;
+    if (session == null ||
+        session.chapterIndex >= session.chapters.length - 1) {
+      return false;
+    }
+    return session.canOpenChapter(session.chapterIndex + 1);
+  }
+
+  double get activeChapterProgress {
+    final session = _readingSession;
+    if (session == null || session.content.isEmpty) return 0;
+    final position = _currentStartOffset.clamp(0, session.content.length);
+    return position / session.content.length;
+  }
+
   bool isOwnedBy(String ownerKey) =>
       ownerKey.isNotEmpty && _speechOwnerKey == ownerKey;
   bool get hasSleepTimer => _sleepTimerEndsAt != null;
@@ -90,34 +154,6 @@ class TtsProvider extends ChangeNotifier {
     _ttsService.authToken = token;
   }
 
-  void bindSleepTimer({
-    required Object owner,
-    required Future<void> Function() onElapsed,
-  }) {
-    _sleepTimerOwner = owner;
-    _onSleepTimerElapsed = onElapsed;
-  }
-
-  void unbindSleepTimer(Object owner) {
-    if (_sleepTimerOwner != owner) return;
-    _sleepTimerOwner = null;
-    _onSleepTimerElapsed = null;
-  }
-
-  void bindCompletion({
-    required Object owner,
-    required Future<bool> Function() onComplete,
-  }) {
-    _completionOwner = owner;
-    _onSpeakingComplete = onComplete;
-  }
-
-  void unbindCompletion(Object owner) {
-    if (_completionOwner != owner) return;
-    _completionOwner = null;
-    _onSpeakingComplete = null;
-  }
-
   Future<void> loadSettings() async {
     final saved = await _storage.getTtsSettings();
     if (saved != null) {
@@ -127,25 +163,120 @@ class TtsProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> updateSettings(TtsSettings settings) async {
+  Future<bool> updateSettings(TtsSettings settings) async {
     await _settingsLoadFuture;
-    final engineChanged = _settings.engine != settings.engine;
-    if (engineChanged || _isSpeaking || _isStarting) {
-      await _ttsService.stop();
-      _isStarting = false;
-      _isSpeaking = false;
-      _isPaused = false;
-      _currentStartOffset = -1;
-      _currentEndOffset = -1;
-      _currentWord = '';
-      _clearSleepTimer(notify: false);
-      await _setWakelockEnabled(false);
-      await _mediaControlService.stop();
+    if (_settings.engine == settings.engine &&
+        _settings.systemVoiceName == settings.systemVoiceName &&
+        _settings.systemVoiceLocale == settings.systemVoiceLocale &&
+        _settings.iflytekVoiceName == settings.iflytekVoiceName &&
+        _settings.iflytekVoiceLabel == settings.iflytekVoiceLabel) {
+      return true;
     }
-    _settings = settings;
-    _ttsService.settings = settings;
-    await _storage.saveTtsSettings(settings.toJson());
+    if (_isUpdatingSettings || _changingReadingChapter) {
+      _lastErrorMessage = '正在切换朗读状态，请稍候';
+      notifyListeners();
+      return false;
+    }
+
+    _isUpdatingSettings = true;
     notifyListeners();
+    final previousSettings = _settings;
+    final readingSession = _readingSession;
+    final wasPaused = _isPaused;
+    final readingPosition = readingSession == null
+        ? 0
+        : (_currentStartOffset >= 0 ? _currentStartOffset : _textStartOffset)
+              .clamp(0, readingSession.content.length)
+              .toInt();
+
+    try {
+      if (readingSession == null) {
+        if (_isSpeaking || _isPaused || _isStarting) {
+          await stopSpeaking();
+        }
+        _settings = settings;
+        _ttsService.settings = settings;
+        _lastErrorMessage = '';
+        await persistTtsSettings(settings);
+        return true;
+      }
+
+      await _persistReadingProgress(readingSession, position: readingPosition);
+      await _stopSpeechForChapterTransition();
+      _settings = settings;
+      _ttsService.settings = settings;
+
+      if (_readingSession != readingSession) {
+        await persistTtsSettings(settings);
+        return true;
+      }
+
+      _restoreReadingSessionPosition(
+        readingSession,
+        readingPosition,
+        paused: wasPaused,
+      );
+      if (wasPaused) {
+        _restartReadingOnPlay = true;
+        _lastErrorMessage = '';
+        await persistTtsSettings(settings);
+        await _syncReadingMediaControls();
+        return true;
+      }
+
+      final started = await _startSpeakingCore(
+        readingSession.content.substring(readingPosition),
+        startOffset: readingPosition,
+        ownerKey: readingSession.ownerKey,
+      );
+      if (started) {
+        await persistTtsSettings(settings);
+        await _syncReadingMediaControls();
+        return true;
+      }
+      if (_readingSession != readingSession) {
+        await persistTtsSettings(settings);
+        return true;
+      }
+
+      final switchError = _lastErrorMessage.isNotEmpty
+          ? _lastErrorMessage
+          : '新朗读引擎启动失败';
+      _settings = previousSettings;
+      _ttsService.settings = previousSettings;
+      _restoreReadingSessionPosition(
+        readingSession,
+        readingPosition,
+        paused: false,
+      );
+      final restored = await _startSpeakingCore(
+        readingSession.content.substring(readingPosition),
+        startOffset: readingPosition,
+        ownerKey: readingSession.ownerKey,
+      );
+      if (!restored) {
+        _restoreReadingSessionPosition(
+          readingSession,
+          readingPosition,
+          paused: true,
+        );
+        _restartReadingOnPlay = true;
+      }
+      await _syncReadingMediaControls();
+      _lastErrorMessage = switchError;
+      return false;
+    } catch (_) {
+      _lastErrorMessage = '朗读引擎切换失败，请稍后重试';
+      return false;
+    } finally {
+      _isUpdatingSettings = false;
+      notifyListeners();
+    }
+  }
+
+  @protected
+  Future<void> persistTtsSettings(TtsSettings settings) {
+    return _storage.saveTtsSettings(settings.toJson());
   }
 
   Future<List<TtsSystemVoice>> loadSystemVoices() async {
@@ -166,13 +297,150 @@ class TtsProvider extends ChangeNotifier {
     return voices;
   }
 
+  Future<bool> startReadingSession({
+    required Novel novel,
+    required List<Chapter> chapters,
+    required int chapterIndex,
+    required String content,
+    required int startOffset,
+    required TtsChapterContentLoader loadChapterContent,
+    required TtsProgressSaver saveProgress,
+    required TtsChapterAccessCheck canOpenChapter,
+  }) async {
+    if (chapters.isEmpty || content.isEmpty) return false;
+    final safeChapterIndex = chapterIndex.clamp(0, chapters.length - 1).toInt();
+    if (_isSpeaking || _isPaused || _isStarting || _readingSession != null) {
+      await stopSpeaking();
+    }
+
+    final session = _TtsReadingSession(
+      novel: novel,
+      chapters: List<Chapter>.unmodifiable(chapters),
+      chapterIndex: safeChapterIndex,
+      content: content,
+      loadChapterContent: loadChapterContent,
+      saveProgress: saveProgress,
+      canOpenChapter: canOpenChapter,
+    );
+    _readingSession = session;
+    final started = await _startSpeakingCore(
+      content.substring(startOffset.clamp(0, content.length)),
+      startOffset: startOffset.clamp(0, content.length),
+      ownerKey: session.ownerKey,
+    );
+    if (!started) {
+      _readingSession = null;
+      _speechOwnerKey = '';
+      await _mediaControlService.stop();
+      notifyListeners();
+      return false;
+    }
+    await _syncReadingMediaControls();
+    return true;
+  }
+
+  Future<bool> playReadingSession() async {
+    final session = _readingSession;
+    if (session == null || _isStarting || _isUpdatingSettings) return false;
+    if (_isSpeaking && !_isPaused) {
+      await _syncReadingMediaControls();
+      return true;
+    }
+    if (_isPaused && !_restartReadingOnPlay && await resumeSpeaking()) {
+      return true;
+    }
+
+    final position = _currentStartOffset >= 0
+        ? _currentStartOffset.clamp(0, session.content.length).toInt()
+        : 0;
+    await _stopSpeechForChapterTransition();
+    final started = await _startSpeakingCore(
+      session.content.substring(position),
+      startOffset: position,
+      ownerKey: session.ownerKey,
+    );
+    if (started) await _syncReadingMediaControls();
+    return started;
+  }
+
+  Future<bool> skipReadingChapter(int delta) async {
+    final session = _readingSession;
+    if (session == null ||
+        delta == 0 ||
+        _changingReadingChapter ||
+        _isUpdatingSettings) {
+      return false;
+    }
+    final targetIndex = session.chapterIndex + delta;
+    if (targetIndex < 0 || targetIndex >= session.chapters.length) {
+      await _syncReadingMediaControls();
+      return false;
+    }
+    if (!session.canOpenChapter(targetIndex)) {
+      await _syncReadingMediaControls();
+      return false;
+    }
+
+    _changingReadingChapter = true;
+    try {
+      final targetChapter = session.chapters[targetIndex];
+      final targetContent = await session.loadChapterContent(targetChapter);
+      if (targetContent.trim().isEmpty || _readingSession != session) {
+        return false;
+      }
+
+      await _persistReadingProgress(session);
+      await _stopSpeechForChapterTransition();
+      if (_readingSession != session) return false;
+
+      session
+        ..chapterIndex = targetIndex
+        ..content = targetContent;
+      _textStartOffset = 0;
+      _currentStartOffset = 0;
+      _currentEndOffset = 0;
+      _currentWord = '';
+      notifyListeners();
+      await _persistReadingProgress(session, position: 0);
+
+      final started = await _startSpeakingCore(
+        targetContent,
+        startOffset: 0,
+        ownerKey: session.ownerKey,
+      );
+      if (started) await _syncReadingMediaControls();
+      return started;
+    } catch (_) {
+      _lastErrorMessage = '章节切换失败，请稍后重试';
+      notifyListeners();
+      return false;
+    } finally {
+      _changingReadingChapter = false;
+    }
+  }
+
   Future<bool> startSpeaking(
     String text, {
     int startOffset = 0,
     String ownerKey = '',
   }) async {
+    if (_readingSession != null) {
+      await stopSpeaking();
+    }
+    return _startSpeakingCore(
+      text,
+      startOffset: startOffset,
+      ownerKey: ownerKey,
+    );
+  }
+
+  Future<bool> _startSpeakingCore(
+    String text, {
+    required int startOffset,
+    required String ownerKey,
+  }) async {
     await _settingsLoadFuture;
-    if (_isStarting) return false;
+    if (_isStarting || text.trim().isEmpty) return false;
     _isStarting = true;
     _speechOwnerKey = ownerKey;
     _textStartOffset = startOffset;
@@ -190,6 +458,7 @@ class TtsProvider extends ChangeNotifier {
       _lastErrorMessage = result ? '' : _ttsService.lastErrorMessage;
       _isSpeaking = result;
       _isPaused = false;
+      if (result) _restartReadingOnPlay = false;
       if (!result) {
         await _setWakelockEnabled(false);
       }
@@ -201,6 +470,22 @@ class TtsProvider extends ChangeNotifier {
   }
 
   Future<void> stopSpeaking({bool clearSleepTimer = true}) async {
+    final session = _readingSession;
+    if (session != null) {
+      await _persistReadingProgress(session);
+    }
+    _readingSession = null;
+    _restartReadingOnPlay = false;
+    await _stopSpeechForChapterTransition();
+    _lastErrorMessage = '';
+    if (clearSleepTimer) {
+      _clearSleepTimer(notify: false);
+    }
+    await _mediaControlService.stop();
+    notifyListeners();
+  }
+
+  Future<void> _stopSpeechForChapterTransition() async {
     await _ttsService.stop();
     _isStarting = false;
     _isSpeaking = false;
@@ -208,14 +493,23 @@ class TtsProvider extends ChangeNotifier {
     _currentStartOffset = -1;
     _currentEndOffset = -1;
     _currentWord = '';
-    _lastErrorMessage = '';
     _speechOwnerKey = '';
-    if (clearSleepTimer) {
-      _clearSleepTimer(notify: false);
-    }
+    _restartReadingOnPlay = false;
     await _setWakelockEnabled(false);
-    await _mediaControlService.stop();
-    notifyListeners();
+  }
+
+  void _restoreReadingSessionPosition(
+    _TtsReadingSession session,
+    int position, {
+    required bool paused,
+  }) {
+    _textStartOffset = position;
+    _currentStartOffset = position;
+    _currentEndOffset = position;
+    _currentWord = '';
+    _speechOwnerKey = session.ownerKey;
+    _isSpeaking = false;
+    _isPaused = paused;
   }
 
   void setSleepTimer(Duration duration) {
@@ -251,11 +545,7 @@ class TtsProvider extends ChangeNotifier {
   Future<void> _handleSleepTimerElapsed() async {
     if (_sleepTimerEndsAt == null) return;
     _clearSleepTimer(notify: false);
-    final onElapsed = _onSleepTimerElapsed;
-    if (onElapsed != null) {
-      await onElapsed();
-    }
-    if (_isSpeaking || _isPaused || _isStarting) {
+    if (_isSpeaking || _isPaused || _isStarting || _readingSession != null) {
       await stopSpeaking(clearSleepTimer: false);
     } else {
       notifyListeners();
@@ -266,10 +556,20 @@ class TtsProvider extends ChangeNotifier {
     try {
       _isSpeaking = false;
       _isPaused = false;
-      final onComplete = _onSpeakingComplete;
-      if (onComplete != null) {
-        final continued = await onComplete();
-        if (continued) return;
+      final readingSession = _readingSession;
+      if (readingSession != null) {
+        _currentStartOffset = readingSession.content.length;
+        _currentEndOffset = readingSession.content.length;
+        await _persistReadingProgress(
+          readingSession,
+          position: readingSession.content.length,
+        );
+        if (canSkipToNextChapter && await skipReadingChapter(1)) {
+          return;
+        }
+        _readingSession = null;
+        _speechOwnerKey = '';
+        _restartReadingOnPlay = false;
       }
 
       _currentStartOffset = -1;
@@ -285,13 +585,52 @@ class TtsProvider extends ChangeNotifier {
   }
 
   Future<bool> pauseSpeaking() async {
+    if (_isUpdatingSettings) return false;
     final paused = await _ttsService.pause();
     if (!paused) return false;
     _isPaused = true;
+    final readingSession = _readingSession;
+    if (readingSession != null) {
+      await _persistReadingProgress(readingSession);
+    }
     await _setWakelockEnabled(false);
     await _mediaControlService.setPlaying(false);
     notifyListeners();
     return true;
+  }
+
+  Future<void> _persistReadingProgress(
+    _TtsReadingSession session, {
+    int? position,
+  }) async {
+    if (_readingSession != session || session.content.isEmpty) return;
+    final safePosition = (position ?? _currentStartOffset)
+        .clamp(0, session.content.length)
+        .toInt();
+    final chapter = session.chapter;
+    final progress = ReadingProgress(
+      novelId: session.novel.id,
+      chapterIndex: session.chapterIndex,
+      scrollPosition: safePosition / session.content.length,
+      charPosition: safePosition,
+      chapterTitle: chapter.title,
+      chapterUrl: chapter.url,
+    );
+    try {
+      await session.saveProgress(progress);
+    } catch (_) {
+      // Playback must remain responsive when a best-effort progress write fails.
+    }
+  }
+
+  Future<void> _syncReadingMediaControls() async {
+    final session = _readingSession;
+    if (session == null) return;
+    await _mediaControlService.show(
+      novel: session.novel,
+      chapterTitle: session.chapter.title,
+      playing: _isSpeaking && !_isPaused,
+    );
   }
 
   Future<bool> resumeSpeaking() async {
@@ -320,8 +659,38 @@ class TtsProvider extends ChangeNotifier {
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _mediaControlService.unbindControls(this);
     unawaited(_setWakelockEnabled(false));
-    unawaited(_ttsService.dispose());
+    unawaited(_disposeTtsService());
     super.dispose();
   }
+
+  Future<void> _disposeTtsService() async {
+    try {
+      await _ttsService.dispose();
+    } catch (_) {}
+  }
+}
+
+class _TtsReadingSession {
+  _TtsReadingSession({
+    required this.novel,
+    required this.chapters,
+    required this.chapterIndex,
+    required this.content,
+    required this.loadChapterContent,
+    required this.saveProgress,
+    required this.canOpenChapter,
+  });
+
+  final Novel novel;
+  final List<Chapter> chapters;
+  int chapterIndex;
+  String content;
+  final TtsChapterContentLoader loadChapterContent;
+  final TtsProgressSaver saveProgress;
+  final TtsChapterAccessCheck canOpenChapter;
+
+  Chapter get chapter => chapters[chapterIndex];
+  String get ownerKey => 'novel:${novel.id}';
 }

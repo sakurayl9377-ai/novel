@@ -104,6 +104,7 @@ void main() {
       index: 0,
       content: '　　第一段正文。\n\n　　第二段正文，用于验证路由销毁后的异步保存。',
     );
+    ttsProvider.activate(novel.id, 17);
 
     await tester.pumpWidget(
       MultiProvider(
@@ -137,13 +138,14 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(readingProvider.saveCalls, 0);
+    expect(find.byKey(const ValueKey('novel-tts-panel')), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const ValueKey('novel-tts-panel-close')));
+    await tester.pump();
 
     // TTS owns the visible reading position while speech is active. The
     // final route save must persist that exact offset rather than the stale
     // page/scroll anchor.
-    ttsProvider.activate(novel.id, 17);
-
     final popFuture = navigatorKey.currentState!.maybePop();
     await tester.pump();
     expect(readingProvider.saveCalls, 1);
@@ -160,6 +162,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(bookshelfProvider.updateCalls, 1);
+    expect(ttsProvider.stopCalls, 0);
+    expect(ttsProvider.isSpeaking, isTrue);
     expect(tester.takeException(), isNull);
   });
 }
@@ -192,6 +196,7 @@ class _RecordingTtsProvider extends TtsProvider {
   bool _active = false;
   String _owner = '';
   int _offset = -1;
+  int stopCalls = 0;
 
   void activate(String novelId, int offset) {
     _active = true;
@@ -203,6 +208,9 @@ class _RecordingTtsProvider extends TtsProvider {
   bool get isSpeaking => _active;
 
   @override
+  bool get hasActiveReadingSession => _active;
+
+  @override
   int get currentStartOffset => _offset;
 
   @override
@@ -210,6 +218,7 @@ class _RecordingTtsProvider extends TtsProvider {
 
   @override
   Future<void> stopSpeaking({bool clearSleepTimer = true}) async {
+    stopCalls += 1;
     _active = false;
   }
 }

@@ -1532,9 +1532,19 @@ class _TtsSettingsScreenState extends State<TtsSettingsScreen> {
 
   Future<void> _save() async {
     setState(() => _isSaving = true);
-    await context.read<TtsProvider>().updateSettings(_draft);
+    final provider = context.read<TtsProvider>();
+    final saved = await provider.updateSettings(_draft);
     if (!mounted) return;
     setState(() => _isSaving = false);
+    if (!saved) {
+      final message = provider.lastErrorMessage.isNotEmpty
+          ? provider.lastErrorMessage
+          : '语音朗读配置保存失败';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('语音朗读配置已保存')));

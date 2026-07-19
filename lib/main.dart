@@ -25,7 +25,9 @@ import 'screens/anime_screen.dart';
 import 'screens/manga_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/reading_screen.dart';
 import 'screens/video_screen.dart';
+import 'widgets/tts_mini_player.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -226,6 +228,11 @@ class _MainScaffoldState extends State<MainScaffold> {
   final Set<int> _visitedTabIndexes = {0};
   late final List<_TabRouteObserver> _routeObservers;
   final List<bool> _hideBottomNavByTab = List<bool>.filled(5, false);
+  final List<Route<dynamic>?> _topRoutesByTab = List<Route<dynamic>?>.filled(
+    5,
+    null,
+  );
+  final List<int> _topRouteVersionsByTab = List<int>.filled(5, 0);
   late final List<GlobalKey<NavigatorState>> _navigatorKeys = List.generate(
     5,
     (_) => GlobalKey<NavigatorState>(),
@@ -253,6 +260,15 @@ class _MainScaffoldState extends State<MainScaffold> {
         onChanged: (hideBottomNav) {
           if (!mounted || _hideBottomNavByTab[index] == hideBottomNav) return;
           setState(() => _hideBottomNavByTab[index] = hideBottomNav);
+        },
+        onTopRouteChanged: (route) {
+          if (identical(_topRoutesByTab[index], route)) return;
+          final version = ++_topRouteVersionsByTab[index];
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || version != _topRouteVersionsByTab[index]) return;
+            if (identical(_topRoutesByTab[index], route)) return;
+            setState(() => _topRoutesByTab[index] = route);
+          });
         },
       ),
     );
@@ -298,6 +314,55 @@ class _MainScaffoldState extends State<MainScaffold> {
   Future<void> _handleBackNavigation() async {
     final navigator = _navigatorKeys[_currentIndex].currentState;
     await navigator?.maybePop();
+  }
+
+  Future<void> _openActiveTtsReader() async {
+    final ttsProvider = context.read<TtsProvider>();
+    final novel = ttsProvider.activeNovel;
+    final chapters = ttsProvider.activeChapters;
+    final chapterIndex = ttsProvider.activeChapterIndex;
+    if (novel == null ||
+        chapters.isEmpty ||
+        chapterIndex < 0 ||
+        chapterIndex >= chapters.length) {
+      return;
+    }
+
+    if (_currentIndex != 0) {
+      setState(() {
+        _visitedTabIndexes.add(0);
+        _currentIndex = 0;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    if (!mounted ||
+        _topRoutesByTab[0]?.settings.name == ReadingScreen.routeName) {
+      return;
+    }
+
+    final readingProvider = context.read<ReadingProvider>();
+    readingProvider
+      ..setCurrentNovel(novel)
+      ..setChapters(chapters)
+      ..setCurrentChapter(chapters[chapterIndex]);
+    final contentLength = ttsProvider.activeChapterContent.length;
+    final startPosition = ttsProvider.currentStartOffset
+        .clamp(0, contentLength)
+        .toInt();
+    await _navigatorKeys[0].currentState?.push<void>(
+      MaterialPageRoute<void>(
+        settings: const RouteSettings(name: ReadingScreen.routeName),
+        builder: (_) => ReadingScreen(
+          novel: novel,
+          chapters: chapters,
+          startChapterIndex: chapterIndex,
+          startCharPosition: startPosition,
+          startScrollPosition: contentLength == 0
+              ? 0
+              : startPosition / contentLength,
+        ),
+      ),
+    );
   }
 
   Future<void> _checkStartupUpdate() async {
@@ -550,6 +615,9 @@ class _MainScaffoldState extends State<MainScaffold> {
   Widget build(BuildContext context) {
     final useNavigationRail = MediaQuery.sizeOf(context).width >= 720;
     final hideNav = _hideBottomNavByTab[_currentIndex];
+    final topRoute = _topRoutesByTab[_currentIndex];
+    final showingReader = topRoute?.settings.name == ReadingScreen.routeName;
+    final showMiniPlayer = topRoute is PageRoute<dynamic> && !showingReader;
     final pages = IndexedStack(
       index: _currentIndex,
       children: List.generate(
@@ -566,44 +634,60 @@ class _MainScaffoldState extends State<MainScaffold> {
         unawaited(_handleBackNavigation());
       },
       child: Scaffold(
-        body: useNavigationRail && !hideNav
-            ? Row(
-                children: [
-                  SafeArea(
-                    child: NavigationRail(
-                      selectedIndex: _currentIndex,
-                      onDestinationSelected: _selectTab,
-                      labelType: NavigationRailLabelType.all,
-                      minWidth: 76,
-                      destinations: const [
-                        NavigationRailDestination(
-                          icon: Icon(Icons.menu_book_outlined),
-                          label: Text('小说'),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(
+              child: useNavigationRail && !hideNav
+                  ? Row(
+                      children: [
+                        SafeArea(
+                          child: NavigationRail(
+                            selectedIndex: _currentIndex,
+                            onDestinationSelected: _selectTab,
+                            labelType: NavigationRailLabelType.all,
+                            minWidth: 76,
+                            destinations: const [
+                              NavigationRailDestination(
+                                icon: Icon(Icons.menu_book_outlined),
+                                label: Text('小说'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.auto_stories_outlined),
+                                label: Text('漫画'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.movie_filter_outlined),
+                                label: Text('动漫'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.live_tv_outlined),
+                                label: Text('影视'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.person_outline),
+                                label: Text('我的'),
+                              ),
+                            ],
+                          ),
                         ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.auto_stories_outlined),
-                          label: Text('漫画'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.movie_filter_outlined),
-                          label: Text('动漫'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.live_tv_outlined),
-                          label: Text('影视'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.person_outline),
-                          label: Text('我的'),
-                        ),
+                        const VerticalDivider(width: 1),
+                        Expanded(child: pages),
                       ],
-                    ),
-                  ),
-                  const VerticalDivider(width: 1),
-                  Expanded(child: pages),
-                ],
-              )
-            : pages,
+                    )
+                  : pages,
+            ),
+            if (showMiniPlayer)
+              Positioned(
+                left: useNavigationRail && !hideNav ? 77 : 0,
+                right: 0,
+                bottom: 0,
+                child: TtsMiniPlayer(
+                  onOpenReader: () => unawaited(_openActiveTtsReader()),
+                ),
+              ),
+          ],
+        ),
         bottomNavigationBar: hideNav || useNavigationRail
             ? null
             : BottomNavigationBar(
@@ -638,9 +722,10 @@ class _MainScaffoldState extends State<MainScaffold> {
 }
 
 class _TabRouteObserver extends NavigatorObserver {
-  _TabRouteObserver({required this.onChanged});
+  _TabRouteObserver({required this.onChanged, required this.onTopRouteChanged});
 
   final ValueChanged<bool> onChanged;
+  final ValueChanged<Route<dynamic>?> onTopRouteChanged;
   final List<Route<dynamic>> _routes = [];
 
   @override
@@ -681,6 +766,7 @@ class _TabRouteObserver extends NavigatorObserver {
   void _emit() {
     final pageRouteCount = _routes.whereType<PageRoute<dynamic>>().length;
     onChanged(pageRouteCount > 1);
+    onTopRouteChanged(_routes.isEmpty ? null : _routes.last);
   }
 
   void reset() {
