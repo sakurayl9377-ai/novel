@@ -673,10 +673,13 @@ export function claimSeasonTaskReward({ userId, taskId }) {
   }
 }
 
-export function finalizeHorseRaceSeason(seasonId) {
+export function finalizeHorseRaceSeason(
+  seasonId,
+  { withinTransaction = false } = {},
+) {
   const season = one("SELECT * FROM horse_race_seasons WHERE id = ?", [seasonId]);
   if (!season) throw badRequest("season not found");
-  db.exec("BEGIN IMMEDIATE");
+  if (!withinTransaction) db.exec("BEGIN IMMEDIATE");
   try {
     const stats = all(
       `SELECT s.*, ROW_NUMBER() OVER (
@@ -718,10 +721,10 @@ export function finalizeHorseRaceSeason(seasonId) {
       "UPDATE horse_race_seasons SET status = 'ended', updated_at = datetime('now') WHERE id = ?",
       [seasonId],
     );
-    db.exec("COMMIT");
+    if (!withinTransaction) db.exec("COMMIT");
     return { seasonId: Number(seasonId), awarded };
   } catch (error) {
-    safeRollback();
+    if (!withinTransaction) safeRollback();
     throw error;
   }
 }

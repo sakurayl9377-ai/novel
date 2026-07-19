@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { config } from "./config.js";
@@ -328,6 +329,7 @@ export function migrate() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       status TEXT NOT NULL DEFAULT 'betting',
       seed TEXT NOT NULL DEFAULT '',
+      seed_commit TEXT NOT NULL DEFAULT '',
       round_key TEXT NOT NULL DEFAULT '',
       rules_version INTEGER NOT NULL DEFAULT 2,
       horses_json TEXT NOT NULL DEFAULT '[]',
@@ -1038,6 +1040,7 @@ export function migrate() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       season_key TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'draft',
       starts_at TEXT NOT NULL,
       ends_at TEXT NOT NULL,
@@ -1045,10 +1048,13 @@ export function migrate() {
       revision INTEGER NOT NULL DEFAULT 1,
       created_by INTEGER,
       updated_by INTEGER,
+      finalized_by INTEGER,
+      finalized_at TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
       FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (finalized_by) REFERENCES users(id) ON DELETE SET NULL,
       CHECK (status IN ('draft', 'active', 'paused', 'ended'))
     );
 
@@ -1100,6 +1106,7 @@ export function migrate() {
       status TEXT NOT NULL DEFAULT 'active',
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (season_id, task_key),
       FOREIGN KEY (season_id) REFERENCES horse_race_seasons(id) ON DELETE CASCADE
     );
@@ -1128,6 +1135,8 @@ export function migrate() {
       reward_points INTEGER NOT NULL DEFAULT 0,
       reward_coins INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (season_id, reward_key),
       FOREIGN KEY (season_id) REFERENCES horse_race_seasons(id) ON DELETE CASCADE
     );
@@ -1153,6 +1162,25 @@ export function migrate() {
       FOREIGN KEY (round_id) REFERENCES horse_race_rounds(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS horse_race_season_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season_id INTEGER NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (season_id) REFERENCES horse_race_seasons(id) ON DELETE CASCADE,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (entity_type IN ('season', 'task', 'reward'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_horse_race_season_events
+      ON horse_race_season_events(season_id, created_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS horse_race_responsible_settings (
       user_id INTEGER PRIMARY KEY,
@@ -1280,6 +1308,7 @@ export function migrate() {
   addMissingColumn("chat_room_members", "last_read_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("chat_room_members", "last_read_message_id", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("horse_race_rounds", "round_key", "TEXT NOT NULL DEFAULT ''");
+  addMissingColumn("horse_race_rounds", "seed_commit", "TEXT NOT NULL DEFAULT ''");
   // Existing rows were created by the three-hour v1 rules and must finish
   // under those timings instead of being settled immediately during deploy.
   addMissingColumn("horse_race_rounds", "rules_version", "INTEGER NOT NULL DEFAULT 1");
@@ -1300,6 +1329,7 @@ export function migrate() {
   addMissingColumn("content_source_health", "last_observed_at", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("content_source_health", "last_observation_error", "TEXT NOT NULL DEFAULT ''");
   migrateGrowthOperationsSchema();
+  migrateHorseRaceOperationsSchema();
   migrateShopWorkflowSchema();
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
@@ -1594,6 +1624,83 @@ function migrateGrowthOperationsSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_growth_operation_events_entity
       ON growth_operation_events(entity_type, entity_key, created_at DESC, id DESC);
+  `);
+}
+
+function migrateHorseRaceOperationsSchema() {
+  addMissingColumn(
+    "horse_race_seasons",
+    "description",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn("horse_race_seasons", "finalized_by", "INTEGER");
+  addMissingColumn(
+    "horse_race_seasons",
+    "finalized_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn(
+    "horse_race_season_tasks",
+    "updated_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn(
+    "horse_race_season_rewards",
+    "created_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  addMissingColumn(
+    "horse_race_season_rewards",
+    "updated_at",
+    "TEXT NOT NULL DEFAULT ''",
+  );
+  run(
+    `UPDATE horse_race_season_tasks
+     SET updated_at = created_at
+     WHERE updated_at = ''`,
+  );
+  run(
+    `UPDATE horse_race_season_rewards
+     SET created_at = datetime('now'), updated_at = datetime('now')
+     WHERE created_at = '' OR updated_at = ''`,
+  );
+  for (const row of all(
+    "SELECT id, seed FROM horse_race_rounds WHERE seed_commit = '' AND seed <> ''",
+  )) {
+    run("UPDATE horse_race_rounds SET seed_commit = ? WHERE id = ?", [
+      createHash("sha256").update(String(row.seed)).digest("hex"),
+      row.id,
+    ]);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_horse_race_round_key
+      ON horse_race_rounds(round_key);
+
+    CREATE TABLE IF NOT EXISTS horse_race_season_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season_id INTEGER NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL,
+      before_json TEXT NOT NULL DEFAULT '{}',
+      after_json TEXT NOT NULL DEFAULT '{}',
+      note TEXT NOT NULL DEFAULT '',
+      admin_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (season_id) REFERENCES horse_race_seasons(id) ON DELETE CASCADE,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (entity_type IN ('season', 'task', 'reward'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_horse_race_season_events
+      ON horse_race_season_events(season_id, created_at DESC, id DESC);
+
+    CREATE TRIGGER IF NOT EXISTS trg_horse_race_round_fairness_immutable
+    BEFORE UPDATE OF seed, seed_commit ON horse_race_rounds
+    WHEN OLD.seed <> NEW.seed OR OLD.seed_commit <> NEW.seed_commit
+    BEGIN
+      SELECT RAISE(ABORT, 'horse_race_fairness_immutable');
+    END;
   `);
 }
 

@@ -378,7 +378,7 @@ function commonHorseRaceState() {
     },
     fairness: {
       algorithm: Number(round.rules_version || 1) < rulesVersion ? "legacy-seed-v1" : "seed-commit-v1",
-      seedCommit: seedCommit(round.seed || ""),
+      seedCommit: round.seed_commit || seedCommit(round.seed || ""),
       seedReveal: round.status === "settling" ? round.seed || "" : "",
     },
     race,
@@ -526,9 +526,11 @@ function createHorseRaceRound(phaseStartedAt) {
   const result = buildRaceResult(seed, horses, winnerIndex);
   run(
     `INSERT OR IGNORE INTO horse_race_rounds
-       (status, seed, round_key, rules_version, horses_json, race_json, result_json, winner_index, phase_started_at)
-     VALUES ('betting', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [seed, key, rulesVersion, JSON.stringify(horses), JSON.stringify(race), JSON.stringify(result), winnerIndex, phaseStartedAt],
+       (status, seed, seed_commit, round_key, rules_version, horses_json,
+        race_json, result_json, winner_index, phase_started_at)
+     VALUES ('betting', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [seed, seedCommit(seed), key, rulesVersion, JSON.stringify(horses),
+     JSON.stringify(race), JSON.stringify(result), winnerIndex, phaseStartedAt],
   );
   invalidateHorseRaceCache();
   return one("SELECT * FROM horse_race_rounds WHERE round_key = ?", [key]);

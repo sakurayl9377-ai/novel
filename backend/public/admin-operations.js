@@ -144,8 +144,8 @@ async function renderRace() {
   const selected = state.selected.race;
   let detail = empty("选择一个轮次查看下注、赔率与公平性证明");
   if (selected) {
-    const response = await api(`/admin/horse-race/rounds/${selected}`);
-    detail = raceRoundDetail(response.item);
+    const response = await api(`/admin/horse-race/rounds/${selected}?page=1&pageSize=100`);
+    detail = raceRoundDetail(response.item, response.bets?.items || []);
   }
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / (data.pageSize || 30)));
   viewRoot.innerHTML = `
@@ -171,7 +171,7 @@ async function renderRace() {
   `;
 }
 
-function raceRoundDetail(item) {
+function raceRoundDetail(item, bets) {
   const fairness = item.fairness || {};
   const horseTotals = item.horseTotals || [];
   return `
@@ -206,9 +206,9 @@ function raceRoundDetail(item) {
             ? horseTotals
                 .map(
                   (horse) => `<div>
-                    <strong>${Number(horse.horse_index || 0) + 1} 号马</strong>
-                    <span>${horse.participants || 0} 人 / ${horse.bet_count || 0} 注</span>
-                    <small>投注 ${horse.total_staked || 0} · 赔付 ${horse.total_payout || 0}</small>
+                    <strong>${Number(horse.index ?? horse.horse_index ?? 0) + 1} 号马</strong>
+                    <span>${horse.participants || 0} 人 / ${horse.betCount ?? horse.bet_count ?? 0} 注</span>
+                    <small>投注 ${horse.totalStaked ?? horse.total_staked ?? 0} · 赔付 ${horse.totalPayout ?? horse.total_payout ?? 0}</small>
                   </div>`,
                 )
                 .join("")
@@ -217,17 +217,17 @@ function raceRoundDetail(item) {
       </div>
     </section>
     <section class="section-block">
-      <div class="section-title"><span>下注明细（最多 200 条）</span></div>
+      <div class="section-title"><span>下注明细（最多 100 条）</span></div>
       <div class="data-table race-bet-table">
         <div class="data-row data-head"><span>用户</span><span>马匹</span><span>金额 / 赔率</span><span>赔付</span><span>状态 / 时间</span></div>
-        ${(item.bets || [])
+        ${(bets || [])
           .map(
             (bet) => `<div class="data-row">
-              <span><strong>${escapeHtml(bet.nickname || bet.email || `用户 #${bet.user_id}`)}</strong><small>${escapeHtml(bet.email || "")}</small></span>
-              <span>${Number(bet.horse_index || 0) + 1} 号马</span>
+              <span><strong>${escapeHtml(bet.user?.nickname || bet.user?.email || `用户 #${bet.user?.id || 0}`)}</strong><small>${escapeHtml(bet.user?.email || "")}</small></span>
+              <span>${Number(bet.horseIndex || 0) + 1} 号马</span>
               <span>${bet.amount || 0} / ${Number(bet.odds || 0).toFixed(2)}</span>
               <span>${bet.payout || 0}</span>
-              <span><strong>${escapeHtml(bet.status || "-")}</strong><small>${formatTime(bet.created_at)}</small></span>
+              <span><strong>${escapeHtml(bet.status || "-")}</strong><small>${formatTime(bet.createdAt)}</small></span>
             </div>`,
           )
           .join("") || empty("本轮暂无下注")}

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import { config } from "./config.js";
@@ -10,6 +9,7 @@ import {
   normalizeProxySubscriptionUrl,
   runProxyControl,
 } from "./proxy-control-service.js";
+import { latestHorseRaceRoundSummary } from "./race-ops-service.js";
 import {
   badRequest,
   optionalInt,
@@ -35,18 +35,6 @@ export async function adminOperationsRoutes(app) {
     "/admin/finance/workbench",
     { preHandler: app.adminRequired },
     async (request) => financeWorkbench(request.query || {}),
-  );
-
-  app.get(
-    "/admin/horse-race/rounds",
-    { preHandler: app.adminRequired },
-    async (request) => horseRaceRounds(request.query || {}),
-  );
-
-  app.get(
-    "/admin/horse-race/rounds/:id",
-    { preHandler: app.adminRequired },
-    async (request) => horseRaceRoundDetail(request.params.id),
   );
 
   app.get(
@@ -202,18 +190,7 @@ async function proxyControl(payload) {
 function operationsOverview() {
   const dbBytes = fs.existsSync(config.dbPath) ? fs.statSync(config.dbPath).size : 0;
   const memory = process.memoryUsage();
-  const currentRace = one(
-    `SELECT r.id, r.round_key, r.status, r.rules_version, r.phase_started_at,
-            r.winner_index, r.created_at, r.locked_at, r.settled_at,
-            COUNT(DISTINCT b.user_id) AS participants,
-            COALESCE(SUM(b.amount), 0) AS total_staked,
-            COALESCE(SUM(b.payout), 0) AS total_payout
-     FROM horse_race_rounds r
-     LEFT JOIN horse_race_bets b ON b.round_id = r.id
-     GROUP BY r.id
-     ORDER BY r.id DESC
-     LIMIT 1`,
-  );
+  const currentRace = latestHorseRaceRoundSummary();
 
   return {
     generatedAt: new Date().toISOString(),
@@ -255,7 +232,7 @@ function operationsOverview() {
        WHERE created_at >= datetime('now', '-24 hours')`,
     ),
     race: {
-      current: currentRace ? raceRoundJson(currentRace) : null,
+      current: currentRace,
       rounds24h: countWhere(
         "horse_race_rounds",
         "created_at >= datetime('now', '-24 hours')",
@@ -536,100 +513,6 @@ function financeEventJson(row) {
           email: row.operator_email || "",
         }
       : null,
-  };
-}
-
-function horseRaceRounds(query) {
-  const { page, pageSize, offset } = pageParams(query);
-  const keyword = optionalString(query.q, 80);
-  const status = optionalString(query.status, 30);
-  const where = [];
-  const params = [];
-  if (keyword) {
-    where.push("r.round_key LIKE ?");
-    params.push(`%${keyword}%`);
-  }
-  if (status) {
-    where.push("r.status = ?");
-    params.push(status);
-  }
-  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const total = one(
-    `SELECT COUNT(*) AS count FROM horse_race_rounds r ${clause}`,
-    params,
-  )?.count || 0;
-  const items = all(
-    `SELECT r.id, r.round_key, r.status, r.rules_version, r.phase_started_at,
-            r.winner_index, r.created_at, r.locked_at, r.settled_at,
-            COUNT(b.id) AS bet_count,
-            COUNT(DISTINCT b.user_id) AS participants,
-            COALESCE(SUM(b.amount), 0) AS total_staked,
-            COALESCE(SUM(b.payout), 0) AS total_payout
-     FROM horse_race_rounds r
-     LEFT JOIN horse_race_bets b ON b.round_id = r.id
-     ${clause}
-     GROUP BY r.id
-     ORDER BY r.id DESC
-     LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset],
-  ).map(raceRoundJson);
-  return { page, pageSize, total, items };
-}
-
-function horseRaceRoundDetail(rawId) {
-  const id = optionalInt(rawId, 0);
-  if (!id) throw badRequest("round id is invalid");
-  const round = one(
-    `SELECT r.*,
-            COUNT(b.id) AS bet_count,
-            COUNT(DISTINCT b.user_id) AS participants,
-            COALESCE(SUM(b.amount), 0) AS total_staked,
-            COALESCE(SUM(b.payout), 0) AS total_payout
-     FROM horse_race_rounds r
-     LEFT JOIN horse_race_bets b ON b.round_id = r.id
-     WHERE r.id = ?
-     GROUP BY r.id`,
-    [id],
-  );
-  if (!round) throw badRequest("round not found");
-  const horseTotals = all(
-    `SELECT horse_index, COUNT(*) AS bet_count,
-            COUNT(DISTINCT user_id) AS participants,
-            COALESCE(SUM(amount), 0) AS total_staked,
-            COALESCE(SUM(payout), 0) AS total_payout
-     FROM horse_race_bets
-     WHERE round_id = ?
-     GROUP BY horse_index
-     ORDER BY horse_index`,
-    [id],
-  );
-  const bets = all(
-    `SELECT b.*, u.email, u.nickname
-     FROM horse_race_bets b
-     JOIN users u ON u.id = b.user_id
-     WHERE b.round_id = ?
-     ORDER BY b.id DESC
-     LIMIT 200`,
-    [id],
-  );
-  const settled = round.status === "settling" || Boolean(round.settled_at);
-  return {
-    item: {
-      ...raceRoundJson(round),
-      horses: parseJson(round.horses_json, []),
-      odds: parseJson(round.odds_json, []),
-      race: parseJson(round.race_json, {}),
-      result: parseJson(round.result_json, {}),
-      fairness: {
-        algorithm: Number(round.rules_version || 1) >= 2
-          ? "seed-commit-v1"
-          : "legacy-seed-v1",
-        seedCommit: crypto.createHash("sha256").update(round.seed || "").digest("hex"),
-        seedReveal: settled ? round.seed || "" : "",
-      },
-      horseTotals,
-      bets,
-    },
   };
 }
 
@@ -1113,25 +996,6 @@ function broadcastRows({ id = 0, limit = 20, offset = 0 }) {
      LIMIT ? OFFSET ?`,
     id ? [id, limit, offset] : [limit, offset],
   );
-}
-
-function raceRoundJson(row) {
-  return {
-    id: Number(row.id || 0),
-    roundCode: row.round_key || "",
-    status: row.status || "",
-    rulesVersion: Number(row.rules_version || 1),
-    phaseStartedAt: Number(row.phase_started_at || 0),
-    winnerIndex: Number(row.winner_index ?? -1),
-    betCount: Number(row.bet_count || 0),
-    participants: Number(row.participants || 0),
-    totalStaked: Number(row.total_staked || 0),
-    totalPayout: Number(row.total_payout || 0),
-    houseNet: Number(row.total_staked || 0) - Number(row.total_payout || 0),
-    createdAt: row.created_at || "",
-    lockedAt: row.locked_at || "",
-    settledAt: row.settled_at || "",
-  };
 }
 
 function count(table) {

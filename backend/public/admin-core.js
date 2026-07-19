@@ -425,6 +425,11 @@ function settingsOption(value, label, selected) {
   return `<option value="${escapeAttr(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
 }
 
+function option(value, label, selected) {
+  const normalizedValue = String(value);
+  return `<option value="${escapeAttr(normalizedValue)}" ${normalizedValue === String(selected) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
 function secretPlaceholder(field) {
   return field?.configured ? "已配置，留空不修改" : "未配置";
 }

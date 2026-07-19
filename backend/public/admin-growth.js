@@ -172,11 +172,10 @@ async function renderGrowthOps() {
               <p>${escapeHtml(item.seasonKey)} · ${item.participants || 0} 位参与者 · 修订 ${item.revision}</p>
               <small>${formatTime(item.startsAt)} - ${formatTime(item.endsAt)}</small>
               <div class="inline-actions">
-                <button class="button" data-action="set-growth-season-status" data-id="${item.id}" data-status="active">设为当前赛季</button>
-                <button class="button muted" data-action="set-growth-season-status" data-id="${item.id}" data-status="paused">暂停</button>
-                <button class="button" data-action="add-growth-season-task" data-id="${item.id}">添加任务</button>
-                <button class="button" data-action="add-growth-season-reward" data-id="${item.id}">添加奖励</button>
-                <button class="button danger" data-action="finalize-growth-season" data-id="${item.id}">结算赛季</button>
+                ${item.status === "draft" || item.status === "paused" ? `<button class="button" data-action="set-growth-season-status" data-id="${item.id}" data-status="active">设为当前赛季</button>` : ""}
+                ${item.status === "active" ? `<button class="button muted" data-action="set-growth-season-status" data-id="${item.id}" data-status="paused">暂停</button>` : ""}
+                ${(item.status === "draft" || item.status === "paused") && !item.participants ? `<button class="button" data-action="add-growth-season-task" data-id="${item.id}">添加任务</button><button class="button" data-action="add-growth-season-reward" data-id="${item.id}">添加奖励</button>` : ""}
+                ${item.status === "active" || item.status === "paused" ? `<button class="button danger" data-action="finalize-growth-season" data-id="${item.id}">结算赛季</button>` : ""}
               </div>
             </article>`).join("") || empty("还没有赛季")}
         </div>
@@ -314,12 +313,12 @@ async function handleGrowthAction(action, actionElement) {
       renderNotice(`活动已回滚到修订 ${revision}，并自动暂停`);
       await renderGrowthOps();
     } else if (action === "create-growth-season") {
-      await api("/admin/growth/seasons", {
+      const requestedStatus = valueOf("#growthSeasonStatus") || "draft";
+      const created = await api("/admin/growth/seasons", {
         method: "POST",
         body: {
           seasonKey: valueOf("#growthSeasonKey"),
           title: valueOf("#growthSeasonTitle"),
-          status: valueOf("#growthSeasonStatus") || "draft",
           startsAt: valueOf("#growthSeasonStartsAt"),
           endsAt: valueOf("#growthSeasonEndsAt"),
           config: {
@@ -339,14 +338,32 @@ async function handleGrowthAction(action, actionElement) {
             maxRank: 10,
             rewardCoins: Number(valueOf("#growthSeasonTopReward") || 500),
           }],
+          changeNote: "旧版后台创建赛马赛季",
         },
       });
-      renderNotice("赛马赛季已创建");
+      if (requestedStatus === "active") {
+        await api(`/admin/horse-race/seasons/${created.item.id}/status`, {
+          method: "POST",
+          body: {
+            status: "active",
+            expectedRevision: created.item.revision,
+            note: "旧版后台创建后立即启用赛季",
+            acknowledgeBudget: true,
+          },
+        });
+      }
+      renderNotice(requestedStatus === "active" ? "赛马赛季已创建并启用" : "赛马赛季草稿已创建");
       await renderGrowthOps();
     } else if (action === "set-growth-season-status") {
-      await api(`/admin/growth/seasons/${actionElement.dataset.id}`, {
-        method: "PATCH",
-        body: { status: actionElement.dataset.status },
+      const season = await api(`/admin/growth/seasons/${actionElement.dataset.id}`);
+      await api(`/admin/horse-race/seasons/${actionElement.dataset.id}/status`, {
+        method: "POST",
+        body: {
+          status: actionElement.dataset.status,
+          expectedRevision: season.item.revision,
+          note: `旧版后台将赛季状态调整为 ${actionElement.dataset.status}`,
+          acknowledgeBudget: actionElement.dataset.status === "active",
+        },
       });
       renderNotice("赛季状态已更新");
       await renderGrowthOps();
@@ -354,14 +371,17 @@ async function handleGrowthAction(action, actionElement) {
       const metricName = prompt("指标：rounds / wins / bet / profit", "rounds");
       if (!metricName) return;
       const targetCount = Number(prompt("目标数量", "10") || 0);
+      const season = await api(`/admin/growth/seasons/${actionElement.dataset.id}`);
       await api(`/admin/growth/seasons/${actionElement.dataset.id}/tasks`, {
         method: "POST",
         body: {
+          expectedRevision: season.item.revision,
           taskKey: `${metricName}-${targetCount}`,
           title: `累计 ${metricName} ${targetCount}`,
           metric: metricName,
           targetCount,
           rewardCoins: 100,
+          changeNote: "旧版后台添加赛季任务",
         },
       });
       renderNotice("赛季任务已添加");
@@ -369,24 +389,34 @@ async function handleGrowthAction(action, actionElement) {
     } else if (action === "add-growth-season-reward") {
       const maxRank = Number(prompt("奖励覆盖到第几名？", "10") || 0);
       const rewardCoins = Number(prompt("奖励樱花币", "500") || 0);
+      if (!maxRank || !rewardCoins) return;
+      const season = await api(`/admin/growth/seasons/${actionElement.dataset.id}`);
       await api(`/admin/growth/seasons/${actionElement.dataset.id}/rewards`, {
         method: "POST",
         body: {
+          expectedRevision: season.item.revision,
           rewardKey: `top-${maxRank}-${Date.now()}`,
           title: `赛季前 ${maxRank} 奖励`,
           minRank: 1,
           maxRank,
           rewardCoins,
+          changeNote: "旧版后台添加赛季排名奖励",
         },
       });
       renderNotice("赛季奖励已添加");
       await renderGrowthOps();
     } else if (action === "finalize-growth-season") {
       if (!confirm("确认结束赛季并按当前排行榜发放奖励？该操作可安全重试，但结束后不应继续计分。")) return;
+      const season = await api(`/admin/growth/seasons/${actionElement.dataset.id}`);
       const result = await api(`/admin/growth/seasons/${actionElement.dataset.id}/finalize`, {
         method: "POST",
+        body: {
+          expectedRevision: season.item.revision,
+          note: "旧版后台人工确认并结算赛季",
+          acknowledgeEarlyFinalize: true,
+        },
       });
-      renderNotice(`赛季已结束，本次发放 ${result.awarded || 0} 份奖励`);
+      renderNotice(`赛季已结束，本次发放 ${result.finalization?.awarded || result.awarded || 0} 份奖励`);
       await renderGrowthOps();
     }
 }
