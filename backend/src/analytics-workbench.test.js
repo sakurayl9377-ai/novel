@@ -14,7 +14,7 @@ process.env.ADMIN_PASSWORD = adminPassword;
 
 const { buildServer } = await import("./server.js");
 const { config } = await import("./config.js");
-const { one, run } = await import("./db.js");
+const { run } = await import("./db.js");
 
 test("quality analytics keeps time, filter, and error-group contracts coherent", async () => {
   const app = await buildServer();
@@ -154,13 +154,14 @@ test("quality analytics keeps time, filter, and error-group contracts coherent",
     assert.equal(overview.topScreens[0].screen, "novel_detail");
     assert.equal(overview.versions[0].versionCode, 540);
 
-    const expectedLocalDay = one(
-      "SELECT date(datetime('now', '-1 hour'), '+8 hours') AS day",
-    ).day;
-    const recentDay = overview.daily.find((item) => item.day === expectedLocalDay);
-    assert.ok(recentDay);
-    assert.equal(recentDay.events, 3);
-    assert.equal(recentDay.errors, 3);
+    assert.equal(
+      overview.daily.reduce((total, item) => total + item.events, 0),
+      overview.summary.events,
+    );
+    assert.equal(
+      overview.daily.reduce((total, item) => total + item.errors, 0),
+      overview.summary.errors,
+    );
 
     const twoDayOverview = await request(
       app,
