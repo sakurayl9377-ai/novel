@@ -108,30 +108,6 @@ cleanup() {
     "$deploy_script_restore"
 }
 
-sanitize_retired_video_database() {
-  local target_database="$1"
-  [[ -f "$target_database" ]] || return 0
-  local cleanup_sql
-  cleanup_sql="
-    PRAGMA foreign_keys = OFF;
-    BEGIN IMMEDIATE;
-    DROP TABLE IF EXISTS suibian_watch_history;
-    DROP TABLE IF EXISTS suibian_likes;
-    DROP TABLE IF EXISTS suibian_favorites;
-    DROP TABLE IF EXISTS video_category_policies;
-    DROP TABLE IF EXISTS video_content_overrides;
-  "
-  if [[ "$(sqlite3 "$target_database" "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'video_cover_urls';")" == "1" ]]; then
-    cleanup_sql+="
-      DELETE FROM video_cover_urls
-      WHERE lower(trim(provider)) = 'dbzy'
-         OR lower(trim(source_key)) = 'dbzy';
-    "
-  fi
-  cleanup_sql+="COMMIT;"
-  sqlite3 "$target_database" ".timeout 10000" "$cleanup_sql"
-}
-
 remove_retired_video_releases() {
   local active_release="$1"
   while IFS= read -r -d '' release; do
@@ -255,7 +231,7 @@ fi
 sudo -u "$app_user" "${runtime_env[@]}" "$npm_bin" ci --omit=dev --prefix "$staged_dir"
 while IFS= read -r -d '' file; do
   sudo -u "$app_user" "$node_bin" --check "$file" >/dev/null
-done < <(find "$staged_dir/src" "$staged_dir/public" "$staged_dir/admin-dist" -type f -name '*.js' -print0)
+done < <(find "$staged_dir/src" "$staged_dir/public" "$staged_dir/admin-dist" "$staged_dir/scripts" -type f -name '*.js' -print0)
 sudo -u "$app_user" "${runtime_env[@]}" "$npm_bin" run security --prefix "$staged_dir"
 python_cache="$work_dir/python-cache"
 PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$staged_dir"/scripts/*.py
@@ -295,6 +271,7 @@ chown -R "$app_user:$app_user" "$new_release"
 [[ -f "$new_release/scripts/mihomo-admin-control.py" ]] || fail "mihomo_helper_missing"
 [[ -f "$new_release/scripts/mihomo-subscription-update.py" ]] || fail "mihomo_updater_missing"
 [[ -f "$new_release/scripts/deploy-production.sh" ]] || fail "deploy_script_missing"
+[[ -f "$new_release/scripts/sanitize-retired-video-database.js" ]] || fail "database_sanitizer_missing"
 [[ -f "$helper_target" ]] && cp -a "$helper_target" "$helper_backup"
 [[ -f "$updater_target" ]] && cp -a "$updater_target" "$updater_backup"
 [[ -f "$deploy_script_target" ]] && cp -a "$deploy_script_target" "$deploy_script_backup"
@@ -326,10 +303,11 @@ committed=true
 rm -f \
   "$shared_root/data/dbzy-cache.json" \
   "$shared_root/data/suibian-catalog.json"
-sanitize_retired_video_database "$database_path"
+database_targets=("$database_path")
 while IFS= read -r -d '' database_backup; do
-  sanitize_retired_video_database "$database_backup"
+  database_targets+=("$database_backup")
 done < <(find "$database_backup_root" -mindepth 1 -maxdepth 1 -type f -name 'interaction-*.sqlite' -print0 2>/dev/null)
+"$node_bin" "$new_release/scripts/sanitize-retired-video-database.js" "${database_targets[@]}"
 verify_retired_video_cleanup
 
 current_release="$(readlink -f "$app_link")"
