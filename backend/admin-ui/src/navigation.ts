@@ -72,7 +72,7 @@ export const navigationGroups: NavigationGroup[] = [
     items: [
       { label: '增长运营', route: 'growth-ops', icon: Histogram, adminOnly: true },
       { label: '赛马运营', route: 'race', icon: Promotion, adminOnly: true },
-      { label: '通知发布', route: 'notifications', icon: Bell, adminOnly: true, legacy: true },
+      { label: '公告与通知', route: 'notifications', icon: Bell, adminOnly: true, legacy: true },
     ],
   },
   {
@@ -92,7 +92,7 @@ export const navigationGroups: NavigationGroup[] = [
 export function visibleNavigation(role: string | undefined): NavigationGroup[] {
   const isAdmin = role === 'admin';
   const migratedLabels: Record<string, string> = {
-    notifications: '通知发布',
+    notifications: '公告与通知',
     analytics: '质量分析',
     versions: '版本与设备',
     releases: '发布管理',

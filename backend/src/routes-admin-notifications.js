@@ -8,8 +8,48 @@ import {
   sendNotification,
   updateNotificationDraft,
 } from "./notification-ops-service.js";
+import {
+  appAnnouncementWorkbench,
+  disableAppAnnouncement,
+  publishAppAnnouncement,
+  republishAppAnnouncement,
+} from "./app-announcement-ops-service.js";
 
 export async function adminNotificationRoutes(app) {
+  app.get(
+    "/admin/app-announcements",
+    { preHandler: app.adminRequired },
+    async (request) => appAnnouncementWorkbench(request.query || {}),
+  );
+
+  app.post(
+    "/admin/app-announcements/publish",
+    { preHandler: app.adminRequired },
+    async (request) => publishAppAnnouncement(
+      request.user.id,
+      request.body || {},
+    ),
+  );
+
+  app.post(
+    "/admin/app-announcements/disable",
+    { preHandler: app.adminRequired },
+    async (request) => disableAppAnnouncement(
+      request.user.id,
+      request.body || {},
+    ),
+  );
+
+  app.post(
+    "/admin/app-announcements/:id/republish",
+    { preHandler: app.adminRequired },
+    async (request) => republishAppAnnouncement(
+      request.user.id,
+      request.params.id,
+      request.body || {},
+    ),
+  );
+
   app.get(
     "/admin/notifications",
     { preHandler: app.adminRequired },

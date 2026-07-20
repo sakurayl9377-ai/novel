@@ -181,6 +181,76 @@ test("notification workbench previews structured audiences and sends atomically"
     const detail = await request(app, "GET", `/admin/notifications/${legacy.item.id}`, undefined, token);
     assert.equal(detail.events.length >= 2, true);
     assert.equal(detail.delivery.atomic, true);
+
+    const publishedAnnouncement = await request(
+      app,
+      "POST",
+      "/admin/app-announcements/publish",
+      {
+        expectedVersion: "",
+        title: "二次元的世界",
+        content: "欢迎来到二次元的世界。",
+        changeNote: "发布启动欢迎公告",
+      },
+      token,
+    );
+    assert.equal(publishedAnnouncement.current.enabled, true);
+    const publicAnnouncement = await request(
+      app,
+      "GET",
+      "/app/announcement",
+    );
+    assert.equal(publicAnnouncement.item.title, "二次元的世界");
+    assert.equal(publicAnnouncement.item.enabled, true);
+    assert.equal(
+      one(
+        "SELECT COUNT(*) AS total FROM system_notifications WHERE content = ?",
+        ["欢迎来到二次元的世界。"],
+      ).total,
+      0,
+      "startup announcements must not be inserted into the message center",
+    );
+
+    const disabledAnnouncement = await request(
+      app,
+      "POST",
+      "/admin/app-announcements/disable",
+      {
+        expectedVersion: publishedAnnouncement.current.version,
+        changeNote: "欢迎公告展示期结束",
+      },
+      token,
+    );
+    assert.equal(disabledAnnouncement.current.enabled, false);
+
+    const announcementHistory = await request(
+      app,
+      "GET",
+      "/admin/app-announcements?page=1&pageSize=20",
+      undefined,
+      token,
+    );
+    assert.equal(announcementHistory.total, 2);
+    assert.equal(announcementHistory.items[0].enabled, false);
+    const publishedRevision = announcementHistory.items.find((item) => item.enabled);
+    assert.ok(publishedRevision);
+
+    const republishedAnnouncement = await request(
+      app,
+      "POST",
+      `/admin/app-announcements/${publishedRevision.id}/republish`,
+      {
+        expectedVersion: disabledAnnouncement.current.version,
+        changeNote: "重新展示欢迎公告",
+      },
+      token,
+    );
+    assert.equal(republishedAnnouncement.current.enabled, true);
+    assert.notEqual(
+      republishedAnnouncement.current.version,
+      publishedAnnouncement.current.version,
+      "republishing must create a new client-visible announcement id",
+    );
   } finally {
     await app.close();
     fs.rmSync(tempDir, { recursive: true, force: true });

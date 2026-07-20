@@ -31,7 +31,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
-  saved: [detail: NotificationDetailResponse];
+  saved: [detail: NotificationDetailResponse, reviewSend: boolean];
   reload: [];
 }>();
 
@@ -124,7 +124,7 @@ async function runPreview(): Promise<void> {
   }
 }
 
-async function save(): Promise<void> {
+async function save(reviewSend = false): Promise<void> {
   const validation = notificationFormError({
     title: form.title,
     content: form.content,
@@ -153,8 +153,8 @@ async function save(): Promise<void> {
         expectedRevision: props.item.revision,
       })
       : await createNotification(payload);
-    ElMessage.success(props.item ? '通知草稿已更新' : '通知草稿已创建');
-    emit('saved', result);
+    ElMessage.success(reviewSend ? '草稿已保存，请检查受众后确认发送' : (props.item ? '通知草稿已更新' : '通知草稿已创建'));
+    emit('saved', result, reviewSend);
     emit('update:modelValue', false);
   } catch (error) {
     ElMessage.error(errorMessage(error, '通知草稿保存失败'));
@@ -186,6 +186,14 @@ function errorMessage(error: unknown, fallback: string): string {
     </template>
 
     <div class="notification-editor-body">
+      <ElAlert
+        type="info"
+        :closable="false"
+        show-icon
+        title="投递位置：App 消息中心"
+      >
+        <template #default>这类通知会进入用户的“消息”页面，不会在 App 启动时弹窗。</template>
+      </ElAlert>
       <ElCollapse v-model="openSections" class="editor-collapse">
         <ElCollapseItem name="content">
           <template #title>
@@ -288,7 +296,11 @@ function errorMessage(error: unknown, fallback: string): string {
     <template #footer>
       <div class="drawer-footer">
         <span class="footer-hint">保存草稿不会向用户发送消息</span>
-        <div><ElButton @click="emit('update:modelValue', false)">取消</ElButton><ElButton type="primary" :loading="saving" @click="save">保存草稿</ElButton></div>
+        <div class="footer-actions">
+          <ElButton @click="emit('update:modelValue', false)">取消</ElButton>
+          <ElButton :loading="saving" @click="save(false)">仅保存草稿</ElButton>
+          <ElButton type="primary" :icon="Promotion" :loading="saving" @click="save(true)">保存并检查发送</ElButton>
+        </div>
       </div>
     </template>
   </ElDrawer>
@@ -327,11 +339,13 @@ function errorMessage(error: unknown, fallback: string): string {
 .change-note-block { padding: 13px 14px 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-muted); }
 .drawer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .footer-hint { color: var(--ink-500); font-size: 10px; }
+.footer-actions { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 620px) {
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
   .preview-result { grid-template-columns: 1fr; }
   .preview-sample { grid-column: auto; }
   .drawer-footer { align-items: flex-end; flex-direction: column; }
+  .footer-actions { width: 100%; flex-wrap: wrap; justify-content: flex-end; }
 }
 </style>

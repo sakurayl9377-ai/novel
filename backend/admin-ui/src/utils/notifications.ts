@@ -5,13 +5,13 @@ import type {
 } from '@/types/notifications';
 
 const categoryLabels: Record<NotificationCategory, string> = {
-  system: '系统通知',
-  update: '版本更新',
-  operation: '运营活动',
-  security: '安全提醒',
-  growth: '成长运营',
-  race: '赛事通知',
-  ai_novel: 'AI 小说',
+  system: '系统与账号消息',
+  update: '版本更新消息',
+  operation: '运营活动消息',
+  security: '安全提醒消息',
+  growth: '成长运营消息',
+  race: '赛事消息',
+  ai_novel: 'AI 小说消息',
 };
 
 const statusLabels: Record<NotificationStatus, string> = {

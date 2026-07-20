@@ -1,5 +1,7 @@
 import { apiRequest, queryString } from '@/services/api';
 import type {
+  AppAnnouncementMutationResponse,
+  AppAnnouncementWorkbenchResponse,
   NotificationDetailResponse,
   NotificationItem,
   NotificationMutationPayload,
@@ -7,6 +9,39 @@ import type {
   NotificationSendResponse,
   NotificationWorkbenchResponse,
 } from '@/types/notifications';
+
+export function getAppAnnouncements(query: {
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<AppAnnouncementWorkbenchResponse> {
+  return apiRequest(`/admin/app-announcements${queryString(query)}`);
+}
+
+export function publishAppAnnouncement(payload: {
+  expectedVersion: string;
+  title: string;
+  content: string;
+  changeNote: string;
+}): Promise<AppAnnouncementMutationResponse> {
+  return apiRequest('/admin/app-announcements/publish', { method: 'POST', body: payload });
+}
+
+export function disableAppAnnouncement(payload: {
+  expectedVersion: string;
+  changeNote: string;
+}): Promise<AppAnnouncementMutationResponse> {
+  return apiRequest('/admin/app-announcements/disable', { method: 'POST', body: payload });
+}
+
+export function republishAppAnnouncement(
+  id: number,
+  payload: { expectedVersion: string; changeNote: string },
+): Promise<AppAnnouncementMutationResponse> {
+  return apiRequest(`/admin/app-announcements/${id}/republish`, {
+    method: 'POST',
+    body: payload,
+  });
+}
 
 export function getNotifications(query: {
   q?: string;

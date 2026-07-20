@@ -41,6 +41,18 @@ legacyDb.exec(`
   INSERT INTO users (id, email, nickname, password_hash, role, status)
   VALUES (1, 'legacy-admin@example.com', 'Legacy admin', 'legacy-hash', 'admin', 'active');
 
+  CREATE TABLE app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  INSERT INTO app_settings (key, value, updated_at) VALUES
+    ('app_announcement.enabled', 'true', '2026-01-03 04:05:06'),
+    ('app_announcement.title', '公告', '2026-01-03 04:05:06'),
+    ('app_announcement.content', '欢迎来到二次元的世界', '2026-01-03 04:05:06'),
+    ('app_announcement.version', 'legacy-announcement-v1', '2026-01-03 04:05:06');
+
   CREATE TABLE system_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -95,6 +107,15 @@ test("notification migration upgrades the production legacy schema safely", () =
     });
     assert.equal(broadcast.sent_at, "2026-01-02 03:04:05");
     assert.equal(broadcast.updated_at, "2026-01-02 03:04:05");
+
+    const announcement = one(
+      "SELECT * FROM app_announcement_revisions ORDER BY id LIMIT 1",
+    );
+    assert.equal(announcement.version, "legacy-announcement-v1");
+    assert.equal(announcement.title, "公告");
+    assert.equal(announcement.content, "欢迎来到二次元的世界");
+    assert.equal(announcement.enabled, 1);
+    assert.equal(announcement.created_at, "2026-01-03 04:05:06");
 
     for (const indexName of [
       "idx_system_notifications_broadcast",
