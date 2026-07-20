@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -8,17 +9,30 @@ plugins {
 }
 
 val keystoreProperties = Properties()
-val keystorePropertiesFile = rootProject.file("key.properties")
+// Release automation can keep signing material outside the source checkout.
+val externalKeystorePropertiesPath = providers.environmentVariable("NOVEL_ANDROID_KEY_PROPERTIES")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+val externalKeystoreFilePath = providers.environmentVariable("NOVEL_ANDROID_KEYSTORE_FILE")
+    .orNull
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+val keystorePropertiesFile = externalKeystorePropertiesPath
+    ?.let { File(it) }
+    ?: rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+val releaseKeystoreFilePath = externalKeystoreFilePath
+    ?: keystoreProperties.getProperty("storeFile")
 val releaseSigningPropertyNames = listOf(
     "keyAlias",
     "keyPassword",
-    "storeFile",
     "storePassword",
 )
 val releaseSigningConfigured = keystorePropertiesFile.exists() &&
+    !releaseKeystoreFilePath.isNullOrBlank() &&
     releaseSigningPropertyNames.all { !keystoreProperties.getProperty(it).isNullOrBlank() }
 
 val readerBetaBuild = providers.gradleProperty("readerBeta")
@@ -40,7 +54,7 @@ gradle.taskGraph.whenReady {
     }
     if (releaseBuildRequested && !releaseSigningConfigured) {
         throw GradleException(
-            "Release signing is not configured. Add all required values to android/key.properties.",
+            "Release signing is not configured. Add android/key.properties or set the external signing paths.",
         )
     }
 }
@@ -103,7 +117,7 @@ android {
             create("release") {
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
-                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storeFile = file(requireNotNull(releaseKeystoreFilePath))
                 storePassword = keystoreProperties.getProperty("storePassword")
             }
         }
