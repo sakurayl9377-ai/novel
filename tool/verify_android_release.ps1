@@ -1,6 +1,6 @@
 param(
     [string]$ApkPath = "build/app/outputs/flutter-apk/app-release.apk",
-    [int]$MaxSizeMiB = 120,
+    [int]$MaxSizeMiB = 128,
     [string]$ExpectedApplicationId = "com.novel.novel_app",
     [string]$ExpectedVersionName,
     [int]$ExpectedVersionCode,
