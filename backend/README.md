@@ -198,35 +198,24 @@ Always upload and verify the versioned APK first, then replace `version.json`
 last. Versioned APK names are immutable so an edge cache can never pair an old
 APK with a new manifest checksum.
 
-升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。
+升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。下载服务器只承载 APK 与更新清单，不能部署后端服务。
 
-## 后端自动部署
+## 后端直连发布
 
-仓库内置 `.github/workflows/deploy-backend.yml`。推送到 `main` 且
-`backend/**` 有变化时，工作流会先运行安全测试，再通过 SSH 部署后端。
+仓库不再保留 GitHub Actions 后端部署工作流。推送到 GitHub 只运行 CI 校验，不能触发生产服务器更新。
 
-服务器首次接入时，以 root 身份运行：
+每次后端发布均在本地完成验证和管理端构建后，直接连接指定的后端生产服务器：
 
 ```bash
-cd /opt/novel-interaction-backend
-sudo bash ./scripts/bootstrap-production-deploy.sh "ssh-ed25519 <GitHub Actions 部署公钥>"
+# 归档必须只包含 backend/，且排除 .env、data/、node_modules 和私钥文件。
+sha256sum novel-backend-<revision>.tar.gz
+scp novel-backend-<revision>.tar.gz <deploy-user>@<backend-host>:/tmp/novel-backend-<revision>.tar.gz
+ssh <deploy-user>@<backend-host> \
+  "sudo -n /usr/local/sbin/novel-backend-deploy \
+  '/tmp/novel-backend-<revision>.tar.gz' '<revision>' '<sha256>'"
 ```
 
-接入脚本会以运行服务的账号定位 Node.js/npm，要求 Node.js 24 或更高版本，
-并在 Ubuntu 上缺少 `sqlite3` 时自动安装。非标准 Node.js 安装路径可通过
-`NOVEL_NODE_BIN` 和 `NOVEL_NPM_BIN` 显式传入。
-脚本还会锁定 `novel-deploy` 的密码，并安装仅允许公钥认证的 SSH `Match`
-配置；安装前后都会验证 sshd 配置，失败时恢复原配置。
-
-GitHub `production` 环境需要配置以下 Secrets：
-
-```text
-DEPLOY_HOST       服务器地址
-DEPLOY_PORT       SSH 端口，通常为 22
-DEPLOY_USER       novel-deploy
-DEPLOY_SSH_KEY    对应的部署私钥
-DEPLOY_HOST_KEY   ssh-keyscan 返回的完整 known_hosts 行
-```
+发布脚本会先验证归档、依赖、安全测试和数据库备份，再以 release 目录和原子符号链接切换服务；健康检查失败时自动回滚。部署后核验本机 `/health` 与公网管理端路径。
 
 首次部署会把服务器上的 `.env` 和 `data/` 移到
 `/opt/novel-interaction-shared`，后续使用 release 目录和原子符号链接切换，
