@@ -3,7 +3,7 @@ export type AiNovelMetadataRevisionStatus = 'draft' | 'pending' | 'approved' | '
 export type AiNovelSerializationStatus = 'ongoing' | 'completed';
 export type AiChapterChangeType = 'published' | 'add' | 'update';
 export type AiReviewDecision = 'approve' | 'reject' | 'direct_publish';
-export type AiReviewTargetKind = 'novel' | 'metadata' | 'chapter';
+export type AiReviewTargetKind = 'novel' | 'metadata' | 'chapter' | 'chapter_batch';
 
 export interface AiNovelSummary {
   id: string;
@@ -45,6 +45,7 @@ export interface AiNovelChapter {
   originalContent?: string;
   reviewNote: string;
   revision: number;
+  submissionBatchId: number | null;
   ownerId: number;
   ownerNickname: string;
   ownerEmail: string;
@@ -59,6 +60,7 @@ export interface AiNovelReviewEvent {
   id: number;
   novelId: number;
   chapterId: number | null;
+  submissionBatchId: number | null;
   submissionRevision: number;
   decision: AiReviewDecision;
   note: string;
@@ -117,6 +119,32 @@ export interface AiChapterReviewDetail {
   reviews: AiNovelReviewEvent[];
 }
 
+export interface AiNovelChapterSubmissionBatch {
+  id: number;
+  novelId: number;
+  novelTitle: string;
+  status: AiNovelStatus;
+  reviewNote: string;
+  revision: number;
+  chapterCount: number;
+  ownerId: number;
+  ownerNickname: string;
+  ownerEmail: string;
+  submittedAt: string;
+  reviewedAt: string;
+  publishedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  chapters: AiNovelChapter[];
+}
+
+export interface AiChapterBatchReviewDetail {
+  item: AiNovelChapterSubmissionBatch;
+  novel: AiNovelSummary;
+  chapters: AiNovelChapter[];
+  reviews: AiNovelReviewEvent[];
+}
+
 export interface AiMetadataReviewDetail {
   item: AiNovelMetadataRevision;
   novel: AiNovelSummary;
@@ -125,6 +153,7 @@ export interface AiMetadataReviewDetail {
 
 export interface AiNovelReviewBook extends AiNovelSummary {
   chapters: AiNovelChapter[];
+  chapterBatches: AiNovelChapterSubmissionBatch[];
   metadataRevision: AiNovelMetadataRevision | null;
 }
 
@@ -136,6 +165,7 @@ export interface AiNovelReviewAuthor {
   pendingNovelCount: number;
   pendingMetadataCount: number;
   pendingChapterCount: number;
+  pendingChapterBatchCount: number;
   novels: AiNovelReviewBook[];
 }
 
@@ -148,6 +178,7 @@ export interface AiNovelReviewQueue {
     pendingNovelCount: number;
     pendingMetadataCount: number;
     pendingChapterCount: number;
+    pendingChapterBatchCount: number;
   };
 }
 

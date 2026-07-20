@@ -14,7 +14,7 @@ process.env.SMTP_HOST = "";
 
 const { buildServer } = await import("./server.js");
 const { config } = await import("./config.js");
-const { run } = await import("./db.js");
+const { all, run } = await import("./db.js");
 const { hashPassword } = await import("./security.js");
 
 test("AI novel V2 supports upload, draft, review, revision and resubmission", async () => {
@@ -642,6 +642,197 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
     assert.equal(queueAfterBatch.total, 0);
     const batchPublic = await jsonRequest(app, "GET", "/ai-novels");
     assert.equal(batchPublic.total, 2);
+
+    const atomicDraft = await jsonRequest(
+      app,
+      "POST",
+      "/creator/ai-novels/drafts",
+      {},
+      writer.token,
+    );
+    const atomicSaved = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/draft`,
+      {
+        expectedRevision: atomicDraft.item.revision,
+        title: "Atomic Batch Novel",
+        penName: "Batch Writer",
+        category: "Test",
+        coverUrl: cover.url,
+        description: "A published novel used to verify all-or-nothing chapter review batches.",
+        chapters: [{ title: "Opening", content: "The initial published chapter." }],
+      },
+      writer.token,
+    );
+    const atomicInitialSubmission = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/submit`,
+      { expectedRevision: atomicSaved.item.revision },
+      writer.token,
+    );
+    await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novels/${atomicDraft.item.numericId}/review`,
+      { decision: "approve", expectedRevision: atomicInitialSubmission.item.revision },
+      admin.token,
+    );
+    const atomicPublished = await jsonRequest(
+      app,
+      "GET",
+      `/creator/ai-novels/${atomicDraft.item.numericId}`,
+      undefined,
+      writer.token,
+    );
+    const atomicProposed = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/draft`,
+      {
+        expectedRevision: atomicPublished.item.revision,
+        chapters: [
+          { title: "Batch 1", content: "First chapter in this submission." },
+          { title: "Batch 2", content: "Second chapter in this submission." },
+          { title: "Batch 3", content: "Third chapter in this submission." },
+        ],
+      },
+      writer.token,
+    );
+    const atomicSubmitted = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/submit`,
+      { expectedRevision: atomicProposed.item.revision },
+      writer.token,
+    );
+    const pendingBatchChapters = atomicSubmitted.chapters.filter(
+      (chapter) => chapter.status === "pending",
+    );
+    assert.equal(pendingBatchChapters.length, 3);
+    const firstBatchId = pendingBatchChapters[0].submissionBatchId;
+    assert.ok(firstBatchId);
+    assert.ok(pendingBatchChapters.every((chapter) => chapter.submissionBatchId === firstBatchId));
+
+    const atomicQueue = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-review-queue?status=pending",
+      undefined,
+      admin.token,
+    );
+    const atomicQueuedBook = atomicQueue.items
+      .flatMap((author) => author.novels)
+      .find((novel) => novel.numericId === atomicDraft.item.numericId);
+    assert.equal(atomicQueuedBook.chapterBatches.length, 1);
+    assert.equal(atomicQueuedBook.chapterBatches[0].id, firstBatchId);
+    assert.equal(atomicQueuedBook.chapterBatches[0].chapters.length, 3);
+
+    const notificationCount = () => Number(
+      all(
+        `SELECT COUNT(*) AS count
+         FROM system_notifications
+         WHERE user_id = ? AND category = 'ai_novel_review'`,
+        [writer.user.id],
+      )[0]?.count || 0,
+    );
+    const notificationsBeforeRejection = notificationCount();
+    const rejectedBySingleChapter = await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-chapters/${pendingBatchChapters[0].id}/review`,
+      {
+        decision: "reject",
+        reviewNote: "The whole submitted batch needs revision.",
+        expectedRevision: pendingBatchChapters[0].revision,
+      },
+      admin.token,
+    );
+    assert.equal(rejectedBySingleChapter.batch.id, firstBatchId);
+    assert.equal(rejectedBySingleChapter.batch.status, "rejected");
+    assert.equal(notificationCount() - notificationsBeforeRejection, 1);
+
+    const afterAtomicRejection = await jsonRequest(
+      app,
+      "GET",
+      `/creator/ai-novels/${atomicDraft.item.numericId}`,
+      undefined,
+      writer.token,
+    );
+    const rejectedBatchChapters = afterAtomicRejection.chapters.filter(
+      (chapter) => chapter.submissionBatchId === firstBatchId,
+    );
+    assert.equal(rejectedBatchChapters.length, 3);
+    assert.ok(rejectedBatchChapters.every((chapter) => chapter.status === "rejected"));
+    assert.equal(afterAtomicRejection.item.revision, atomicSubmitted.item.revision + 1);
+    const publicAfterAtomicRejection = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${atomicDraft.item.numericId}/chapters`,
+    );
+    assert.equal(publicAfterAtomicRejection.items.length, 1);
+
+    const atomicRevised = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/draft`,
+      {
+        expectedRevision: afterAtomicRejection.item.revision,
+        chapters: rejectedBatchChapters.map((chapter) => ({
+          id: chapter.id,
+          title: chapter.title,
+          content: chapter.content,
+        })),
+      },
+      writer.token,
+    );
+    const atomicResubmitted = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${atomicDraft.item.numericId}/submit`,
+      { expectedRevision: atomicRevised.item.revision },
+      writer.token,
+    );
+    const nextBatchChapters = atomicResubmitted.chapters.filter(
+      (chapter) => chapter.status === "pending",
+    );
+    const secondBatchId = nextBatchChapters[0].submissionBatchId;
+    assert.ok(secondBatchId && secondBatchId !== firstBatchId);
+    assert.equal(nextBatchChapters.length, 3);
+
+    const batchDetail = await jsonRequest(
+      app,
+      "GET",
+      `/admin/ai-novel-chapter-submission-batches/${secondBatchId}`,
+      undefined,
+      admin.token,
+    );
+    const notificationsBeforeApproval = notificationCount();
+    const approvedBatch = await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-chapter-submission-batches/${secondBatchId}/review`,
+      { decision: "approve", expectedRevision: batchDetail.item.revision },
+      admin.token,
+    );
+    assert.equal(approvedBatch.item.status, "published");
+    assert.equal(approvedBatch.chapters.length, 3);
+    assert.equal(notificationCount() - notificationsBeforeApproval, 1);
+    const publicAfterAtomicApproval = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${atomicDraft.item.numericId}/chapters`,
+    );
+    assert.equal(publicAfterAtomicApproval.items.length, 4);
+    const atomicBatchEvents = all(
+      `SELECT chapter_id
+       FROM ai_novel_review_events
+       WHERE submission_batch_id = ?`,
+      [secondBatchId],
+    );
+    assert.equal(atomicBatchEvents.filter((event) => event.chapter_id == null).length, 1);
+    assert.equal(atomicBatchEvents.filter((event) => event.chapter_id != null).length, 3);
   } finally {
     await app.close();
     for (const file of uploadedFiles) {

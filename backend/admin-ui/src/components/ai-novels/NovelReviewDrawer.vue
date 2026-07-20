@@ -5,14 +5,17 @@ import { computed, ref, watch } from 'vue';
 
 import { ApiError } from '@/services/api';
 import {
+  getReviewChapterBatch,
   getReviewChapter,
   getReviewMetadata,
   getReviewNovel,
+  reviewChapterBatch,
   reviewChapter,
   reviewMetadata,
   reviewNovel,
 } from '@/services/ai-novels';
 import type {
+  AiChapterBatchReviewDetail,
   AiChapterReviewDetail,
   AiMetadataReviewDetail,
   AiNovelDetail,
@@ -23,7 +26,7 @@ import { formatDateTime } from '@/utils/format';
 
 const props = defineProps<{
   modelValue: boolean;
-  target: { kind: 'novel' | 'metadata' | 'chapter'; id: number } | null;
+  target: { kind: 'novel' | 'metadata' | 'chapter' | 'chapter_batch'; id: number } | null;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +39,7 @@ const deciding = ref(false);
 const novelDetail = ref<AiNovelDetail | null>(null);
 const metadataDetail = ref<AiMetadataReviewDetail | null>(null);
 const chapterDetail = ref<AiChapterReviewDetail | null>(null);
+const chapterBatchDetail = ref<AiChapterBatchReviewDetail | null>(null);
 const openChapter = ref<number | string>('');
 const rejectionOpen = ref(false);
 const rejectionNote = ref('');
@@ -49,15 +53,20 @@ const rejectionTemplates = [
 
 const isNovel = computed(() => props.target?.kind === 'novel');
 const isMetadata = computed(() => props.target?.kind === 'metadata');
+const isChapterBatch = computed(() => props.target?.kind === 'chapter_batch');
 const title = computed(() => isNovel.value
   ? novelDetail.value?.item.title || '整书审核'
   : isMetadata.value
     ? metadataDetail.value?.item.title || '作品资料修改'
+    : isChapterBatch.value
+      ? `章节提交批次 · ${chapterBatchDetail.value?.item.chapterCount || 0} 章`
     : chapterDetail.value?.item.title || '章节审核');
 const pending = computed(() => isNovel.value
   ? novelDetail.value?.item.status === 'pending'
   : isMetadata.value
     ? metadataDetail.value?.item.status === 'pending'
+    : isChapterBatch.value
+      ? chapterBatchDetail.value?.item.status === 'pending'
     : chapterDetail.value?.item.status === 'pending');
 const isChapterRevision = computed(() =>
   !isNovel.value && chapterDetail.value?.item.changeType === 'update',
@@ -65,12 +74,16 @@ const isChapterRevision = computed(() =>
 const chapterChangeLabel = computed(() => isChapterRevision.value ? '修改已发布章节' : '新增连载章节');
 const approveLabel = computed(() => isMetadata.value
   ? '通过并更新资料'
+  : isChapterBatch.value
+    ? '通过并发布本批章节'
   : isChapterRevision.value ? '通过并更新' : '通过并发布');
 const reviews = computed<Array<AiNovelReviewEvent | AiNovelMetadataReviewEvent>>(() =>
   isNovel.value
     ? novelDetail.value?.reviews || []
     : isMetadata.value
       ? metadataDetail.value?.reviews || []
+      : isChapterBatch.value
+        ? chapterBatchDetail.value?.reviews || []
       : chapterDetail.value?.reviews || [],
 );
 
@@ -95,12 +108,16 @@ async function loadDetail(): Promise<void> {
   novelDetail.value = null;
   metadataDetail.value = null;
   chapterDetail.value = null;
+  chapterBatchDetail.value = null;
   try {
     if (props.target.kind === 'novel') {
       novelDetail.value = await getReviewNovel(props.target.id);
       openChapter.value = novelDetail.value.chapters[0]?.id || '';
     } else if (props.target.kind === 'metadata') {
       metadataDetail.value = await getReviewMetadata(props.target.id);
+    } else if (props.target.kind === 'chapter_batch') {
+      chapterBatchDetail.value = await getReviewChapterBatch(props.target.id);
+      openChapter.value = chapterBatchDetail.value.chapters[0]?.id || '';
     } else {
       chapterDetail.value = await getReviewChapter(props.target.id);
     }
@@ -132,6 +149,8 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
     ? novelDetail.value?.item.revision
     : isMetadata.value
       ? metadataDetail.value?.item.revision
+      : isChapterBatch.value
+        ? chapterBatchDetail.value?.item.revision
       : chapterDetail.value?.item.revision;
   if (!revision) return;
 
@@ -141,6 +160,8 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
       await reviewNovel(props.target.id, decision, revision, rejectionNote.value.trim());
     } else if (props.target.kind === 'metadata') {
       await reviewMetadata(props.target.id, decision, revision, rejectionNote.value.trim());
+    } else if (props.target.kind === 'chapter_batch') {
+      await reviewChapterBatch(props.target.id, decision, revision, rejectionNote.value.trim());
     } else {
       await reviewChapter(props.target.id, decision, revision, rejectionNote.value.trim());
     }
@@ -150,6 +171,8 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
     ElMessage.success(decision === 'approve'
       ? (isMetadata.value
         ? '审核通过，线上作品资料已更新'
+        : isChapterBatch.value
+          ? '审核通过，本次提交的章节已整体发布'
         : isChapterRevision.value ? '审核通过，线上章节已更新' : '审核通过，内容已发布')
       : '已退回创作者修改');
   } catch (error) {
@@ -189,7 +212,7 @@ function errorMessage(error: unknown): string {
         <div>
           <span class="eyebrow">REVIEW WORKBENCH</span>
           <h2>{{ title }}</h2>
-          <p>{{ isNovel ? '整书首次发布审核' : isMetadata ? `《${metadataDetail?.novel.title || ''}》的作品资料修改` : `《${chapterDetail?.item.novelTitle || ''}》${chapterChangeLabel}` }}</p>
+          <p>{{ isNovel ? '整书首次发布审核' : isMetadata ? `《${metadataDetail?.novel.title || ''}》的作品资料修改` : isChapterBatch ? `《${chapterBatchDetail?.novel.title || ''}》本次提交的 ${chapterBatchDetail?.item.chapterCount || 0} 章将整体审核` : `《${chapterDetail?.item.novelTitle || ''}》${chapterChangeLabel}` }}</p>
         </div>
       </div>
     </template>
@@ -280,6 +303,54 @@ function errorMessage(error: unknown): string {
         </section>
       </template>
 
+      <template v-else-if="chapterBatchDetail">
+        <ElDescriptions :column="2" border>
+          <ElDescriptionsItem label="所属作品">{{ chapterBatchDetail.novel.title }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="本次提交">{{ chapterBatchDetail.item.chapterCount }} 章</ElDescriptionsItem>
+          <ElDescriptionsItem label="作者">
+            {{ chapterBatchDetail.item.ownerNickname }} · {{ chapterBatchDetail.item.ownerEmail }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="提交版本">R{{ chapterBatchDetail.item.revision }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="审核规则" :span="2">本批章节只能整体通过或整体退回，不会部分发布。</ElDescriptionsItem>
+        </ElDescriptions>
+        <section class="review-section chapter-batch-review-section">
+          <header>
+            <div><span class="eyebrow">SUBMISSION BATCH</span><h3>本次提交章节</h3></div>
+            <ElTag :type="chapterBatchDetail.item.status === 'pending' ? 'warning' : 'success'" effect="plain">
+              {{ chapterBatchDetail.item.status === 'pending' ? '待审核' : chapterBatchDetail.item.status === 'published' ? '已发布' : '已退回' }}
+            </ElTag>
+          </header>
+          <ElCollapse v-model="openChapter" accordion class="chapter-review-list">
+            <ElCollapseItem
+              v-for="chapter in chapterBatchDetail.chapters"
+              :key="chapter.id"
+              :name="chapter.id"
+            >
+              <template #title>
+                <span class="chapter-review-title">
+                  <b>{{ chapter.index + 1 }}</b>
+                  <strong>{{ chapter.title }}</strong>
+                  <small>{{ chapter.changeType === 'update' ? '修改' : '新增' }} · {{ (chapter.content || '').length.toLocaleString() }} 字</small>
+                </span>
+              </template>
+              <div v-if="chapter.changeType === 'update'" class="chapter-comparison">
+                <section>
+                  <span>当前线上版本</span>
+                  <h4>{{ chapter.originalTitle }}</h4>
+                  <article class="chapter-text">{{ chapter.originalContent }}</article>
+                </section>
+                <section>
+                  <span>待审修改稿</span>
+                  <h4>{{ chapter.title }}</h4>
+                  <article class="chapter-text">{{ chapter.content }}</article>
+                </section>
+              </div>
+              <article v-else class="chapter-text">{{ chapter.content }}</article>
+            </ElCollapseItem>
+          </ElCollapse>
+        </section>
+      </template>
+
       <template v-else-if="chapterDetail">
         <ElDescriptions :column="2" border>
           <ElDescriptionsItem label="所属作品">{{ chapterDetail.item.novelTitle }}</ElDescriptionsItem>
@@ -338,14 +409,14 @@ function errorMessage(error: unknown): string {
     <template #footer>
       <div class="review-footer">
         <span v-if="pending">
-          {{ isMetadata ? '请对照线上资料确认标题、简介、封面和连载状态修改。' : isChapterRevision ? '请对照线上版本确认修改内容。' : '请确认正文完整、章节边界正确、封面与简介合规。' }}
+          {{ isMetadata ? '请对照线上资料确认标题、简介、封面和连载状态修改。' : isChapterBatch ? '请确认本批全部章节均可发布；退回时将整批章节一并退回作者。' : isChapterRevision ? '请对照线上版本确认修改内容。' : '请确认正文完整、章节边界正确、封面与简介合规。' }}
         </span>
         <span v-else>该内容已完成审核。</span>
         <ElButton @click="emit('update:modelValue', false)">关闭</ElButton>
         <ElButton v-if="pending" type="danger" plain :icon="CloseBold" @click="openRejection">退回修改</ElButton>
         <ElPopconfirm
           v-if="pending"
-          :title="isMetadata ? '确认通过并统一更新当前线上作品资料？' : isChapterRevision ? '确认通过并替换当前线上章节？' : '确认审核通过并立即发布？'"
+          :title="isMetadata ? '确认通过并统一更新当前线上作品资料？' : isChapterBatch ? '确认通过并整体发布本次提交的全部章节？' : isChapterRevision ? '确认通过并替换当前线上章节？' : '确认审核通过并立即发布？'"
           width="220"
           :confirm-button-text="approveLabel"
           cancel-button-text="取消"

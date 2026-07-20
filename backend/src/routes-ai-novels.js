@@ -334,10 +334,38 @@ export async function aiNovelRoutes(app) {
 
       db.exec("BEGIN IMMEDIATE");
       try {
+        let chapterBatchId = null;
+        if (published && chapterRows.length) {
+          const batch = run(
+            `INSERT INTO ai_novel_chapter_submission_batches
+               (novel_id, status, review_note, chapter_count, submitted_at,
+                reviewed_by, reviewed_at, published_at)
+             VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?)`,
+            [
+              id,
+              nextChapterStatus,
+              publish ? "管理员直接发布连载章节" : "",
+              chapterRows.length,
+              publish ? request.user.id : null,
+              "",
+              "",
+            ],
+          );
+          if (publish) {
+            run(
+              `UPDATE ai_novel_chapter_submission_batches
+               SET reviewed_at = datetime('now'), published_at = datetime('now')
+               WHERE id = ?`,
+              [Number(batch.lastInsertRowid)],
+            );
+          }
+          chapterBatchId = Number(batch.lastInsertRowid);
+        }
         if (chapterRows.length) {
           run(
             `UPDATE ai_novel_chapters
              SET status = ?, review_note = '', revision = revision + 1,
+                 submission_batch_id = CASE WHEN ? IS NULL THEN submission_batch_id ELSE ? END,
                  submitted_at = datetime('now'),
                  reviewed_by = CASE WHEN ? THEN ? ELSE NULL END,
                  reviewed_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
@@ -346,6 +374,8 @@ export async function aiNovelRoutes(app) {
              WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
             [
               nextChapterStatus,
+              chapterBatchId,
+              chapterBatchId,
               publish ? 1 : 0,
               publish ? request.user.id : null,
               publish ? 1 : 0,
@@ -407,16 +437,15 @@ export async function aiNovelRoutes(app) {
             [id],
           );
           if (publish && chapterRows.length) {
-            for (const chapter of chapterRows) {
-              recordNovelReviewEvent({
-                novelId: id,
-                chapterId: chapter.id,
-                revision: Number(chapter.revision || 1) + 1,
-                decision: "direct_publish",
-                note: "管理员直接发布连载章节",
-                reviewerId: request.user.id,
-              });
-            }
+            recordNovelReviewEvent({
+              novelId: id,
+              chapterId: null,
+              submissionBatchId: chapterBatchId,
+              revision: 1,
+              decision: "direct_publish",
+              note: "管理员直接发布连载章节",
+              reviewerId: request.user.id,
+            });
           }
         }
         db.exec("COMMIT");
@@ -696,6 +725,34 @@ export async function aiNovelRoutes(app) {
     ),
   );
 
+  app.get(
+    "/admin/ai-novel-chapter-submission-batches/:batchId",
+    { preHandler: app.adminRequired },
+    async (request) => chapterSubmissionBatchDetail(
+      positiveInteger(request.params.batchId, "chapter submission batch id"),
+    ),
+  );
+
+  app.post(
+    "/admin/ai-novel-chapter-submission-batches/:batchId/review",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const batchId = positiveInteger(request.params.batchId, "chapter submission batch id");
+      const { decision, reviewNote } = reviewDecisionInput(request.body);
+      const batch = requirePendingChapterSubmissionBatch(batchId);
+      if (request.body?.expectedRevision !== undefined) {
+        requireExpectedRevision(request.body.expectedRevision, batch.revision);
+      }
+      withReviewTransaction(() => reviewChapterSubmissionBatch({
+        batch,
+        decision,
+        reviewNote,
+        reviewerId: request.user.id,
+      }));
+      return chapterSubmissionBatchDetail(batchId);
+    },
+  );
+
   app.post(
     "/admin/ai-novel-reviews/batch",
     { preHandler: app.adminRequired },
@@ -703,28 +760,48 @@ export async function aiNovelRoutes(app) {
       const { decision, reviewNote } = reviewDecisionInput(request.body);
       const targets = batchReviewTargets(request.body?.items);
       const result = withReviewTransaction(() => {
-        const prepared = targets.map((target) => {
+        const preparedByKey = new Map();
+        for (const target of targets) {
           if (target.kind === "novel") {
             const item = requirePendingNovelReview(target.id);
             requireExpectedRevision(target.expectedRevision, item.revision);
-            return { ...target, item };
+            preparedByKey.set(`novel:${target.id}`, { ...target, item });
+            continue;
           }
           if (target.kind === "metadata") {
             const item = requirePendingMetadataRevision(target.id);
             requireExpectedRevision(target.expectedRevision, item.revision);
-            return { ...target, item };
+            preparedByKey.set(`metadata:${target.id}`, { ...target, item });
+            continue;
+          }
+          if (target.kind === "chapter_batch") {
+            const item = requirePendingChapterSubmissionBatch(target.id);
+            requireExpectedRevision(target.expectedRevision, item.revision);
+            preparedByKey.set(`chapter_batch:${target.id}`, { ...target, item });
+            continue;
           }
           const chapter = requirePendingChapterReview(target.id);
-          requireExpectedRevision(target.expectedRevision, chapter.revision);
-          return { ...target, chapter };
-        });
+          const item = requirePendingChapterBatchForChapter(chapter);
+          requireChapterBatchExpectedRevision(target.expectedRevision, item, chapter);
+          const key = `chapter_batch:${item.id}`;
+          if (!preparedByKey.has(key)) {
+            preparedByKey.set(key, {
+              ...target,
+              kind: "chapter_batch",
+              id: Number(item.id),
+              expectedRevision: Number(item.revision || 1),
+              item,
+            });
+          }
+        }
+        const prepared = [...preparedByKey.values()];
         const selectedNovelIds = new Set(
           prepared
             .filter((target) => target.kind === "novel")
             .map((target) => target.id),
         );
         if (prepared.some((target) =>
-          target.kind === "chapter" && selectedNovelIds.has(Number(target.chapter.novel_id)))) {
+          target.kind === "chapter_batch" && selectedNovelIds.has(Number(target.item.novel_id)))) {
           throw conflict("batch_review_nested_target_conflict");
         }
         const retiredMetadataCovers = [];
@@ -750,8 +827,8 @@ export async function aiNovelRoutes(app) {
               });
             }
           } else {
-            reviewChapterSubmission({
-              chapter: target.chapter,
+            reviewChapterSubmissionBatch({
+              batch: target.item,
               decision,
               reviewNote,
               reviewerId: request.user.id,
@@ -837,11 +914,12 @@ export async function aiNovelRoutes(app) {
         throw badRequest("reviewNote is required when rejecting");
       }
       const chapter = requirePendingChapterReview(chapterId);
+      const batch = requirePendingChapterBatchForChapter(chapter);
       if (request.body?.expectedRevision !== undefined) {
-        requireExpectedRevision(request.body.expectedRevision, chapter.revision);
+        requireChapterBatchExpectedRevision(request.body.expectedRevision, batch, chapter);
       }
-      withReviewTransaction(() => reviewChapterSubmission({
-        chapter,
+      withReviewTransaction(() => reviewChapterSubmissionBatch({
+        batch,
         decision,
         reviewNote,
         reviewerId: request.user.id,
@@ -859,7 +937,10 @@ export async function aiNovelRoutes(app) {
          WHERE c.id = ?`,
         [chapterId],
       );
-      return { item: creatorChapterJson(updated) };
+      return {
+        item: creatorChapterJson(updated),
+        batch: chapterSubmissionBatchJson(chapterSubmissionBatchRow(batch.id)),
+      };
     },
   );
 }
@@ -873,9 +954,15 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
             COUNT(DISTINCT CASE
               WHEN n.status = 'published' AND metadata.status = 'pending' THEN metadata.id
             END) AS pending_metadata_count,
-            COUNT(CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count
+            COUNT(DISTINCT CASE
+              WHEN n.status = 'published' AND c.status = 'pending' THEN c.id
+            END) AS pending_chapter_count,
+            COUNT(DISTINCT CASE
+              WHEN n.status = 'published' AND batch.status = 'pending' THEN batch.id
+            END) AS pending_chapter_batch_count
      FROM ai_novels n
      LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     LEFT JOIN ai_novel_chapter_submission_batches batch ON batch.novel_id = n.id
      LEFT JOIN ai_novel_metadata_revisions metadata
        ON metadata.novel_id = n.id AND metadata.status = 'pending'`,
   ) || {};
@@ -896,16 +983,21 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
               WHEN n.status = 'published' AND metadata.status = 'pending' THEN metadata.id
             END) AS pending_metadata_count,
             COUNT(DISTINCT CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count,
+            COUNT(DISTINCT CASE
+              WHEN n.status = 'published' AND batch.status = 'pending' THEN batch.id
+            END) AS pending_chapter_batch_count,
             MAX(n.updated_at) AS last_updated_at
      FROM ai_novels n
      JOIN users u ON u.id = n.user_id
      LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     LEFT JOIN ai_novel_chapter_submission_batches batch ON batch.novel_id = n.id
      LEFT JOIN ai_novel_metadata_revisions metadata
        ON metadata.novel_id = n.id AND metadata.status = 'pending'
      WHERE ${scopeSql} ${searchSql}
      GROUP BY u.id
      ORDER BY MAX(CASE
-                WHEN n.status = 'pending' OR metadata.status = 'pending' THEN 1 ELSE 0
+                WHEN n.status = 'pending' OR metadata.status = 'pending' OR batch.status = 'pending'
+                THEN 1 ELSE 0
               END) DESC,
               last_updated_at DESC, u.id DESC
      LIMIT ? OFFSET ?`,
@@ -938,6 +1030,17 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
               n.updated_at DESC, n.id DESC`,
     [...ownerIds, ...searchParams],
   );
+  const chapterBatchRows = all(
+    `SELECT batch.*, n.user_id, n.title AS novel_title,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_chapter_submission_batches batch
+     JOIN ai_novels n ON n.id = batch.novel_id
+     JOIN users u ON u.id = n.user_id
+     WHERE n.user_id IN (${ownerPlaceholders})
+       AND batch.status = ? AND ${scopeSql} ${searchSql}
+     ORDER BY n.user_id, n.id, batch.submitted_at DESC, batch.id DESC`,
+    [...ownerIds, status, ...searchParams],
+  ).map(chapterSubmissionBatchJson);
   const chapterRows = all(
     `SELECT c.*, n.title AS novel_title, n.user_id,
             original.title AS original_title,
@@ -949,7 +1052,9 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
      JOIN users u ON u.id = n.user_id
      LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
      WHERE n.user_id IN (${ownerPlaceholders})
-       AND c.status = ? AND ${scopeSql} ${searchSql}
+       AND c.status = ?
+       AND (n.status = 'pending' OR c.submission_batch_id IS NOT NULL)
+       AND ${scopeSql} ${searchSql}
      ORDER BY n.user_id, n.id, COALESCE(original.sort_order, c.sort_order), c.id`,
     [...ownerIds, status, ...searchParams],
   ).map(creatorChapterJson);
@@ -965,10 +1070,22 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
     [...ownerIds, metadataStatusForReviewQueue(status), ...searchParams],
   ).map(metadataRevisionJson);
   const chaptersByNovel = new Map();
+  const chapterBatchesById = new Map();
+  const chapterBatchesByNovel = new Map();
+  for (const batch of chapterBatchRows) {
+    batch.chapters = [];
+    chapterBatchesById.set(batch.id, batch);
+    const batches = chapterBatchesByNovel.get(batch.novelId) || [];
+    batches.push(batch);
+    chapterBatchesByNovel.set(batch.novelId, batches);
+  }
   for (const chapter of chapterRows) {
     const chapters = chaptersByNovel.get(chapter.novelId) || [];
     chapters.push(chapter);
     chaptersByNovel.set(chapter.novelId, chapters);
+    if (chapter.submissionBatchId != null) {
+      chapterBatchesById.get(chapter.submissionBatchId)?.chapters.push(chapter);
+    }
   }
   const metadataByNovel = new Map();
   for (const metadata of metadataRows) {
@@ -980,6 +1097,7 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
   for (const row of bookRows) {
     const novel = creatorNovelJson(row);
     novel.chapters = chaptersByNovel.get(novel.numericId) || [];
+    novel.chapterBatches = chapterBatchesByNovel.get(novel.numericId) || [];
     novel.metadataRevision = metadataByNovel.get(novel.numericId) || null;
     const novels = novelsByAuthor.get(novel.ownerId) || [];
     novels.push(novel);
@@ -994,6 +1112,7 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
       pendingNovelCount: Number(author.pending_novel_count || 0),
       pendingMetadataCount: Number(author.pending_metadata_count || 0),
       pendingChapterCount: Number(author.pending_chapter_count || 0),
+      pendingChapterBatchCount: Number(author.pending_chapter_batch_count || 0),
       novels: novelsByAuthor.get(Number(author.owner_id)) || [],
     })),
     page,
@@ -1008,6 +1127,7 @@ function reviewQueueSummary(row) {
     pendingNovelCount: Number(row.pending_novel_count || 0),
     pendingMetadataCount: Number(row.pending_metadata_count || 0),
     pendingChapterCount: Number(row.pending_chapter_count || 0),
+    pendingChapterBatchCount: Number(row.pending_chapter_batch_count || 0),
   };
 }
 
@@ -1023,8 +1143,8 @@ function reviewQueueScopeSql(status) {
   if (status === "pending") {
     return `(n.status = 'pending'
       OR (n.status = 'published' AND EXISTS (
-        SELECT 1 FROM ai_novel_chapters pending_chapter
-        WHERE pending_chapter.novel_id = n.id AND pending_chapter.status = 'pending'
+        SELECT 1 FROM ai_novel_chapter_submission_batches pending_batch
+        WHERE pending_batch.novel_id = n.id AND pending_batch.status = 'pending'
       ))
       OR (n.status = 'published' AND EXISTS (
         SELECT 1 FROM ai_novel_metadata_revisions pending_metadata
@@ -1034,8 +1154,8 @@ function reviewQueueScopeSql(status) {
   if (status === "rejected") {
     return `(n.status = 'rejected'
       OR (n.status = 'published' AND EXISTS (
-        SELECT 1 FROM ai_novel_chapters rejected_chapter
-        WHERE rejected_chapter.novel_id = n.id AND rejected_chapter.status = 'rejected'
+        SELECT 1 FROM ai_novel_chapter_submission_batches rejected_batch
+        WHERE rejected_batch.novel_id = n.id AND rejected_batch.status = 'rejected'
       ))
       OR (n.status = 'published' AND EXISTS (
         SELECT 1 FROM ai_novel_metadata_revisions rejected_metadata
@@ -1089,7 +1209,7 @@ function batchReviewTargets(value) {
       throw badRequest("batch_review_item_invalid");
     }
     const kind = requiredString(raw.kind, `items[${index}].kind`, 20);
-    if (!["novel", "metadata", "chapter"].includes(kind)) {
+    if (!["novel", "metadata", "chapter", "chapter_batch"].includes(kind)) {
       throw badRequest("batch_review_item_invalid");
     }
     const id = positiveInteger(raw.id, `items[${index}].id`);
@@ -1148,6 +1268,54 @@ function requirePendingChapterReview(chapterId) {
     throw conflict("chapter_review_not_pending");
   }
   return chapter;
+}
+
+function requirePendingChapterSubmissionBatch(batchId) {
+  const batch = one(
+    `SELECT batch.*, n.title AS novel_title, n.user_id, n.status AS novel_status,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_chapter_submission_batches batch
+     JOIN ai_novels n ON n.id = batch.novel_id
+     JOIN users u ON u.id = n.user_id
+     WHERE batch.id = ?`,
+    [batchId],
+  );
+  if (!batch) throw notFound("chapter_submission_batch_not_found");
+  if (batch.novel_status !== "published") {
+    throw conflict("chapter_batch_requires_published_novel");
+  }
+  if (batch.status !== "pending") {
+    throw conflict("chapter_submission_batch_not_pending");
+  }
+  const pendingCount = Number(
+    one(
+      `SELECT COUNT(*) AS count
+       FROM ai_novel_chapters
+       WHERE submission_batch_id = ? AND status = 'pending'`,
+      [batch.id],
+    )?.count || 0,
+  );
+  if (!pendingCount || pendingCount !== Number(batch.chapter_count || 0)) {
+    throw conflict("chapter_submission_batch_conflict");
+  }
+  return batch;
+}
+
+function requirePendingChapterBatchForChapter(chapter) {
+  if (chapter.submission_batch_id == null) {
+    throw conflict("chapter_submission_batch_not_found");
+  }
+  return requirePendingChapterSubmissionBatch(Number(chapter.submission_batch_id));
+}
+
+function requireChapterBatchExpectedRevision(value, batch, chapter = null) {
+  const expectedRevision = positiveInteger(value, "expectedRevision");
+  const batchRevision = Number(batch.revision || 1);
+  if (expectedRevision === batchRevision) return;
+  if (chapter && expectedRevision === Number(chapter.revision || 1)) return;
+  const error = conflict("revision_conflict");
+  error.details = { expectedRevision, currentRevision: batchRevision };
+  throw error;
 }
 
 function withReviewTransaction(callback) {
@@ -1274,48 +1442,90 @@ function reviewMetadataRevision({ item, decision, reviewNote, reviewerId }) {
   };
 }
 
-function reviewChapterSubmission({ chapter, decision, reviewNote, reviewerId }) {
-  const status = decision === "approve" ? "published" : "rejected";
-  const isRevision = chapter.replaces_chapter_id != null;
-  if (decision === "approve") {
-    applyApprovedChapterRevision(chapter, reviewerId);
+function reviewChapterSubmissionBatch({ batch, decision, reviewNote, reviewerId }) {
+  const chapters = all(
+    `SELECT *
+     FROM ai_novel_chapters
+     WHERE submission_batch_id = ? AND status = 'pending'
+     ORDER BY sort_order, id`,
+    [batch.id],
+  );
+  const chapterCount = chapters.length;
+  if (!chapterCount || chapterCount !== Number(batch.chapter_count || 0)) {
+    throw conflict("chapter_submission_batch_conflict");
   }
-  run(
+
+  const status = decision === "approve" ? "published" : "rejected";
+  if (decision === "approve") {
+    for (const chapter of chapters) {
+      applyApprovedChapterRevision(chapter, reviewerId);
+    }
+  }
+
+  const reviewedChapters = run(
     `UPDATE ai_novel_chapters
      SET status = ?, review_note = ?, reviewed_by = ?,
          revision = revision + 1, reviewed_at = datetime('now'),
          published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
          updated_at = datetime('now')
-     WHERE id = ? AND status = 'pending'`,
-    [status, reviewNote, reviewerId, status, chapter.id],
+     WHERE submission_batch_id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, status, batch.id],
   );
+  if (Number(reviewedChapters.changes || 0) !== chapterCount) {
+    throw conflict("chapter_submission_batch_conflict");
+  }
+
+  const reviewedBatch = run(
+    `UPDATE ai_novel_chapter_submission_batches
+     SET status = ?, review_note = ?, reviewed_by = ?, revision = revision + 1,
+         reviewed_at = datetime('now'),
+         published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
+         updated_at = datetime('now')
+     WHERE id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, status, batch.id],
+  );
+  if (Number(reviewedBatch.changes || 0) !== 1) {
+    throw conflict("chapter_submission_batch_review_conflict");
+  }
+
   run(
     `UPDATE ai_novels
      SET revision = revision + 1, updated_at = datetime('now')
      WHERE id = ?`,
-    [chapter.novel_id],
+    [batch.novel_id],
   );
   recordNovelReviewEvent({
-    novelId: chapter.novel_id,
-    chapterId: chapter.id,
-    revision: Number(chapter.revision || 1),
+    novelId: batch.novel_id,
+    chapterId: null,
+    submissionBatchId: batch.id,
+    revision: Number(batch.revision || 1),
     decision,
     note: reviewNote,
     reviewerId,
   });
+  for (const chapter of chapters) {
+    recordNovelReviewEvent({
+      novelId: batch.novel_id,
+      chapterId: chapter.id,
+      submissionBatchId: batch.id,
+      revision: Number(chapter.revision || 1),
+      decision,
+      note: reviewNote,
+      reviewerId,
+    });
+  }
   run(
     `INSERT INTO system_notifications (user_id, title, content, category)
      VALUES (?, ?, ?, 'ai_novel_review')`,
     [
-      chapter.user_id,
+      batch.user_id,
+      status === "published" ? "连载章节批次审核通过" : "连载章节批次需要修改",
       status === "published"
-        ? (isRevision ? "章节修改审核通过" : "连载章节审核通过")
-        : (isRevision ? "章节修改需要调整" : "连载章节需要修改"),
-      status === "published"
-        ? `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改已生效" : "已发布"}。`
-        : `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改" : "章节"}未通过审核：${reviewNote}`,
+        ? `《${batch.novel_title}》本次提交的 ${chapterCount} 章已审核通过并发布。`
+        : `《${batch.novel_title}》本次提交的 ${chapterCount} 章未通过审核，已全部退回：${reviewNote}`,
     ],
   );
+  return { chapterCount, status };
 }
 
 async function uploadNovelCover(request) {
@@ -1489,6 +1699,45 @@ function metadataRevisionDetail(revisionId) {
   };
 }
 
+function chapterSubmissionBatchRow(batchId) {
+  return one(
+    `SELECT batch.*, n.user_id, n.title AS novel_title,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_chapter_submission_batches batch
+     JOIN ai_novels n ON n.id = batch.novel_id
+     JOIN users u ON u.id = n.user_id
+     WHERE batch.id = ?`,
+    [batchId],
+  );
+}
+
+function chapterSubmissionBatchDetail(batchId) {
+  const batch = chapterSubmissionBatchRow(batchId);
+  if (!batch) throw notFound("chapter_submission_batch_not_found");
+  const novel = creatorNovelRow(batch.novel_id);
+  if (!novel) throw notFound("novel_not_found");
+  const chapters = all(
+    `SELECT c.*, n.title AS novel_title, n.user_id,
+            original.title AS original_title,
+            original.content AS original_content,
+            original.sort_order AS original_sort_order,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_chapters c
+     JOIN ai_novels n ON n.id = c.novel_id
+     JOIN users u ON u.id = n.user_id
+     LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
+     WHERE c.submission_batch_id = ?
+     ORDER BY COALESCE(original.sort_order, c.sort_order), c.id`,
+    [batchId],
+  ).map((chapter) => creatorChapterJson(chapter, true));
+  return {
+    item: chapterSubmissionBatchJson(batch),
+    novel: creatorNovelJson(novel),
+    chapters,
+    reviews: chapterSubmissionBatchReviewEventRows(batch.novel_id, batchId),
+  };
+}
+
 function novelDetailJson(row) {
   const novelId = Number(row.id);
   const metadataRevision = activeMetadataRevision(novelId);
@@ -1515,10 +1764,28 @@ function reviewEventRows(novelId, chapterId) {
      WHERE e.novel_id = ? ${chapterWhere}
      ORDER BY e.created_at DESC, e.id DESC`,
     params,
-  ).map((event) => ({
+  ).map(novelReviewEventJson);
+}
+
+function chapterSubmissionBatchReviewEventRows(novelId, batchId) {
+  return all(
+    `SELECT e.*, u.nickname AS reviewer_nickname, u.email AS reviewer_email
+     FROM ai_novel_review_events e
+     JOIN users u ON u.id = e.reviewer_id
+     WHERE e.novel_id = ? AND e.submission_batch_id = ? AND e.chapter_id IS NULL
+     ORDER BY e.created_at DESC, e.id DESC`,
+    [novelId, batchId],
+  ).map(novelReviewEventJson);
+}
+
+function novelReviewEventJson(event) {
+  return {
     id: Number(event.id),
     novelId: Number(event.novel_id),
     chapterId: event.chapter_id == null ? null : Number(event.chapter_id),
+    submissionBatchId: event.submission_batch_id == null
+      ? null
+      : Number(event.submission_batch_id),
     submissionRevision: Number(event.submission_revision || 1),
     decision: event.decision,
     note: event.note || "",
@@ -1526,12 +1793,13 @@ function reviewEventRows(novelId, chapterId) {
     reviewerNickname: event.reviewer_nickname || "",
     reviewerEmail: event.reviewer_email || "",
     createdAt: event.created_at || "",
-  }));
+  };
 }
 
 function recordNovelReviewEvent({
   novelId,
   chapterId,
+  submissionBatchId = null,
   revision,
   decision,
   note,
@@ -1539,9 +1807,9 @@ function recordNovelReviewEvent({
 }) {
   run(
     `INSERT INTO ai_novel_review_events
-       (novel_id, chapter_id, submission_revision, decision, note, reviewer_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [novelId, chapterId, revision, decision, note || "", reviewerId],
+       (novel_id, chapter_id, submission_batch_id, submission_revision, decision, note, reviewer_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [novelId, chapterId, submissionBatchId, revision, decision, note || "", reviewerId],
   );
 }
 
@@ -1846,6 +2114,26 @@ function metadataRevisionJson(row) {
     status: row.status,
     reviewNote: row.review_note || "",
     revision: Number(row.revision || 1),
+    ownerId: Number(row.user_id || 0),
+    ownerNickname: row.owner_nickname || "",
+    ownerEmail: row.owner_email || "",
+    submittedAt: row.submitted_at || "",
+    reviewedAt: row.reviewed_at || "",
+    publishedAt: row.published_at || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+function chapterSubmissionBatchJson(row) {
+  return {
+    id: Number(row.id),
+    novelId: Number(row.novel_id),
+    novelTitle: row.novel_title || "",
+    status: row.status,
+    reviewNote: row.review_note || "",
+    revision: Number(row.revision || 1),
+    chapterCount: Number(row.chapter_count || 0),
     ownerId: Number(row.user_id || 0),
     ownerNickname: row.owner_nickname || "",
     ownerEmail: row.owner_email || "",
@@ -2303,6 +2591,9 @@ function creatorChapterJson(row, includeContent = false) {
         : "add",
     reviewNote: row.review_note || "",
     revision: Number(row.revision || 1),
+    submissionBatchId: row.submission_batch_id == null
+      ? null
+      : Number(row.submission_batch_id),
     submittedAt: row.submitted_at || "",
     reviewedAt: row.reviewed_at || "",
     publishedAt: row.published_at || "",

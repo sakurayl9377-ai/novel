@@ -25,7 +25,7 @@ import {
 } from '@/services/ai-novels';
 import { useSessionStore } from '@/stores/session';
 import type {
-  AiNovelChapter,
+  AiNovelChapterSubmissionBatch,
   AiNovelReviewAuthor,
   AiNovelReviewBook,
   AiNovelReviewTarget,
@@ -47,6 +47,7 @@ const reviewTotal = ref(0);
 const pendingNovelCount = ref(0);
 const pendingMetadataCount = ref(0);
 const pendingChapterCount = ref(0);
+const pendingChapterBatchCount = ref(0);
 const expandedAuthors = ref<string[]>([]);
 const expandedBooks = ref<string[]>([]);
 const selectedReviewTargets = ref<AiNovelReviewTarget[]>([]);
@@ -55,7 +56,7 @@ const batchReviewNote = ref('');
 const editorOpen = ref(false);
 const editorNovelId = ref<number | null>(null);
 const reviewOpen = ref(false);
-const reviewTarget = ref<{ kind: 'novel' | 'metadata' | 'chapter'; id: number } | null>(null);
+const reviewTarget = ref<{ kind: 'novel' | 'metadata' | 'chapter_batch'; id: number } | null>(null);
 
 const creatorQuery = reactive({
   q: '',
@@ -72,7 +73,7 @@ const reviewQuery = reactive({
 });
 
 const totalPending = computed(() =>
-  pendingNovelCount.value + pendingMetadataCount.value + pendingChapterCount.value,
+  pendingNovelCount.value + pendingMetadataCount.value + pendingChapterBatchCount.value,
 );
 const selectedTargetKeys = computed(() => new Set(selectedReviewTargets.value.map(reviewTargetKey)));
 const selectedTargetCount = computed(() => selectedReviewTargets.value.length);
@@ -106,6 +107,7 @@ async function loadReviewQueue(): Promise<void> {
     pendingNovelCount.value = data.summary.pendingNovelCount;
     pendingMetadataCount.value = data.summary.pendingMetadataCount;
     pendingChapterCount.value = data.summary.pendingChapterCount;
+    pendingChapterBatchCount.value = data.summary.pendingChapterBatchCount;
     selectedReviewTargets.value = [];
     const authorKeys = new Set(data.items.map(authorKey));
     const bookKeys = new Set(data.items.flatMap((author) => author.novels.map(bookKey)));
@@ -125,6 +127,7 @@ async function refreshQueueCounts(): Promise<void> {
     pendingNovelCount.value = data.summary.pendingNovelCount;
     pendingMetadataCount.value = data.summary.pendingMetadataCount;
     pendingChapterCount.value = data.summary.pendingChapterCount;
+    pendingChapterBatchCount.value = data.summary.pendingChapterBatchCount;
   } catch {
     // The visible queue will surface actionable errors when opened.
   }
@@ -168,9 +171,9 @@ function openNovelReview(value: unknown): void {
   reviewOpen.value = true;
 }
 
-function openChapterReview(value: unknown): void {
-  const item = value as AiNovelChapter;
-  reviewTarget.value = { kind: 'chapter', id: item.id };
+function openChapterBatchReview(value: unknown): void {
+  const item = value as AiNovelChapterSubmissionBatch;
+  reviewTarget.value = { kind: 'chapter_batch', id: item.id };
   reviewOpen.value = true;
 }
 
@@ -239,9 +242,9 @@ function metadataReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
 
 function chapterReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
   if (book.status !== 'published') return [];
-  return book.chapters
-    .filter((chapter) => chapter.status === 'pending')
-    .map((chapter) => ({ kind: 'chapter' as const, id: chapter.id, expectedRevision: chapter.revision }));
+  return book.chapterBatches
+    .filter((batch) => batch.status === 'pending')
+    .map((batch) => ({ kind: 'chapter_batch' as const, id: batch.id, expectedRevision: batch.revision }));
 }
 
 function reviewTargetsForBook(book: AiNovelReviewBook): AiNovelReviewTarget[] {
@@ -282,8 +285,8 @@ function toggleBookSelection(book: AiNovelReviewBook, checked: boolean): void {
   toggleTargets(reviewTargetsForBook(book), checked);
 }
 
-function toggleChapterSelection(chapter: AiNovelChapter, checked: boolean): void {
-  toggleTargets([{ kind: 'chapter', id: chapter.id, expectedRevision: chapter.revision }], checked);
+function toggleChapterBatchSelection(batch: AiNovelChapterSubmissionBatch, checked: boolean): void {
+  toggleTargets([{ kind: 'chapter_batch', id: batch.id, expectedRevision: batch.revision }], checked);
 }
 
 function toggleMetadataSelection(book: AiNovelReviewBook, checked: boolean): void {
@@ -381,12 +384,8 @@ function metadataStatusType(status: string): 'info' | 'warning' | 'success' | 'd
   }[status] as 'info' | 'warning' | 'success' | 'danger';
 }
 
-function chapterChangeLabel(value: AiNovelChapter): string {
-  return value.changeType === 'update' ? '修改' : '新增';
-}
-
-function chapterReviewAction(book: AiNovelReviewBook, chapter: AiNovelChapter): void {
-  if (book.status === 'published') openChapterReview(chapter);
+function chapterBatchReviewAction(book: AiNovelReviewBook, batch: AiNovelChapterSubmissionBatch): void {
+  if (book.status === 'published') openChapterBatchReview(batch);
   else openNovelReview(book);
 }
 
@@ -520,7 +519,7 @@ function errorMessage(error: unknown): string {
             <div class="queue-counters" aria-label="待审核统计">
               <span><b>{{ pendingNovelCount }}</b>整书待审</span>
               <span><b>{{ pendingMetadataCount }}</b>资料待审</span>
-              <span><b>{{ pendingChapterCount }}</b>章节待审</span>
+              <span><b>{{ pendingChapterBatchCount }}</b>批章节待审</span>
             </div>
           </section>
 
@@ -585,7 +584,9 @@ function errorMessage(error: unknown): string {
                   <div class="author-queue-meta">
                     <ElTag v-if="author.pendingNovelCount" type="warning" effect="plain">{{ author.pendingNovelCount }} 本整书待审</ElTag>
                     <ElTag v-if="author.pendingMetadataCount" type="warning" effect="plain">{{ author.pendingMetadataCount }} 项资料待审</ElTag>
-                    <ElTag v-if="author.pendingChapterCount" type="info" effect="plain">{{ author.pendingChapterCount }} 章待审</ElTag>
+                    <ElTag v-if="author.pendingChapterBatchCount" type="info" effect="plain">
+                      {{ author.pendingChapterBatchCount }} 批 / {{ author.pendingChapterCount }} 章待审
+                    </ElTag>
                     <span>{{ author.novelCount }} 本作品</span>
                   </div>
                 </div>
@@ -638,7 +639,7 @@ function errorMessage(error: unknown): string {
                     <header>
                       <div>
                         <strong>{{ book.status === 'pending' ? '首发稿章节' : '作品资料与章节变更' }}</strong>
-                        <small>{{ book.status === 'pending' ? '这些章节随整书审核一起发布' : '资料与章节均可独立审核，线上版本在审核期间继续展示' }}</small>
+                        <small>{{ book.status === 'pending' ? '这些章节随整书审核一起发布' : '资料可独立审核；章节按提交批次整体审核，线上版本在审核期间继续展示' }}</small>
                       </div>
                       <span>{{ book.metadataRevision ? '含资料修改' : `${book.chapters.length} 章` }}</span>
                     </header>
@@ -664,32 +665,58 @@ function errorMessage(error: unknown): string {
                         {{ book.metadataRevision.status === 'pending' ? '审核资料' : '查看资料' }}
                       </ElButton>
                     </article>
-                    <div v-if="book.chapters.length" class="chapter-review-list">
+                    <div v-if="book.status === 'published' && book.chapterBatches.length" class="chapter-batch-list">
+                      <section v-for="batch in book.chapterBatches" :key="batch.id" class="chapter-batch-card">
+                        <article class="chapter-review-row chapter-batch-row">
+                          <ElCheckbox
+                            v-if="batch.status === 'pending'"
+                            :model-value="hasEveryTarget([{ kind: 'chapter_batch', id: batch.id, expectedRevision: batch.revision }])"
+                            aria-label="选择章节提交批次"
+                            @change="toggleChapterBatchSelection(batch, Boolean($event))"
+                          />
+                          <span v-else class="chapter-readonly-icon"><ElIcon><DocumentChecked /></ElIcon></span>
+                          <div class="chapter-copy">
+                            <strong>章节提交批次 · {{ batch.chapterCount }} 章</strong>
+                            <small>同一批次整体通过或整体退回，包含 {{ batch.chapters.length }} 个章节变更</small>
+                          </div>
+                          <div class="chapter-queue-meta">
+                            <ElTag :type="statusType(batch.status)" effect="plain">{{ statusLabel(batch.status) }}</ElTag>
+                            <span>{{ formatDateTime(batch.submittedAt || batch.updatedAt) }}</span>
+                          </div>
+                          <ElButton type="primary" link :icon="View" @click="chapterBatchReviewAction(book, batch)">
+                            {{ batch.status === 'pending' ? '审核本批' : '查看批次' }}
+                          </ElButton>
+                        </article>
+                        <ul class="chapter-batch-children">
+                          <li v-for="chapter in batch.chapters" :key="chapter.id">
+                            <span>第 {{ chapter.index + 1 }} 章 · {{ chapter.title }}</span>
+                            <ElTag :type="chapter.changeType === 'update' ? 'warning' : 'success'" effect="plain">
+                              {{ chapter.changeType === 'update' ? '修改' : '新增' }}
+                            </ElTag>
+                          </li>
+                        </ul>
+                      </section>
+                    </div>
+                    <div v-if="book.status === 'pending' && book.chapters.length" class="chapter-review-list">
                       <article v-for="chapter in book.chapters" :key="chapter.id" class="chapter-review-row">
-                        <ElCheckbox
-                          v-if="book.status === 'published' && chapter.status === 'pending'"
-                          :model-value="hasEveryTarget([{ kind: 'chapter', id: chapter.id, expectedRevision: chapter.revision }])"
-                          aria-label="选择章节"
-                          @change="toggleChapterSelection(chapter, Boolean($event))"
-                        />
-                        <span v-else class="chapter-readonly-icon"><ElIcon><DocumentChecked /></ElIcon></span>
+                        <span class="chapter-readonly-icon"><ElIcon><DocumentChecked /></ElIcon></span>
                         <div class="chapter-copy">
                           <strong>第 {{ chapter.index + 1 }} 章 · {{ chapter.title }}</strong>
-                          <small>{{ chapter.changeType === 'update' ? '修改已发布章节' : book.status === 'pending' ? '随整书首发' : '新增连载章节' }}</small>
+                          <small>随整书首发，审核通过后统一发布</small>
                         </div>
                         <div class="chapter-queue-meta">
                           <ElTag :type="statusType(chapter.status)" effect="plain">{{ statusLabel(chapter.status) }}</ElTag>
-                          <ElTag v-if="book.status === 'published'" :type="chapter.changeType === 'update' ? 'warning' : 'success'" effect="plain">
-                            {{ chapterChangeLabel(chapter) }}
-                          </ElTag>
                           <span>{{ formatDateTime(chapter.submittedAt || chapter.updatedAt) }}</span>
                         </div>
-                        <ElButton type="primary" link :icon="View" @click="chapterReviewAction(book, chapter)">
-                          {{ book.status === 'pending' ? '查看整书' : chapter.status === 'pending' ? '审核章节' : '查看章节' }}
+                        <ElButton type="primary" link :icon="View" @click="openNovelReview(book)">
+                          查看整书
                         </ElButton>
                       </article>
                     </div>
-                    <p v-else class="empty-chapters">当前筛选条件下没有章节记录。</p>
+                    <p
+                      v-if="(book.status === 'pending' && !book.chapters.length) || (book.status === 'published' && !book.chapterBatches.length)"
+                      class="empty-chapters"
+                    >当前筛选条件下没有章节提交批次。</p>
                   </section>
                 </ElCollapseItem>
               </ElCollapse>
@@ -1249,6 +1276,49 @@ function errorMessage(error: unknown): string {
 .chapter-review-list {
   display: grid;
   border-top: 1px solid var(--line);
+}
+
+.chapter-batch-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.chapter-batch-card {
+  border-bottom: 1px solid var(--line);
+}
+
+.chapter-batch-card:last-child {
+  border-bottom: 0;
+}
+
+.chapter-batch-row {
+  border-bottom: 0;
+}
+
+.chapter-batch-children {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px 26px;
+  padding: 10px 12px;
+  list-style: none;
+  border-left: 2px solid var(--sakura-200);
+  background: var(--surface-muted);
+}
+
+.chapter-batch-children li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-700);
+  font-size: 12px;
+}
+
+.chapter-batch-children li > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chapter-review-row {

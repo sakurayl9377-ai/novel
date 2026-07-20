@@ -1348,6 +1348,7 @@ export function migrate() {
       reviewed_at TEXT NOT NULL DEFAULT '',
       published_at TEXT NOT NULL DEFAULT '',
       replaces_chapter_id INTEGER,
+      submission_batch_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (novel_id, sort_order),
@@ -1363,6 +1364,7 @@ export function migrate() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       novel_id INTEGER NOT NULL,
       chapter_id INTEGER,
+      submission_batch_id INTEGER,
       submission_revision INTEGER NOT NULL DEFAULT 1,
       decision TEXT NOT NULL,
       note TEXT NOT NULL DEFAULT '',
@@ -1379,6 +1381,7 @@ export function migrate() {
   `);
   migrateAiNovelWorkflowSchema();
   migrateAiNovelMetadataRevisionSchema();
+  migrateAiNovelChapterSubmissionBatchSchema();
   addMissingColumn("users", "bio", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("users", "gender", "TEXT NOT NULL DEFAULT 'private'");
   addMissingColumn("users", "signature", "TEXT NOT NULL DEFAULT ''");
@@ -1745,6 +1748,83 @@ function migrateAiNovelMetadataRevisionSchema() {
     CREATE INDEX IF NOT EXISTS idx_ai_novel_metadata_review_events_revision
       ON ai_novel_metadata_review_events(metadata_revision_id, created_at DESC, id DESC);
   `);
+}
+
+function migrateAiNovelChapterSubmissionBatchSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_novel_chapter_submission_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      review_note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      chapter_count INTEGER NOT NULL DEFAULT 0,
+      submitted_at TEXT NOT NULL DEFAULT '',
+      reviewed_by INTEGER,
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      published_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (status IN ('pending', 'published', 'rejected'))
+    );
+  `);
+  addMissingColumn("ai_novel_chapters", "submission_batch_id", "INTEGER");
+  addMissingColumn("ai_novel_review_events", "submission_batch_id", "INTEGER");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_chapter_submission_batches_novel
+      ON ai_novel_chapter_submission_batches(novel_id, status, submitted_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_chapters_submission_batch
+      ON ai_novel_chapters(submission_batch_id, status, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_review_events_submission_batch
+      ON ai_novel_review_events(submission_batch_id, created_at DESC, id DESC);
+  `);
+
+  const legacyRows = all(
+    `SELECT c.novel_id, c.status, COUNT(*) AS chapter_count,
+            MIN(CASE WHEN c.submitted_at <> '' THEN c.submitted_at ELSE c.created_at END)
+              AS submitted_at,
+            MAX(c.reviewed_by) AS reviewed_by,
+            MAX(c.reviewed_at) AS reviewed_at
+     FROM ai_novel_chapters c
+     JOIN ai_novels n ON n.id = c.novel_id
+     WHERE n.status = 'published'
+       AND c.status IN ('pending', 'rejected')
+       AND c.submission_batch_id IS NULL
+     GROUP BY c.novel_id, c.status`,
+  );
+  if (!legacyRows.length) return;
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const row of legacyRows) {
+      const reviewed = row.status === "rejected";
+      const result = run(
+        `INSERT INTO ai_novel_chapter_submission_batches
+           (novel_id, status, chapter_count, submitted_at, reviewed_by, reviewed_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          row.novel_id,
+          row.status,
+          Number(row.chapter_count || 0),
+          row.submitted_at || "",
+          reviewed ? row.reviewed_by || null : null,
+          reviewed ? row.reviewed_at || "" : "",
+        ],
+      );
+      run(
+        `UPDATE ai_novel_chapters
+         SET submission_batch_id = ?
+         WHERE novel_id = ? AND status = ? AND submission_batch_id IS NULL`,
+        [Number(result.lastInsertRowid), row.novel_id, row.status],
+      );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function addMissingColumn(table, column, definition) {

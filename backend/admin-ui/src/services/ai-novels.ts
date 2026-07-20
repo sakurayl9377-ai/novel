@@ -1,5 +1,6 @@
 import { apiFormRequest, apiRequest, queryString } from '@/services/api';
 import type {
+  AiChapterBatchReviewDetail,
   AiChapterReviewDetail,
   AiMetadataReviewDetail,
   AiNovelChapter,
@@ -67,6 +68,10 @@ export function getReviewChapter(id: number): Promise<AiChapterReviewDetail> {
   return apiRequest(`/admin/ai-novel-chapters/${id}`);
 }
 
+export function getReviewChapterBatch(id: number): Promise<AiChapterBatchReviewDetail> {
+  return apiRequest(`/admin/ai-novel-chapter-submission-batches/${id}`);
+}
+
 export function getReviewMetadata(id: number): Promise<AiMetadataReviewDetail> {
   return apiRequest(`/admin/ai-novel-metadata-revisions/${id}`);
 }
@@ -120,6 +125,18 @@ export function reviewMetadata(
   reviewNote = '',
 ): Promise<{ item: AiNovelMetadataRevision }> {
   return apiRequest(`/admin/ai-novel-metadata-revisions/${id}/review`, {
+    method: 'POST',
+    body: { decision, expectedRevision, reviewNote },
+  });
+}
+
+export function reviewChapterBatch(
+  id: number,
+  decision: 'approve' | 'reject',
+  expectedRevision: number,
+  reviewNote = '',
+): Promise<AiChapterBatchReviewDetail> {
+  return apiRequest(`/admin/ai-novel-chapter-submission-batches/${id}/review`, {
     method: 'POST',
     body: { decision, expectedRevision, reviewNote },
   });

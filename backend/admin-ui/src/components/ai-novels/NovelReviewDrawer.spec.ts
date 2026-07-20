@@ -118,6 +118,7 @@ function chapterReviewDetail(changeType: 'add' | 'update'): AiChapterReviewDetai
       originalContent: changeType === 'update' ? '当前线上正文' : '',
       reviewNote: '',
       revision: 2,
+      submissionBatchId: null,
       ownerId: 7,
       ownerNickname: '星海',
       ownerEmail: 'writer@example.invalid',
