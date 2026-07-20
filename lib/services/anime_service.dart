@@ -11,11 +11,11 @@ import 'site_domain_service.dart';
 import 'swr_cache.dart';
 
 class AnimeService {
-  static final Uri siteUri = Uri.parse('https://www.yinhuadm.xyz/');
+  static final Uri siteUri = Uri.parse('https://www.yinhuadm.cc/');
   static const SiteDomainConfig _domain = SiteDomainConfig(
     key: 'anime_yinhua',
-    primaryOrigin: 'https://www.yinhuadm.xyz',
-    fallbackOrigins: ['https://www.yhdm6go.top', 'https://www.yinhuadm.com'],
+    primaryOrigin: 'https://www.yinhuadm.cc',
+    fallbackOrigins: ['https://www.yinhuadm.xyz'],
   );
   static const String _homeHtmlCacheKey = 'anime_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'anime_home_html_cache_time_v1';
@@ -53,7 +53,11 @@ class AnimeService {
   Future<AnimeHomeData> fetchHome({bool forceRefresh = false}) async {
     const cacheKey = 'home';
     if (!forceRefresh && _homeCache.containsUsable(cacheKey)) {
-      return _homeCache.get(cacheKey, loader: _fetchHomeUncached);
+      final cached = _homeCache.peek(cacheKey);
+      if (cached != null && !cached.isEmpty) {
+        return _homeCache.get(cacheKey, loader: _fetchHomeUncached);
+      }
+      _homeCache.invalidate(cacheKey);
     }
 
     if (!forceRefresh) {
@@ -63,9 +67,12 @@ class AnimeService {
         final cached = _AnimeHomeParser(
           await _currentSiteUri(),
         ).parse(document);
-        _homeCache.put(cacheKey, cached);
-        unawaited(_homeCache.refresh(cacheKey, loader: _fetchHomeUncached));
-        return cached;
+        if (!cached.isEmpty) {
+          _homeCache.put(cacheKey, cached);
+          unawaited(_homeCache.refresh(cacheKey, loader: _fetchHomeUncached));
+          return cached;
+        }
+        await _clearCachedHomeHtml();
       }
     }
 
@@ -80,13 +87,21 @@ class AnimeService {
       final fallback = _AnimeHomeParser(
         await _currentSiteUri(),
       ).parse(document);
+      if (fallback.isEmpty) {
+        await _clearCachedHomeHtml();
+        rethrow;
+      }
       _homeCache.put(cacheKey, fallback);
       return fallback;
     }
   }
 
   Future<AnimeHomeData> _fetchHomeUncached() async {
-    final response = await _get(siteUri, timeout: const Duration(seconds: 15));
+    final response = await _get(
+      siteUri,
+      timeout: const Duration(seconds: 15),
+      responseValidator: _isUsableHomeResponse,
+    );
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
@@ -95,7 +110,9 @@ class AnimeService {
     final html = utf8.decode(response.bodyBytes);
     await _writeCachedHomeHtml(html);
     final document = html_parser.parse(html);
-    return _AnimeHomeParser(baseUri).parse(document);
+    final data = _AnimeHomeParser(baseUri).parse(document);
+    if (data.isEmpty) throw Exception('anime home content unavailable');
+    return data;
   }
 
   Future<String?> _readCachedHomeHtml({required bool allowExpired}) async {
@@ -116,6 +133,14 @@ class AnimeService {
       _homeHtmlCacheTimeKey,
       DateTime.now().millisecondsSinceEpoch,
     );
+  }
+
+  Future<void> _clearCachedHomeHtml() async {
+    final prefs = await SharedPreferences.getInstance();
+    await Future.wait([
+      prefs.remove(_homeHtmlCacheKey),
+      prefs.remove(_homeHtmlCacheTimeKey),
+    ]);
   }
 
   Future<AnimeListResult> fetchList(String url, {int page = 1}) async {
@@ -217,7 +242,11 @@ class AnimeService {
     required int page,
   }) async {
     final uri = await _listPageUri(url, page);
-    final response = await _get(uri, timeout: const Duration(seconds: 15));
+    final response = await _get(
+      uri,
+      timeout: const Duration(seconds: 15),
+      responseValidator: _isUsableListResponse,
+    );
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
@@ -233,7 +262,11 @@ class AnimeService {
   }
 
   Future<_AnimeApiResponse> _fetchApi(Uri uri) async {
-    final response = await _get(uri, timeout: const Duration(seconds: 15));
+    final response = await _get(
+      uri,
+      timeout: const Duration(seconds: 15),
+      responseValidator: _isUsableApiResponse,
+    );
     if (response.statusCode != 200) {
       throw Exception('HTTP ${response.statusCode}');
     }
@@ -289,13 +322,52 @@ class AnimeService {
     return Uri.parse('$origin/');
   }
 
-  Future<http.Response> _get(Uri uri, {required Duration timeout}) {
+  Future<http.Response> _get(
+    Uri uri, {
+    required Duration timeout,
+    SiteResponseValidator? responseValidator,
+  }) {
     return _domainService.get(
       _domain,
       uri,
       headers: _headers,
       timeout: timeout,
+      responseValidator: responseValidator,
     );
+  }
+
+  bool _isUsableHomeResponse(http.Response response) {
+    if (response.statusCode != 200) return false;
+    final document = html_parser.parse(_decodeResponseBody(response));
+    return document.querySelector('a.module-poster-item') != null ||
+        document.querySelector('.swiper-big .swiper-slide') != null ||
+        document.querySelector('.module-paper-item-main a') != null;
+  }
+
+  bool _isUsableListResponse(http.Response response) {
+    if (response.statusCode != 200) return false;
+    final document = html_parser.parse(_decodeResponseBody(response));
+    return document.querySelector('a.module-poster-item') != null ||
+        document.querySelector('.module-card-item') != null ||
+        document.querySelector('a[href*="/v/"]') != null;
+  }
+
+  bool _isUsableApiResponse(http.Response response) {
+    if (response.statusCode != 200) return false;
+    try {
+      final decoded = jsonDecode(_decodeResponseBody(response));
+      return decoded is Map && decoded['list'] is List;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _decodeResponseBody(http.Response response) {
+    try {
+      return utf8.decode(response.bodyBytes);
+    } catch (_) {
+      return utf8.decode(response.bodyBytes, allowMalformed: true);
+    }
   }
 
   Uri _responseSiteUri(http.Response response) {

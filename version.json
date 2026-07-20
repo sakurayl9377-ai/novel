@@ -1,12 +1,12 @@
 {
-  "versionName": "4.1.35",
-  "versionCode": 88,
-  "apkUrl": "https://novel.kxhub.xyz/app3/app-release-4.1.35+88.apk",
-  "sha256": "b405c25fdf1a93c0ee78808b50c427b44fe9f545fea19551ad282cc5ea847aba",
+  "versionName": "4.1.36",
+  "versionCode": 89,
+  "apkUrl": "https://novel.kxhub.xyz/app3/app-release-4.1.36+89.apk",
+  "sha256": "8be158e03edb938be3a0a9264cc4b1c6723fcebca536f5a1132027a5ff67490e",
   "force": false,
   "notes": [
-    "重构消息中心：聊天与私信优先展示，系统通知固定预览并支持一键已读",
-    "AI 小说章节按提交批次整体审核，避免同批章节部分发布与逐章刷屏通知",
-    "已发布小说的标题、简介、封面和连载状态修改纳入审核后生效"
+    "修复动漫首页因失效源站域名导致的白屏",
+    "自动跳过返回空内容的域名并回退到可用源",
+    "动漫源无数据时显示可重试状态"
   ]
 }

@@ -285,8 +285,13 @@ class _AnimeScreenState extends State<AnimeScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_errorMessage != null && _homeData.isEmpty) {
-      return _ErrorState(message: _errorMessage!, onRetry: _loadHome);
+    if (_homeData.isEmpty) {
+      return _ErrorState(
+        message: _errorMessage ?? '动漫源暂时没有可用内容，请稍后重试',
+        onRetry: () {
+          unawaited(_loadHome(forceRefresh: true));
+        },
+      );
     }
 
     return ListView(

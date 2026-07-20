@@ -47,6 +47,38 @@ void main() {
     );
     expect(candidates.first, 'http://127.0.0.1:${fastFallback.port}');
   });
+
+  test('skips a remembered 200 response when its content is invalid', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final invalid = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final valid = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await Future.wait([invalid.close(force: true), valid.close(force: true)]);
+    });
+    unawaited(_serve(invalid, Duration.zero, '<html>blocked</html>'));
+    unawaited(_serve(valid, Duration.zero, '<main>anime-list</main>'));
+
+    final config = SiteDomainConfig(
+      key: 'validator_${DateTime.now().microsecondsSinceEpoch}',
+      primaryOrigin: 'http://127.0.0.1:${valid.port}',
+    );
+    await SiteDomainService.instance.rememberOrigin(
+      config,
+      Uri.parse('http://127.0.0.1:${invalid.port}/'),
+    );
+
+    final response = await SiteDomainService.instance.get(
+      config,
+      Uri.parse('${config.primaryOrigin}/home'),
+      responseValidator: (response) => response.body.contains('anime-list'),
+    );
+
+    expect(response.body, contains('anime-list'));
+    expect(
+      await SiteDomainService.instance.currentOrigin(config),
+      config.primaryOrigin,
+    );
+  });
 }
 
 Future<void> _serve(HttpServer server, Duration delay, String body) async {

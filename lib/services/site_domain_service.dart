@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+typedef SiteResponseValidator = bool Function(http.Response response);
+
 class SiteDomainConfig {
   const SiteDomainConfig({
     required this.key,
@@ -80,6 +82,7 @@ class SiteDomainService {
     Uri uri, {
     Map<String, String> headers = const {},
     Duration timeout = const Duration(seconds: 15),
+    SiteResponseValidator? responseValidator,
   }) async {
     final candidates = await originCandidates(
       config,
@@ -92,6 +95,7 @@ class SiteDomainService {
       candidates.first,
       headers: headers,
       timeout: _boundedTimeout(timeout, const Duration(seconds: 3)),
+      responseValidator: responseValidator,
     );
     if (preferred.isSuccess) {
       await rememberOrigin(
@@ -118,6 +122,7 @@ class SiteDomainService {
         origin,
         headers: headers,
         timeout: _boundedTimeout(timeout, const Duration(seconds: 4)),
+        responseValidator: responseValidator,
       ).then((attempt) {
         completed += 1;
         lastResponse = attempt.response ?? lastResponse;
@@ -151,6 +156,7 @@ class SiteDomainService {
     String origin, {
     required Map<String, String> headers,
     required Duration timeout,
+    SiteResponseValidator? responseValidator,
   }) async {
     final requestUri = replaceOrigin(uri, origin);
     try {
@@ -159,7 +165,15 @@ class SiteDomainService {
         headers: headers,
         timeout: timeout,
       ).timeout(timeout);
-      return _DomainAttempt(response: response);
+      var isUsable = response.statusCode >= 200 && response.statusCode < 300;
+      if (isUsable && responseValidator != null) {
+        try {
+          isUsable = responseValidator(response);
+        } catch (_) {
+          isUsable = false;
+        }
+      }
+      return _DomainAttempt(response: response, isUsable: isUsable);
     } catch (error) {
       return _DomainAttempt(error: error);
     }
@@ -238,13 +252,11 @@ class SiteDomainService {
 }
 
 class _DomainAttempt {
-  const _DomainAttempt({this.response, this.error});
+  const _DomainAttempt({this.response, this.error, this.isUsable = false});
 
   final http.Response? response;
   final Object? error;
+  final bool isUsable;
 
-  bool get isSuccess =>
-      response != null &&
-      response!.statusCode >= 200 &&
-      response!.statusCode < 300;
+  bool get isSuccess => response != null && isUsable;
 }
