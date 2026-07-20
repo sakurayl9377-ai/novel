@@ -11,23 +11,30 @@ import '../widgets/interaction_ui.dart';
 import 'chat_room_screen.dart';
 import 'interaction_auth_screen.dart';
 
+const _notificationPreviewCount = 4;
+
 class MessageCenterScreen extends StatefulWidget {
-  const MessageCenterScreen({super.key});
+  const MessageCenterScreen({super.key, this.service});
+
+  final InteractionService? service;
 
   @override
   State<MessageCenterScreen> createState() => _MessageCenterScreenState();
 }
 
 class _MessageCenterScreenState extends State<MessageCenterScreen> {
-  final InteractionService _service = InteractionService();
+  static const _notificationFetchLimit = 12;
+
+  late final InteractionService _service;
   late Future<_MessageCenterPayload> _future;
   _MessageCenterPayload _payload = const _MessageCenterPayload();
-  _NotificationFilter _notificationFilter = _NotificationFilter.all;
   _ConversationChannel _conversationChannel = _ConversationChannel.rooms;
+  bool _markingAllNotificationsRead = false;
 
   @override
   void initState() {
     super.initState();
+    _service = widget.service ?? InteractionService();
     _future = _refresh();
   }
 
@@ -39,12 +46,17 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
     final results = await Future.wait([
       _service.fetchChatRooms(token: auth.token),
       _service.fetchPrivateConversations(token: auth.token),
-      _service.fetchSystemNotifications(token: auth.token),
+      _service.fetchSystemNotifications(
+        token: auth.token,
+        limit: _notificationFetchLimit,
+      ),
+      _service.fetchMessageUnreadSummary(token: auth.token),
     ]);
     return _MessageCenterPayload(
       rooms: (results[0] as ChatRoomListPayload).items,
       conversations: results[1] as List<PrivateConversation>,
       notifications: results[2] as List<SystemNotificationItem>,
+      unread: results[3] as MessageUnreadSummary,
     );
   }
 
@@ -131,26 +143,40 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
     }
   }
 
-  List<_NotificationFilter> _availableNotificationFilters(
-    List<SystemNotificationItem> items,
-  ) {
-    const categories = [
-      _NotificationFilter.system,
-      _NotificationFilter.update,
-      _NotificationFilter.operation,
-      _NotificationFilter.security,
-      _NotificationFilter.growth,
-      _NotificationFilter.race,
-      _NotificationFilter.aiNovel,
-    ];
-    return [
-      _NotificationFilter.all,
-      if (items.any((item) => item.readAt.isEmpty)) _NotificationFilter.unread,
-      ...categories.where(
-        (filter) =>
-            items.any((item) => _matchesNotificationFilter(item, filter)),
+  Future<void> _markAllSystemNotificationsRead() async {
+    if (_markingAllNotificationsRead || _payload.unread.system == 0) return;
+    final auth = context.read<InteractionAuthProvider>();
+    if (!auth.isLoggedIn) return;
+
+    setState(() => _markingAllNotificationsRead = true);
+    try {
+      final unread = await _service.markAllSystemNotificationsRead(
+        token: auth.token,
+      );
+      if (!mounted) return;
+      final clearedPayload = _payload.clearAllNotificationUnread(unread);
+      setState(() {
+        _payload = clearedPayload;
+        _future = Future.value(clearedPayload);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('全部标为已读失败，请稍后重试')));
+    } finally {
+      if (mounted) setState(() => _markingAllNotificationsRead = false);
+    }
+  }
+
+  Future<void> _openAllNotifications() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _SystemNotificationInboxScreen(service: _service),
       ),
-    ];
+    );
+    if (mounted) setState(() => _future = _refresh());
   }
 
   @override
@@ -170,21 +196,9 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
                       snapshot.data == null) {
                     return const Center(child: CircularProgressIndicator());
                   }
-                  final unreadNotifications = data.notifications
-                      .where((item) => item.readAt.isEmpty)
-                      .length;
-                  final availableFilters = _availableNotificationFilters(
-                    data.notifications,
-                  );
-                  final selectedFilter =
-                      availableFilters.contains(_notificationFilter)
-                      ? _notificationFilter
-                      : _NotificationFilter.all;
-                  final notifications = data.notifications
-                      .where(
-                        (item) =>
-                            _matchesNotificationFilter(item, selectedFilter),
-                      )
+                  final unreadNotifications = data.unread.system;
+                  final notificationPreview = data.notifications
+                      .take(_notificationPreviewCount)
                       .toList(growable: false);
                   return ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
@@ -195,51 +209,7 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
                         conversationUnread: data.conversationUnread,
                       ),
                       const SizedBox(height: 22),
-                      _SectionHeader(
-                        title: '消息中心',
-                        subtitle: data.notifications.isEmpty
-                            ? '系统、活动、版本和审核消息会保存在这里'
-                            : '按类别查看系统、活动、版本与审核消息',
-                        trailing: Text(
-                          '${data.notifications.length} 条',
-                          style: const TextStyle(
-                            color: AppTheme.textHint,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      if (data.notifications.isNotEmpty) ...[
-                        _NotificationFilterBar(
-                          filters: availableFilters,
-                          selected: selectedFilter,
-                          items: data.notifications,
-                          onSelected: (value) {
-                            setState(() => _notificationFilter = value);
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      if (snapshot.hasError && data.isEmpty)
-                        _MessageLoadFailure(
-                          onRetry: () => setState(() => _future = _refresh()),
-                        )
-                      else if (data.notifications.isEmpty)
-                        const InteractionEmptyState(
-                          icon: Icons.notifications_none_rounded,
-                          title: '暂无通知',
-                          subtitle: '新的系统、活动和审核消息会出现在这里',
-                        )
-                      else
-                        ...notifications.map(
-                          (item) => _SystemNotificationTile(
-                            item: item,
-                            onTap: () =>
-                                unawaited(_openSystemNotification(item)),
-                          ),
-                        ),
-                      const SizedBox(height: 24),
-                      _SectionHeader(title: '聊天与私信', subtitle: '会话与系统消息分开展示'),
+                      _SectionHeader(title: '聊天与私信', subtitle: '优先处理正在进行的会话'),
                       const SizedBox(height: 10),
                       _ConversationChannelSwitcher(
                         selected: _conversationChannel,
@@ -250,7 +220,12 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
                         },
                       ),
                       const SizedBox(height: 12),
-                      if (_conversationChannel == _ConversationChannel.rooms)
+                      if (snapshot.hasError && data.isEmpty)
+                        _MessageLoadFailure(
+                          onRetry: () => setState(() => _future = _refresh()),
+                        )
+                      else if (_conversationChannel ==
+                          _ConversationChannel.rooms)
                         if (data.rooms.isEmpty)
                           const InteractionEmptyState(
                             icon: Icons.forum_outlined,
@@ -277,6 +252,82 @@ class _MessageCenterScreenState extends State<MessageCenterScreen> {
                             onTap: () => _openPrivate(item.peer),
                           ),
                         ),
+                      const SizedBox(height: 24),
+                      _SectionHeader(
+                        title: '系统通知',
+                        subtitle: data.notifications.isEmpty
+                            ? '系统、活动、版本和审核消息会保存在这里'
+                            : '仅展示最近 ${notificationPreview.length} 条',
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (unreadNotifications > 0)
+                              Tooltip(
+                                message: '全部标为已读',
+                                child: IconButton(
+                                  key: const ValueKey(
+                                    'message-center-mark-all-notifications',
+                                  ),
+                                  onPressed: _markingAllNotificationsRead
+                                      ? null
+                                      : () => unawaited(
+                                          _markAllSystemNotificationsRead(),
+                                        ),
+                                  icon: _markingAllNotificationsRead
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.done_all_rounded),
+                                ),
+                              ),
+                            if (data.notifications.isNotEmpty ||
+                                unreadNotifications > 0)
+                              Tooltip(
+                                message: '查看全部通知',
+                                child: IconButton(
+                                  key: const ValueKey(
+                                    'message-center-open-notification-inbox',
+                                  ),
+                                  onPressed: () =>
+                                      unawaited(_openAllNotifications()),
+                                  icon: const Icon(
+                                    Icons.notifications_outlined,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      if (snapshot.hasError && data.isEmpty)
+                        const SizedBox.shrink()
+                      else if (data.notifications.isEmpty)
+                        const InteractionEmptyState(
+                          icon: Icons.notifications_none_rounded,
+                          title: '暂无通知',
+                          subtitle: '新的系统、活动和审核消息会出现在这里',
+                        )
+                      else ...[
+                        ...notificationPreview.map(
+                          (item) => _SystemNotificationTile(
+                            item: item,
+                            onTap: () =>
+                                unawaited(_openSystemNotification(item)),
+                          ),
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: () => unawaited(_openAllNotifications()),
+                            icon: const Icon(Icons.list_alt_rounded),
+                            label: const Text('查看全部通知'),
+                          ),
+                        ),
+                      ],
                     ],
                   );
                 },
@@ -450,41 +501,47 @@ class _MessageCenterPayload {
     this.rooms = const [],
     this.conversations = const [],
     this.notifications = const [],
+    this.unread = const MessageUnreadSummary(),
   });
 
   final List<ChatRoomInfo> rooms;
   final List<PrivateConversation> conversations;
   final List<SystemNotificationItem> notifications;
+  final MessageUnreadSummary unread;
 
   bool get isEmpty =>
       rooms.isEmpty && conversations.isEmpty && notifications.isEmpty;
 
-  int get roomUnread =>
-      rooms.fold(0, (total, room) => total + room.recentMessageCount);
+  int get roomUnread => unread.chatMessages;
 
-  int get privateUnread => conversations.fold(
-    0,
-    (total, conversation) => total + conversation.unreadCount,
-  );
+  int get privateUnread => unread.privateMessages;
 
   int get conversationUnread => roomUnread + privateUnread;
 
   _MessageCenterPayload clearRoomUnread(String roomId) {
     var changed = false;
+    var clearedCount = 0;
     final nextRooms = rooms
         .map((room) {
           if (room.roomId != roomId || room.recentMessageCount == 0) {
             return room;
           }
           changed = true;
+          clearedCount += room.recentMessageCount;
           return room.copyWith(recentMessageCount: 0);
         })
         .toList(growable: false);
     if (!changed) return this;
+    final nextChatUnread = unread.chatMessages - clearedCount;
+    final nextTotal = unread.total - clearedCount;
     return _MessageCenterPayload(
       rooms: nextRooms,
       conversations: conversations,
       notifications: notifications,
+      unread: unread.copyWith(
+        chatMessages: nextChatUnread < 0 ? 0 : nextChatUnread,
+        total: nextTotal < 0 ? 0 : nextTotal,
+      ),
     );
   }
 
@@ -505,10 +562,42 @@ class _MessageCenterPayload {
         })
         .toList(growable: false);
     if (!changed) return this;
+    final nextSystemUnread = unread.system - 1;
+    final nextTotal = unread.total - 1;
     return _MessageCenterPayload(
       rooms: rooms,
       conversations: conversations,
       notifications: nextNotifications,
+      unread: unread.copyWith(
+        system: nextSystemUnread < 0 ? 0 : nextSystemUnread,
+        total: nextTotal < 0 ? 0 : nextTotal,
+      ),
+    );
+  }
+
+  _MessageCenterPayload clearAllNotificationUnread(
+    MessageUnreadSummary nextUnread,
+  ) {
+    final readAt = DateTime.now().toIso8601String();
+    final nextNotifications = notifications
+        .map(
+          (item) => item.readAt.isEmpty
+              ? SystemNotificationItem(
+                  id: item.id,
+                  title: item.title,
+                  content: item.content,
+                  category: item.category,
+                  readAt: readAt,
+                  createdAt: item.createdAt,
+                )
+              : item,
+        )
+        .toList(growable: false);
+    return _MessageCenterPayload(
+      rooms: rooms,
+      conversations: conversations,
+      notifications: nextNotifications,
+      unread: nextUnread,
     );
   }
 }
@@ -569,6 +658,27 @@ enum _NotificationFilter {
 }
 
 enum _ConversationChannel { rooms, private }
+
+List<_NotificationFilter> _availableNotificationFilters(
+  List<SystemNotificationItem> items,
+) {
+  const categories = [
+    _NotificationFilter.system,
+    _NotificationFilter.update,
+    _NotificationFilter.operation,
+    _NotificationFilter.security,
+    _NotificationFilter.growth,
+    _NotificationFilter.race,
+    _NotificationFilter.aiNovel,
+  ];
+  return [
+    _NotificationFilter.all,
+    if (items.any((item) => item.readAt.isEmpty)) _NotificationFilter.unread,
+    ...categories.where(
+      (filter) => items.any((item) => _matchesNotificationFilter(item, filter)),
+    ),
+  ];
+}
 
 class _MessageCenterSummary extends StatelessWidget {
   const _MessageCenterSummary({
@@ -950,6 +1060,241 @@ class _SystemNotificationTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _SystemNotificationInboxScreen extends StatefulWidget {
+  const _SystemNotificationInboxScreen({required this.service});
+
+  final InteractionService service;
+
+  @override
+  State<_SystemNotificationInboxScreen> createState() =>
+      _SystemNotificationInboxScreenState();
+}
+
+class _SystemNotificationInboxScreenState
+    extends State<_SystemNotificationInboxScreen> {
+  static const _pageSize = 30;
+
+  final List<SystemNotificationItem> _notifications = [];
+  _NotificationFilter _filter = _NotificationFilter.all;
+  int _nextBeforeId = 0;
+  bool _hasMore = true;
+  bool _loading = false;
+  bool _markingAllRead = false;
+  Object? _loadError;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPage(reset: true));
+  }
+
+  Future<void> _loadPage({required bool reset}) async {
+    if (_loading) return;
+    final auth = context.read<InteractionAuthProvider>();
+    if (!auth.isLoggedIn) return;
+
+    final beforeId = reset ? 0 : _nextBeforeId;
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final page = await widget.service.fetchSystemNotifications(
+        token: auth.token,
+        beforeId: beforeId,
+        limit: _pageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (reset) {
+          _notifications
+            ..clear()
+            ..addAll(page);
+        } else {
+          final knownIds = _notifications.map((item) => item.id).toSet();
+          _notifications.addAll(page.where((item) => knownIds.add(item.id)));
+        }
+        _nextBeforeId = _notifications.isEmpty ? 0 : _notifications.last.id;
+        _hasMore = page.length == _pageSize;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _loadError = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _markAllRead() async {
+    if (_markingAllRead || _notifications.isEmpty) return;
+    final auth = context.read<InteractionAuthProvider>();
+    if (!auth.isLoggedIn) return;
+
+    setState(() => _markingAllRead = true);
+    try {
+      await widget.service.markAllSystemNotificationsRead(token: auth.token);
+      if (!mounted) return;
+      final readAt = DateTime.now().toIso8601String();
+      setState(() {
+        for (var index = 0; index < _notifications.length; index++) {
+          final item = _notifications[index];
+          if (item.readAt.isEmpty) {
+            _notifications[index] = SystemNotificationItem(
+              id: item.id,
+              title: item.title,
+              content: item.content,
+              category: item.category,
+              readAt: readAt,
+              createdAt: item.createdAt,
+            );
+          }
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('全部标为已读失败，请稍后重试')));
+    } finally {
+      if (mounted) setState(() => _markingAllRead = false);
+    }
+  }
+
+  Future<void> _markNotificationRead(int id) async {
+    try {
+      await widget.service.markSystemNotificationRead(
+        token: context.read<InteractionAuthProvider>().token,
+        id: id,
+      );
+    } catch (_) {
+      // The next refresh restores the server state if marking this item fails.
+    }
+  }
+
+  Future<void> _openNotification(SystemNotificationItem item) async {
+    var detailItem = item;
+    if (item.readAt.isEmpty) {
+      final readAt = DateTime.now().toIso8601String();
+      detailItem = SystemNotificationItem(
+        id: item.id,
+        title: item.title,
+        content: item.content,
+        category: item.category,
+        readAt: readAt,
+        createdAt: item.createdAt,
+      );
+      setState(() {
+        final index = _notifications.indexWhere((value) => value.id == item.id);
+        if (index >= 0) _notifications[index] = detailItem;
+      });
+      unawaited(_markNotificationRead(item.id));
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _SystemNotificationDetailScreen(item: detailItem),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filters = _availableNotificationFilters(_notifications);
+    final selectedFilter = filters.contains(_filter)
+        ? _filter
+        : _NotificationFilter.all;
+    final visibleNotifications = _notifications
+        .where((item) => _matchesNotificationFilter(item, selectedFilter))
+        .toList(growable: false);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('全部通知'),
+        actions: [
+          if (_notifications.isNotEmpty)
+            IconButton(
+              key: const ValueKey('notification-inbox-mark-all-read'),
+              tooltip: '全部标为已读',
+              onPressed: _markingAllRead
+                  ? null
+                  : () => unawaited(_markAllRead()),
+              icon: _markingAllRead
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.done_all_rounded),
+            ),
+        ],
+      ),
+      backgroundColor: const Color(0xFFF7F8FC),
+      body: _loading && _notifications.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: () => _loadPage(reset: true),
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
+                children: [
+                  if (_loadError != null && _notifications.isEmpty)
+                    _MessageLoadFailure(
+                      onRetry: () => unawaited(_loadPage(reset: true)),
+                    )
+                  else if (_notifications.isEmpty)
+                    const InteractionEmptyState(
+                      icon: Icons.notifications_none_rounded,
+                      title: '暂无通知',
+                      subtitle: '新的系统、活动、版本和审核消息会出现在这里',
+                    )
+                  else ...[
+                    _NotificationFilterBar(
+                      filters: filters,
+                      selected: selectedFilter,
+                      items: _notifications,
+                      onSelected: (value) => setState(() => _filter = value),
+                    ),
+                    const SizedBox(height: 12),
+                    if (visibleNotifications.isEmpty)
+                      const InteractionEmptyState(
+                        icon: Icons.filter_alt_off_outlined,
+                        title: '没有匹配的通知',
+                        subtitle: '切换分类查看其他通知',
+                      )
+                    else
+                      ...visibleNotifications.map(
+                        (item) => _SystemNotificationTile(
+                          item: item,
+                          onTap: () => unawaited(_openNotification(item)),
+                        ),
+                      ),
+                    if (_hasMore) ...[
+                      const SizedBox(height: 4),
+                      Center(
+                        child: OutlinedButton.icon(
+                          onPressed: _loading
+                              ? null
+                              : () => unawaited(_loadPage(reset: false)),
+                          icon: _loading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.expand_more_rounded),
+                          label: Text(_loading ? '正在加载' : '加载更多通知'),
+                        ),
+                      ),
+                    ],
+                  ],
+                ],
+              ),
+            ),
     );
   }
 }

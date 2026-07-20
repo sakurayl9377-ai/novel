@@ -741,6 +741,24 @@ export async function userRoutes(app) {
   );
 
   app.post(
+    "/messages/system/read-all",
+    { preHandler: app.authRequired },
+    async (request) => {
+      const result = run(
+        `UPDATE system_notifications
+         SET read_at = datetime('now')
+         WHERE user_id = ? AND read_at = ''`,
+        [request.user.id],
+      );
+      return {
+        ok: true,
+        markedCount: Number(result.changes || 0),
+        unread: messageUnreadSummaryPayload(request.user.id),
+      };
+    },
+  );
+
+  app.post(
     "/messages/system/:id/read",
     { preHandler: app.authRequired },
     async (request) => {
@@ -1547,13 +1565,19 @@ function privateMessagePayload(userId, peerId, query = {}) {
 
 function systemNotificationPayload(userId, query = {}) {
   const limit = Math.max(1, Math.min(100, Number(query.limit) || 50));
+  const beforeId = optionalInt(query.beforeId, 0);
+  const beforeSql = beforeId > 0 ? "AND id < ?" : "";
+  const params = [userId];
+  if (beforeId > 0) params.push(beforeId);
+  params.push(limit);
   const rows = all(
     `SELECT id, title, content, category, read_at, created_at
      FROM system_notifications
      WHERE user_id = ?
+       ${beforeSql}
      ORDER BY id DESC
      LIMIT ?`,
-    [userId, limit],
+    params,
   );
   return { items: rows.map(systemNotificationJson) };
 }

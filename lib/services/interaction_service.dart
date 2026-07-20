@@ -584,10 +584,14 @@ class InteractionService {
   Future<List<SystemNotificationItem>> fetchSystemNotifications({
     required String token,
     int limit = 50,
+    int beforeId = 0,
   }) async {
-    final uri = Uri.parse(
-      '$apiBaseUrl/messages/system',
-    ).replace(queryParameters: {'limit': limit.toString()});
+    final uri = Uri.parse('$apiBaseUrl/messages/system').replace(
+      queryParameters: {
+        'limit': limit.toString(),
+        if (beforeId > 0) 'beforeId': beforeId.toString(),
+      },
+    );
     final json = await _request('GET', uri, token: token);
     return _items(json).map(SystemNotificationItem.fromJson).toList();
   }
@@ -599,6 +603,21 @@ class InteractionService {
     final json = await _request(
       'POST',
       Uri.parse('$apiBaseUrl/messages/system/$id/read'),
+      token: token,
+      body: const {},
+    );
+    final unread = json['unread'];
+    return unread is Map
+        ? MessageUnreadSummary.fromJson(unread.cast<String, dynamic>())
+        : MessageUnreadSummary.fromJson(json);
+  }
+
+  Future<MessageUnreadSummary> markAllSystemNotificationsRead({
+    required String token,
+  }) async {
+    final json = await _request(
+      'POST',
+      Uri.parse('$apiBaseUrl/messages/system/read-all'),
       token: token,
       body: const {},
     );

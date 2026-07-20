@@ -136,6 +136,20 @@ class MessageUnreadSummary {
       chatMessages: _asInt(json['chatMessages'] ?? json['chat']),
     );
   }
+
+  MessageUnreadSummary copyWith({
+    int? total,
+    int? system,
+    int? privateMessages,
+    int? chatMessages,
+  }) {
+    return MessageUnreadSummary(
+      total: total ?? this.total,
+      system: system ?? this.system,
+      privateMessages: privateMessages ?? this.privateMessages,
+      chatMessages: chatMessages ?? this.chatMessages,
+    );
+  }
 }
 
 class InteractionComment {

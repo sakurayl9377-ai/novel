@@ -182,6 +182,66 @@ test("notification workbench previews structured audiences and sends atomically"
     assert.equal(detail.events.length >= 2, true);
     assert.equal(detail.delivery.atomic, true);
 
+    run(
+      "UPDATE system_notifications SET read_at = datetime('now') WHERE user_id IN (?, ?)",
+      [normalA, normalB],
+    );
+    run(
+      `INSERT INTO system_notifications (user_id, title, content, category)
+       VALUES (?, '审核结果', '第一条待读审核消息', 'ai_novel_review'),
+              (?, '版本提醒', '第二条待读版本消息', 'update')`,
+      [normalA, normalA],
+    );
+    run(
+      `INSERT INTO system_notifications (user_id, title, content, category)
+       VALUES (?, '其他用户消息', '不应被一键已读影响', 'system')`,
+      [normalB],
+    );
+    const readerLogin = await request(app, "POST", "/auth/login", {
+      email: "notice-a@example.com",
+      password: "notice-user-password",
+    });
+    const newestNotificationPage = await request(
+      app,
+      "GET",
+      "/messages/system?limit=1",
+      undefined,
+      readerLogin.token,
+    );
+    assert.equal(newestNotificationPage.items.length, 1);
+    const olderNotificationPage = await request(
+      app,
+      "GET",
+      `/messages/system?limit=1&beforeId=${newestNotificationPage.items[0].id}`,
+      undefined,
+      readerLogin.token,
+    );
+    assert.equal(olderNotificationPage.items.length, 1);
+    assert.ok(olderNotificationPage.items[0].id < newestNotificationPage.items[0].id);
+    const readerUnread = await request(app, "GET", "/messages/unread-summary", undefined, readerLogin.token);
+    assert.equal(readerUnread.system, 2);
+
+    const markedAll = await request(app, "POST", "/messages/system/read-all", {}, readerLogin.token);
+    assert.equal(markedAll.ok, true);
+    assert.equal(markedAll.markedCount, 2);
+    assert.equal(markedAll.unread.system, 0);
+    assert.equal(one(
+      "SELECT COUNT(*) AS total FROM system_notifications WHERE user_id = ? AND read_at = ''",
+      [normalA],
+    ).total, 0);
+    assert.equal(one(
+      "SELECT COUNT(*) AS total FROM system_notifications WHERE user_id = ? AND read_at = ''",
+      [normalB],
+    ).total, 1);
+    const repeatedMarkAll = await request(
+      app,
+      "POST",
+      "/messages/system/read-all",
+      {},
+      readerLogin.token,
+    );
+    assert.equal(repeatedMarkAll.markedCount, 0);
+
     const publishedAnnouncement = await request(
       app,
       "POST",
