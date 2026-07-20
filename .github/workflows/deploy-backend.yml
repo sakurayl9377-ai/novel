@@ -65,6 +65,8 @@ jobs:
             --exclude='backend/data' \
             --exclude='backend/data/*' \
             --exclude='backend/node_modules' \
+            --exclude='*/node_modules' \
+            --exclude='*/node_modules/*' \
             --exclude='*/__pycache__' \
             --exclude='*/__pycache__/*' \
             --exclude='*.pyc' \
