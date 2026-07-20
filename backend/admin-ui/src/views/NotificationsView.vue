@@ -14,8 +14,10 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import MetricCard from '@/components/MetricCard.vue';
+import AppAnnouncementWorkbench from '@/components/notifications/AppAnnouncementWorkbench.vue';
 import NotificationDetailDrawer from '@/components/notifications/NotificationDetailDrawer.vue';
 import NotificationEditorDrawer from '@/components/notifications/NotificationEditorDrawer.vue';
 import NotificationSendDialog from '@/components/notifications/NotificationSendDialog.vue';
@@ -43,6 +45,9 @@ import {
 
 const loading = ref(false);
 const initialized = ref(false);
+const route = useRoute();
+const router = useRouter();
+const activeChannel = ref(route.query.channel === 'messages' ? 'messages' : 'announcement');
 const data = ref<NotificationWorkbenchResponse>(emptyWorkbench());
 const query = reactive({
   q: '',
@@ -69,7 +74,22 @@ const categoryOptions = computed(() => data.value.options.categories.length
   ? data.value.options.categories
   : ['system', 'update', 'operation', 'security'] as NotificationCategory[]);
 
-onMounted(() => void loadNotifications());
+onMounted(() => {
+  if (activeChannel.value === 'messages') void loadNotifications();
+});
+
+function changeChannel(value: string | number): void {
+  activeChannel.value = String(value);
+  void router.replace({
+    query: {
+      ...route.query,
+      channel: activeChannel.value,
+    },
+  });
+  if (activeChannel.value === 'messages' && !initialized.value) {
+    void loadNotifications();
+  }
+}
 
 async function loadNotifications(): Promise<void> {
   loading.value = true;
@@ -158,10 +178,14 @@ function handleDetailSend(detail: NotificationDetailResponse): void {
   sendOpen.value = true;
 }
 
-async function afterSaved(detail: NotificationDetailResponse): Promise<void> {
+async function afterSaved(detail: NotificationDetailResponse, reviewSend: boolean): Promise<void> {
   detailId.value = detail.item.id;
   detailRefreshKey.value += 1;
   await loadNotifications();
+  if (reviewSend) {
+    sendDetail.value = detail;
+    sendOpen.value = true;
+  }
 }
 
 async function afterSent(result: NotificationSendResponse): Promise<void> {
@@ -216,17 +240,27 @@ function emptyWorkbench(): NotificationWorkbenchResponse {
   <div class="page-stack notification-page">
     <section class="notification-hero">
       <div class="hero-copy">
-        <span class="eyebrow">IN-APP NOTIFICATION OPERATIONS</span>
-        <h2>通知发布工作台</h2>
-        <p>消息先保存为草稿，受众可预览、发送可追踪，用户端只接收真实写入消息中心的站内通知。</p>
+        <span class="eyebrow">APP COMMUNICATION OPERATIONS</span>
+        <h2>公告与消息发布</h2>
+        <p>启动弹窗与消息中心是两个独立渠道。先选择用户实际看到的位置，再编辑和发布内容。</p>
       </div>
       <div class="channel-state">
         <span class="channel-icon"><ElIcon><Bell /></ElIcon></span>
-        <div><strong>站内消息渠道</strong><small>不包含邮件、推送或外部 URL</small></div>
-        <ElTag type="success" effect="plain"><ElIcon><Check /></ElIcon>可用</ElTag>
+        <div><strong>{{ activeChannel === 'announcement' ? 'App 启动弹窗' : 'App 消息中心' }}</strong><small>{{ activeChannel === 'announcement' ? '启动后展示一次，不写入消息列表' : '按用户写入，可追踪已读状态' }}</small></div>
+        <ElTag type="success" effect="plain"><ElIcon><Check /></ElIcon>渠道明确</ElTag>
       </div>
     </section>
 
+    <section class="channel-tabs">
+      <ElTabs :model-value="activeChannel" @tab-change="changeChannel">
+        <ElTabPane name="announcement"><template #label><span class="channel-tab-label"><ElIcon><Bell /></ElIcon>启动弹窗公告</span></template></ElTabPane>
+        <ElTabPane name="messages"><template #label><span class="channel-tab-label"><ElIcon><Promotion /></ElIcon>消息中心通知</span></template></ElTabPane>
+      </ElTabs>
+    </section>
+
+    <AppAnnouncementWorkbench v-if="activeChannel === 'announcement'" />
+
+    <template v-else>
     <section class="metric-grid notification-metrics">
       <MetricCard label="待处理草稿" :value="data.stats.drafts" :icon="EditPen" hint="保存后仍不会发送" />
       <MetricCard label="24h 已发送" :value="data.stats.sent24h" :icon="Promotion" hint="按发送记录统计" tone="success" />
@@ -284,6 +318,7 @@ function emptyWorkbench(): NotificationWorkbenchResponse {
       <div><ElIcon><Lock /></ElIcon><div><strong>渠道边界</strong><span>当前后台只负责站内消息。邮件、系统推送和外部链接没有接入，不会在界面上伪装成“已发送”。</span></div></div>
       <ElTag type="info" effect="plain">发送上限 {{ data.options.maxRecipients.toLocaleString() }} 位</ElTag>
     </section>
+    </template>
 
     <NotificationEditorDrawer v-model="editorOpen" :item="editingItem" :options="data.options" @saved="afterSaved" @reload="loadNotifications" />
     <NotificationDetailDrawer v-model="detailOpen" :notification-id="detailId" :refresh-key="detailRefreshKey" @edit="handleDetailEdit" @send="handleDetailSend" @canceled="afterCanceled" />
@@ -303,6 +338,10 @@ function emptyWorkbench(): NotificationWorkbenchResponse {
 .channel-state > div { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .channel-state strong { color: #255f4c; font-size: 12px; }
 .channel-state small { color: #5d7d70; font-size: 9px; line-height: 1.4; }
+.channel-tabs { padding: 0 18px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.channel-tabs :deep(.el-tabs__header) { margin: 0; }
+.channel-tabs :deep(.el-tabs__content) { display: none; }
+.channel-tab-label { display: inline-flex; align-items: center; gap: 7px; min-height: 48px; font-size: 12px; }
 .notification-metrics { grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 10px; }
 .notification-metrics :deep(.metric-card) { min-height: 117px; padding: 15px; }
 .status-strip { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); border: 1px solid var(--line); border-radius: 8px; background: white; overflow: hidden; }

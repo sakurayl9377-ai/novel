@@ -132,3 +132,47 @@ export interface NotificationSendResponse {
   item: NotificationItem;
   delivery: NotificationDelivery;
 }
+
+export interface AppAnnouncementCurrent {
+  enabled: boolean;
+  id: string;
+  version: string;
+  title: string;
+  content: string;
+  updatedAt: string;
+  activeRevisionId: number;
+  latestRevisionId: number;
+}
+
+export interface AppAnnouncementRevision {
+  id: number;
+  version: string;
+  title: string;
+  content: string;
+  enabled: boolean;
+  sourceRevisionId: number | null;
+  note: string;
+  createdAt: string;
+  operator: NotificationOperator | null;
+}
+
+export interface AppAnnouncementWorkbenchResponse {
+  generatedAt: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  current: AppAnnouncementCurrent;
+  items: AppAnnouncementRevision[];
+  stats: {
+    total: number;
+    published: number;
+    disabled: number;
+  };
+}
+
+export interface AppAnnouncementMutationResponse {
+  ok: boolean;
+  changed: boolean;
+  current: Omit<AppAnnouncementCurrent, 'activeRevisionId' | 'latestRevisionId'>;
+  revision?: AppAnnouncementRevision;
+}

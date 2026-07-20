@@ -186,8 +186,8 @@ export const router = createRouter({
           name: 'notifications',
           component: NotificationsView,
           meta: {
-            title: '通知发布',
-            hint: '草稿、受众预览、原子发送与完整审计记录',
+            title: '公告与通知',
+            hint: '启动弹窗、消息中心、受众预览与完整发布记录',
             requiresAuth: true,
             requiresAdmin: true,
           },
@@ -253,7 +253,7 @@ export const router = createRouter({
           component: SettingsView,
           meta: {
             title: '系统配置',
-            hint: '公告、AI 机器人、语音服务与凭据状态',
+            hint: 'AI 机器人、语音服务与凭据状态',
             requiresAuth: true,
             requiresAdmin: true,
           },

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import {
+  Bell,
   CircleCheck,
   Delete,
   Key,
   MagicStick,
+  Promotion,
   Refresh,
   Setting,
   UploadFilled,
@@ -12,12 +14,12 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { UploadFile } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import MetricCard from '@/components/MetricCard.vue';
 import {
   clearSettingsSecret,
   getSettingsWorkbench,
-  saveAppAnnouncement,
   saveChatBotSettings,
   saveIflytekAsrSettings,
   saveIflytekTtsSettings,
@@ -27,22 +29,21 @@ import {
 import type { SettingsGroupHealth, SettingsWorkbenchResponse } from '@/types/settings';
 import { formatDateTime } from '@/utils/format';
 
-type GroupKey = 'appAnnouncement' | 'chatBot' | 'iflytekAsr' | 'iflytekTts';
+type GroupKey = 'chatBot' | 'iflytekAsr' | 'iflytekTts';
 
 const loading = ref(false);
 const initialized = ref(false);
+const router = useRouter();
 const savingGroup = ref<GroupKey | ''>('');
 const uploadingAvatar = ref(false);
 const testingBot = ref(false);
-const openedSections = ref<string[]>(['announcement', 'chatBot']);
+const openedSections = ref<string[]>(['chatBot']);
 const data = ref<SettingsWorkbenchResponse>(emptySettings());
 const baselines = reactive<Record<GroupKey, string>>({
-  appAnnouncement: '',
   chatBot: '',
   iflytekAsr: '',
   iflytekTts: '',
 });
-const announcement = reactive({ enabled: false, title: '公告', content: '' });
 const chatBot = reactive({
   enabled: false,
   provider: 'nvidia',
@@ -81,8 +82,9 @@ const providerOptions = computed(() => data.value.chatBotProviderPresets);
 const skinOptions = computed(() => data.value.chatBotSkins);
 const asrProductOptions = computed(() => Object.entries(data.value.speechDefaults.asrHostUrls));
 const chatAvatarPreview = computed(() => chatBot.avatarUrl);
+const announcementEnabled = computed(() => data.value.appAnnouncement.enabled === 'true' && Boolean(data.value.appAnnouncement.content.trim()));
+const announcementStatusLabel = computed(() => announcementEnabled.value ? '正在展示' : '未启用');
 const dirty = computed<Record<GroupKey, boolean>>(() => ({
-  appAnnouncement: serializeAnnouncement() !== baselines.appAnnouncement,
   chatBot: serializeChatBot() !== baselines.chatBot,
   iflytekAsr: serializeAsr() !== baselines.iflytekAsr,
   iflytekTts: serializeTts() !== baselines.iflytekTts,
@@ -104,11 +106,6 @@ async function loadSettings(): Promise<void> {
 
 function applySettings(next: SettingsWorkbenchResponse): void {
   data.value = next;
-  Object.assign(announcement, {
-    enabled: next.appAnnouncement.enabled === 'true',
-    title: next.appAnnouncement.title,
-    content: next.appAnnouncement.content,
-  });
   Object.assign(chatBot, {
     enabled: next.chatBot.enabled === 'true',
     provider: next.chatBot.provider,
@@ -137,7 +134,6 @@ function applySettings(next: SettingsWorkbenchResponse): void {
     apiSecret: '',
     hostUrl: next.iflytekTts.hostUrl,
   });
-  baselines.appAnnouncement = serializeAnnouncement();
   baselines.chatBot = serializeChatBot();
   baselines.iflytekAsr = serializeAsr();
   baselines.iflytekTts = serializeTts();
@@ -146,13 +142,11 @@ function applySettings(next: SettingsWorkbenchResponse): void {
 async function saveGroup(group: GroupKey): Promise<void> {
   savingGroup.value = group;
   try {
-    const next = group === 'appAnnouncement'
-      ? await saveAppAnnouncement({ enabled: announcement.enabled, title: announcement.title, content: announcement.content })
-      : group === 'chatBot'
-        ? await saveChatBotSettings(chatBotPayload())
-        : group === 'iflytekAsr'
-          ? await saveIflytekAsrSettings(asrPayload())
-          : await saveIflytekTtsSettings(ttsPayload());
+    const next = group === 'chatBot'
+      ? await saveChatBotSettings(chatBotPayload())
+      : group === 'iflytekAsr'
+        ? await saveIflytekAsrSettings(asrPayload())
+        : await saveIflytekTtsSettings(ttsPayload());
     applySettings(next);
     ElMessage.success('配置已保存');
   } catch (error) {
@@ -239,7 +233,6 @@ function healthTone(group: GroupKey): 'success' | 'warning' | 'info' {
 
 function missingLabel(value: string): string {
   return ({
-    content: '公告内容',
     appId: 'App ID',
     apiKey: 'API Key',
     secretKey: 'Secret Key',
@@ -253,8 +246,8 @@ function secretHint(configured: boolean): string {
   return configured ? '已配置，留空保持原值' : '尚未配置';
 }
 
-function announcementUpdatedAt(): string {
-  return healthFor('appAnnouncement').updatedAt;
+function openAnnouncementWorkbench(): void {
+  void router.push({ name: 'notifications', query: { channel: 'announcement' } });
 }
 
 function chatBotPayload(): Record<string, unknown> {
@@ -267,10 +260,6 @@ function asrPayload(): Record<string, unknown> {
 
 function ttsPayload(): Record<string, unknown> {
   return { ...tts };
-}
-
-function serializeAnnouncement(): string {
-  return JSON.stringify({ enabled: announcement.enabled, title: announcement.title, content: announcement.content });
 }
 
 function serializeChatBot(): string {
@@ -345,16 +334,21 @@ function emptySettings(): SettingsWorkbenchResponse {
       <MetricCard label="最近更新" :value="formatDateTime(data.generatedAt)" hint="配置工作台快照" :icon="Refresh" />
     </section>
 
-    <ElCollapse v-model="openedSections" class="settings-collapse">
-      <ElCollapseItem name="announcement">
-        <template #title><div class="collapse-title"><div><strong>App 公告</strong><small>客户端启动时显示的维护与运营公告</small></div><div class="title-status"><ElTag :type="healthTone('appAnnouncement')" effect="plain">{{ healthLabel('appAnnouncement') }}</ElTag><ElTag v-if="dirty.appAnnouncement" type="warning" effect="plain">未保存</ElTag></div></div></template>
-        <ElForm label-position="top" class="settings-form">
-          <div class="form-grid two-columns"><ElFormItem label="公告标题"><ElInput v-model="announcement.title" maxlength="80" show-word-limit /></ElFormItem><ElFormItem label="显示开关"><div class="switch-field"><ElSwitch v-model="announcement.enabled" /><span>{{ announcement.enabled ? '客户端显示' : '暂不显示' }}</span></div></ElFormItem></div>
-          <ElFormItem label="公告内容" required><ElInput v-model="announcement.content" type="textarea" :rows="5" maxlength="4000" show-word-limit placeholder="填写用户需要看到的公告内容" /></ElFormItem>
-          <div class="form-footer"><span>上次更新：{{ formatDateTime(announcementUpdatedAt()) }}</span><ElButton type="primary" :disabled="!dirty.appAnnouncement" :loading="savingGroup === 'appAnnouncement'" @click="saveGroup('appAnnouncement')">保存公告</ElButton></div>
-        </ElForm>
-      </ElCollapseItem>
+    <section class="announcement-entry">
+      <div class="announcement-entry-copy">
+        <span class="announcement-entry-icon"><ElIcon><Bell /></ElIcon></span>
+        <div>
+          <strong>App 启动弹窗公告</strong>
+          <p>启动弹窗与消息中心通知分开管理。发布、停用和历史重发都会保留操作记录。</p>
+        </div>
+      </div>
+      <div class="announcement-entry-actions">
+        <ElTag :type="announcementEnabled ? 'success' : 'info'" effect="plain">{{ announcementStatusLabel }}</ElTag>
+        <ElButton type="primary" :icon="Promotion" @click="openAnnouncementWorkbench">前往公告发布</ElButton>
+      </div>
+    </section>
 
+    <ElCollapse v-model="openedSections" class="settings-collapse">
       <ElCollapseItem name="chatBot">
         <template #title><div class="collapse-title"><div><strong>AI 聊天机器人</strong><small>聊天房间内的 AI 回复、皮肤和触发规则</small></div><div class="title-status"><ElTag :type="healthTone('chatBot')" effect="plain">{{ healthLabel('chatBot') }}</ElTag><ElTag v-if="dirty.chatBot" type="warning" effect="plain">未保存</ElTag></div></div></template>
         <ElForm label-position="top" class="settings-form">
@@ -386,7 +380,7 @@ function emptySettings(): SettingsWorkbenchResponse {
 </template>
 
 <style scoped>
-.settings-page { gap: 16px; }.settings-heading { padding-bottom: 2px; }.settings-heading h2 { margin: 6px 0 4px; font-size: 25px; }.settings-heading p { margin: 0; color: var(--ink-500); font-size: 12px; }.settings-metrics { grid-template-columns: repeat(4, minmax(155px, 1fr)); gap: 10px; }.settings-metrics :deep(.metric-card) { min-height: 112px; padding: 14px; }.settings-collapse { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: white; }.settings-collapse :deep(.el-collapse-item__header) { min-height: 68px; padding: 0 18px; }.settings-collapse :deep(.el-collapse-item__wrap) { border-top: 1px solid var(--line); }.settings-collapse :deep(.el-collapse-item__content) { padding: 18px; }.collapse-title { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-right: 8px; }.collapse-title > div:first-child { min-width: 0; display: grid; gap: 4px; }.collapse-title strong { color: var(--ink-900); font-size: 14px; }.collapse-title small { overflow: hidden; color: var(--ink-500); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.title-status { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }.settings-form { max-width: 1100px; }.form-grid { display: grid; gap: 14px; }.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }.three-columns { grid-template-columns: repeat(3, minmax(0, 1fr)); }.switch-field { min-height: 32px; display: flex; align-items: center; gap: 10px; color: var(--ink-700); font-size: 12px; }.secret-row { min-height: 19px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: var(--ink-500); font-size: 10px; }.secret-row span { display: inline-flex; align-items: center; gap: 4px; }.form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-500); font-size: 10px; }.advanced-collapse { margin: 4px 0 14px; border: 1px solid var(--line); border-radius: 7px; }.advanced-collapse :deep(.el-collapse-item__header) { min-height: 42px; padding: 0 12px; color: var(--ink-700); font-size: 12px; }.advanced-collapse :deep(.el-collapse-item__content) { padding: 14px 12px 4px; }.avatar-editor { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(190px, .5fr); align-items: center; gap: 15px; margin: 2px 0 15px; padding: 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-muted); }.avatar-preview { width: 66px; height: 66px; overflow: hidden; display: grid; place-items: center; border-radius: 50%; color: var(--sakura-600); background: var(--sakura-100); }.avatar-preview img { width: 100%; height: 100%; object-fit: cover; }.avatar-preview.empty { border: 1px dashed var(--sakura-300); }.avatar-copy { min-width: 0; display: grid; gap: 5px; }.avatar-copy strong { color: var(--ink-900); font-size: 13px; }.avatar-copy > span { color: var(--ink-500); font-size: 10px; }.avatar-actions { display: flex; align-items: center; gap: 8px; margin-top: 3px; }.skin-field { margin: 0; }.test-panel { display: grid; gap: 10px; margin: 2px 0 15px; padding: 14px; border: 1px solid #e8dce5; border-radius: 7px; background: #fffafd; }.test-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.test-header > div { display: grid; gap: 4px; }.test-header strong { color: var(--ink-900); font-size: 12px; }.test-header small { color: var(--ink-500); font-size: 10px; }.test-result { padding: 10px; border-left: 3px solid var(--sakura-400); background: white; }.test-result span { color: var(--ink-500); font-size: 10px; }.test-result p { margin: 6px 0 0; color: var(--ink-900); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }.settings-boundary :deep(.el-alert__title span) { display: inline-flex; align-items: center; gap: 5px; }
+.settings-page { gap: 16px; }.settings-heading { padding-bottom: 2px; }.settings-heading h2 { margin: 6px 0 4px; font-size: 25px; }.settings-heading p { margin: 0; color: var(--ink-500); font-size: 12px; }.settings-metrics { grid-template-columns: repeat(4, minmax(155px, 1fr)); gap: 10px; }.settings-metrics :deep(.metric-card) { min-height: 112px; padding: 14px; }.announcement-entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; border: 1px solid #dbe3ef; border-radius: 8px; background: #f9fbff; }.announcement-entry-copy { min-width: 0; display: flex; align-items: center; gap: 11px; }.announcement-entry-icon { width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; border-radius: 8px; color: #2f70c9; background: #e9f2ff; }.announcement-entry-copy > div { min-width: 0; display: grid; gap: 4px; }.announcement-entry-copy strong { color: var(--ink-900); font-size: 13px; }.announcement-entry-copy p { margin: 0; color: var(--ink-500); font-size: 10px; line-height: 1.5; }.announcement-entry-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; }.settings-collapse { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: white; }.settings-collapse :deep(.el-collapse-item__header) { min-height: 68px; padding: 0 18px; }.settings-collapse :deep(.el-collapse-item__wrap) { border-top: 1px solid var(--line); }.settings-collapse :deep(.el-collapse-item__content) { padding: 18px; }.collapse-title { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-right: 8px; }.collapse-title > div:first-child { min-width: 0; display: grid; gap: 4px; }.collapse-title strong { color: var(--ink-900); font-size: 14px; }.collapse-title small { overflow: hidden; color: var(--ink-500); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.title-status { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }.settings-form { max-width: 1100px; }.form-grid { display: grid; gap: 14px; }.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }.three-columns { grid-template-columns: repeat(3, minmax(0, 1fr)); }.switch-field { min-height: 32px; display: flex; align-items: center; gap: 10px; color: var(--ink-700); font-size: 12px; }.secret-row { min-height: 19px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: var(--ink-500); font-size: 10px; }.secret-row span { display: inline-flex; align-items: center; gap: 4px; }.form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-500); font-size: 10px; }.advanced-collapse { margin: 4px 0 14px; border: 1px solid var(--line); border-radius: 7px; }.advanced-collapse :deep(.el-collapse-item__header) { min-height: 42px; padding: 0 12px; color: var(--ink-700); font-size: 12px; }.advanced-collapse :deep(.el-collapse-item__content) { padding: 14px 12px 4px; }.avatar-editor { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(190px, .5fr); align-items: center; gap: 15px; margin: 2px 0 15px; padding: 13px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-muted); }.avatar-preview { width: 66px; height: 66px; overflow: hidden; display: grid; place-items: center; border-radius: 50%; color: var(--sakura-600); background: var(--sakura-100); }.avatar-preview img { width: 100%; height: 100%; object-fit: cover; }.avatar-preview.empty { border: 1px dashed var(--sakura-300); }.avatar-copy { min-width: 0; display: grid; gap: 5px; }.avatar-copy strong { color: var(--ink-900); font-size: 13px; }.avatar-copy > span { color: var(--ink-500); font-size: 10px; }.avatar-actions { display: flex; align-items: center; gap: 8px; margin-top: 3px; }.skin-field { margin: 0; }.test-panel { display: grid; gap: 10px; margin: 2px 0 15px; padding: 14px; border: 1px solid #e8dce5; border-radius: 7px; background: #fffafd; }.test-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.test-header > div { display: grid; gap: 4px; }.test-header strong { color: var(--ink-900); font-size: 12px; }.test-header small { color: var(--ink-500); font-size: 10px; }.test-result { padding: 10px; border-left: 3px solid var(--sakura-400); background: white; }.test-result span { color: var(--ink-500); font-size: 10px; }.test-result p { margin: 6px 0 0; color: var(--ink-900); font-size: 12px; line-height: 1.55; white-space: pre-wrap; }.settings-boundary :deep(.el-alert__title span) { display: inline-flex; align-items: center; gap: 5px; }
 @media (max-width: 1100px) { .settings-metrics { grid-template-columns: repeat(2, minmax(155px, 1fr)); }.avatar-editor { grid-template-columns: auto minmax(0, 1fr); }.skin-field { grid-column: 1 / -1; } }
-@media (max-width: 720px) { .settings-heading { align-items: flex-start; flex-direction: column; }.two-columns, .three-columns { grid-template-columns: 1fr; }.settings-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.avatar-editor { grid-template-columns: auto minmax(0, 1fr); }.avatar-copy { min-width: 0; }.test-header, .form-footer { align-items: flex-start; flex-direction: column; }.form-footer .el-button { width: 100%; }.settings-collapse :deep(.el-collapse-item__header) { padding-inline: 12px; }.settings-collapse :deep(.el-collapse-item__content) { padding-inline: 12px; } }
+@media (max-width: 720px) { .settings-heading { align-items: flex-start; flex-direction: column; }.two-columns, .three-columns { grid-template-columns: 1fr; }.settings-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.announcement-entry { align-items: flex-start; flex-direction: column; }.announcement-entry-actions { width: 100%; justify-content: space-between; }.avatar-editor { grid-template-columns: auto minmax(0, 1fr); }.avatar-copy { min-width: 0; }.test-header, .form-footer { align-items: flex-start; flex-direction: column; }.form-footer .el-button { width: 100%; }.settings-collapse :deep(.el-collapse-item__header) { padding-inline: 12px; }.settings-collapse :deep(.el-collapse-item__content) { padding-inline: 12px; } }
 </style>

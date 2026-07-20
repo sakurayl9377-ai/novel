@@ -533,6 +533,25 @@ export function migrate() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS app_announcement_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source_revision_id INTEGER,
+      admin_user_id INTEGER,
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (source_revision_id)
+        REFERENCES app_announcement_revisions(id) ON DELETE SET NULL,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (enabled IN (0, 1))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_announcement_revisions_time
+      ON app_announcement_revisions(created_at DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       admin_user_id INTEGER,
@@ -1361,6 +1380,7 @@ export function migrate() {
   migrateHorseRaceOperationsSchema();
   migrateShopWorkflowSchema();
   migrateNotificationOperationsSchema();
+  migrateAppAnnouncementHistorySchema();
   migrateManagedUploadRetirementSchema();
   ensureManagedUploadRetirementTriggers();
   retireSuibianVideoData();
@@ -1801,6 +1821,48 @@ function migrateNotificationOperationsSchema() {
     CREATE INDEX IF NOT EXISTS idx_admin_notification_events_broadcast
       ON admin_notification_events(broadcast_id, created_at DESC, id DESC);
   `);
+}
+
+function migrateAppAnnouncementHistorySchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_announcement_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      source_revision_id INTEGER,
+      admin_user_id INTEGER,
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (source_revision_id)
+        REFERENCES app_announcement_revisions(id) ON DELETE SET NULL,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (enabled IN (0, 1))
+    );
+    CREATE INDEX IF NOT EXISTS idx_app_announcement_revisions_time
+      ON app_announcement_revisions(created_at DESC, id DESC);
+  `);
+  if (one("SELECT 1 AS present FROM app_announcement_revisions LIMIT 1")) return;
+  const content = one(
+    "SELECT value, updated_at FROM app_settings WHERE key = 'app_announcement.content'",
+  );
+  if (!String(content?.value || "").trim()) return;
+  const settingValue = (key, fallback = "") =>
+    one("SELECT value FROM app_settings WHERE key = ?", [key])?.value || fallback;
+  run(
+    `INSERT INTO app_announcement_revisions
+       (version, title, content, enabled, note, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      settingValue("app_announcement.version", `legacy-${Date.now()}`),
+      settingValue("app_announcement.title", "公告"),
+      String(content.value),
+      settingValue("app_announcement.enabled", "false") === "true" ? 1 : 0,
+      "从现有 App 启动公告自动导入",
+      content.updated_at || new Date().toISOString(),
+    ],
+  );
 }
 
 function migrateShopWorkflowSchema() {

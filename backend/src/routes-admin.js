@@ -5,11 +5,8 @@ import {
   fetchAnimeSourceDetail,
   searchAnimeSource,
 } from "./anime-source.js";
-import {
-  appAnnouncementChanged,
-  appAnnouncementSettings,
-  normalizeAppAnnouncementSettings,
-} from "./app-announcement.js";
+import { appAnnouncementSettings } from "./app-announcement.js";
+import { saveAppAnnouncementFromSettings } from "./app-announcement-ops-service.js";
 import {
   fetchBilibiliSeason,
   fetchBilibiliDanmakuSummary,
@@ -471,7 +468,7 @@ export async function adminRoutes(app) {
         saveIflytekTtsSettings(body.iflytekTts);
       }
       if (Object.hasOwn(body, "appAnnouncement")) {
-        saveAppAnnouncementSettings(body.appAnnouncement);
+        saveAppAnnouncementSettings(body.appAnnouncement, request.user.id);
       }
       if (Object.hasOwn(body, "chatBot")) {
         saveChatBotSettings(body.chatBot);
@@ -484,7 +481,7 @@ export async function adminRoutes(app) {
     "/admin/settings/app-announcement",
     { preHandler: app.adminRequired },
     async (request) => {
-      saveAppAnnouncementSettings(request.body);
+      saveAppAnnouncementSettings(request.body, request.user.id);
       return adminSettingsWorkbenchPayload();
     },
   );
@@ -3243,32 +3240,8 @@ const chatBotSettingFields = [
   "systemPrompt",
 ];
 
-function saveAppAnnouncementSettings(rawValues) {
-  const values = settingsObject(rawValues);
-  const current = appAnnouncementSettings();
-  const next = normalizeAppAnnouncementSettings({
-    enabled: settingEnabled(values.enabled, current.enabled),
-    title: Object.hasOwn(values, "title")
-      ? optionalString(values.title, 80)
-      : current.title,
-    content: Object.hasOwn(values, "content")
-      ? optionalString(values.content, 4000)
-      : current.content,
-  });
-  next.title ||= "公告";
-  if (next.enabled && !next.content) {
-    throw badRequest("app_announcement_content_required");
-  }
-  if (appAnnouncementChanged(next)) next.version = String(Date.now());
-  else next.version = current.version || "";
-  saveSettingTransaction(() => {
-    saveSettingGroup("app_announcement", next, [
-      "enabled",
-      "title",
-      "content",
-      "version",
-    ]);
-  });
+function saveAppAnnouncementSettings(rawValues, adminUserId = 0) {
+  saveAppAnnouncementFromSettings(adminUserId, settingsObject(rawValues));
 }
 
 function saveIflytekAsrSettings(rawValues) {
