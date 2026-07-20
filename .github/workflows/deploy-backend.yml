@@ -63,6 +63,7 @@ jobs:
           tar \
             --exclude='backend/.env' \
             --exclude='backend/data' \
+            --exclude='backend/data/*' \
             --exclude='backend/node_modules' \
             --exclude='*/__pycache__' \
             --exclude='*/__pycache__/*' \
