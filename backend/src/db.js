@@ -74,6 +74,115 @@ export function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS sso_clients (
+      client_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      secret_hash TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      redirect_uris TEXT NOT NULL,
+      max_debit_per_transaction INTEGER NOT NULL DEFAULT 0,
+      daily_debit_limit INTEGER NOT NULL DEFAULT 0,
+      max_credit_per_transaction INTEGER NOT NULL DEFAULT 0,
+      daily_credit_limit INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (status IN ('active', 'disabled')),
+      CHECK (max_debit_per_transaction >= 0),
+      CHECK (daily_debit_limit >= 0),
+      CHECK (max_credit_per_transaction >= 0),
+      CHECK (daily_credit_limit >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS sso_user_links (
+      client_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      subject TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_login_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (client_id, user_id),
+      FOREIGN KEY (client_id) REFERENCES sso_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sso_authorization_codes (
+      code_hash TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      scopes TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES sso_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sso_access_tokens (
+      token_hash TEXT PRIMARY KEY,
+      family_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      scopes TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES sso_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sso_refresh_tokens (
+      token_hash TEXT PRIMARY KEY,
+      family_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      scopes TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      replaced_by_hash TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES sso_clients(client_id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sso_wallet_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      reward_event_id INTEGER NOT NULL UNIQUE,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      delta INTEGER NOT NULL,
+      balance_before INTEGER NOT NULL,
+      balance_after INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      reference_id TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (client_id, idempotency_key),
+      FOREIGN KEY (client_id) REFERENCES sso_clients(client_id) ON DELETE RESTRICT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      FOREIGN KEY (reward_event_id) REFERENCES user_reward_events(id) ON DELETE RESTRICT,
+      CHECK (delta != 0),
+      CHECK (balance_before >= 0),
+      CHECK (balance_after >= 0),
+      CHECK (balance_after = balance_before + delta)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sso_authorization_codes_expiry
+      ON sso_authorization_codes(expires_at, used_at);
+    CREATE INDEX IF NOT EXISTS idx_sso_access_tokens_user
+      ON sso_access_tokens(user_id, client_id, revoked_at, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_sso_refresh_tokens_user
+      ON sso_refresh_tokens(user_id, client_id, family_id, revoked_at, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_sso_wallet_transactions_user
+      ON sso_wallet_transactions(user_id, client_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_sso_wallet_transactions_client_time
+      ON sso_wallet_transactions(client_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sso_wallet_transactions_user_time
+      ON sso_wallet_transactions(user_id, client_id, created_at);
+
     CREATE TABLE IF NOT EXISTS image_captchas (
       id TEXT PRIMARY KEY,
       answer_hash TEXT NOT NULL,
@@ -310,6 +419,9 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_user_reward_events_user
       ON user_reward_events(user_id, action, created_at);
+    CREATE INDEX IF NOT EXISTS idx_user_reward_events_coin_cursor
+      ON user_reward_events(user_id, id)
+      WHERE coins_delta != 0;
 
     CREATE TABLE IF NOT EXISTS user_follow_reward_claims (
       follower_id INTEGER NOT NULL,
@@ -1392,6 +1504,13 @@ export function migrate() {
   addMissingColumn("users", "privacy_mode", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("users", "points", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("users", "sakura_coins", "INTEGER NOT NULL DEFAULT 0");
+  addMissingColumn("sso_access_tokens", "family_id", "TEXT NOT NULL DEFAULT ''");
+  run(
+    `UPDATE sso_clients
+     SET max_debit_per_transaction = 0,
+         daily_debit_limit = 0
+     WHERE (' ' || scopes || ' ') NOT LIKE '% wallet:debit %'`,
+  );
   addMissingColumn("users", "level", "INTEGER NOT NULL DEFAULT 0");
   addMissingColumn("users", "register_ip", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("users", "last_login_ip", "TEXT NOT NULL DEFAULT ''");
@@ -1441,6 +1560,8 @@ export function migrate() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_active
       ON auth_tokens(user_id, revoked_at, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_sso_access_tokens_family
+      ON sso_access_tokens(client_id, user_id, family_id, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_image_captchas_expiry
       ON image_captchas(expires_at, used_at);
     CREATE INDEX IF NOT EXISTS idx_email_verifications_email_purpose_time
@@ -1454,6 +1575,15 @@ export function migrate() {
     DELETE FROM email_verifications
       WHERE expires_at < datetime('now', '-7 days');
     DELETE FROM auth_tokens
+      WHERE expires_at < datetime('now', '-30 days')
+         OR (revoked_at IS NOT NULL AND revoked_at < datetime('now', '-30 days'));
+    DELETE FROM sso_authorization_codes
+      WHERE expires_at < datetime('now', '-1 day')
+         OR (used_at IS NOT NULL AND used_at < datetime('now', '-1 day'));
+    DELETE FROM sso_access_tokens
+      WHERE expires_at < datetime('now', '-7 days')
+         OR (revoked_at IS NOT NULL AND revoked_at < datetime('now', '-7 days'));
+    DELETE FROM sso_refresh_tokens
       WHERE expires_at < datetime('now', '-30 days')
          OR (revoked_at IS NOT NULL AND revoked_at < datetime('now', '-30 days'));
   `);

@@ -41,6 +41,8 @@ export function rewardActionLabel(value: string): string {
     chat_message: '聊天室发言',
     profile_complete: '完善资料',
     shop_redeem: '商店兑换',
+    sso_wallet_debit: '游戏消费扣币',
+    sso_wallet_credit: '游戏退款或发奖',
   } as Record<string, string>)[value] || value || '未知账变';
 }
 

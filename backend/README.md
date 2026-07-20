@@ -200,6 +200,11 @@ APK with a new manifest checksum.
 
 升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。下载服务器只承载 APK 与更新清单，不能部署后端服务。
 
+## 游戏单点登录
+
+第三方游戏的登录、用户资料、樱花币同步与幂等账变协议见
+[`docs/game-sso-api.md`](../docs/game-sso-api.md)。
+
 ## 后端直连发布
 
 仓库不再保留 GitHub Actions 后端部署工作流。推送到 GitHub 只运行 CI 校验，不能触发生产服务器更新。

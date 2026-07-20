@@ -17,6 +17,8 @@ export function financeActionLabel(value: string): string {
     horse_race_season_reward: '赛季排名奖励',
     admin_adjust_points: '后台调整成长值',
     admin_adjust_coins: '后台调整樱花币',
+    sso_wallet_debit: '游戏消费扣币',
+    sso_wallet_credit: '游戏退款或发奖',
   } as Record<string, string>)[value] || value || '未知来源';
 }
 
@@ -30,6 +32,7 @@ export function financeRelatedTypeLabel(value: string): string {
     activity_task: '活动任务',
     season: '赛季',
     daily: '每日任务',
+    sso_wallet: '第三方游戏',
   } as Record<string, string>)[value] || value || '系统规则';
 }
 

@@ -16,6 +16,8 @@ const event = (pointsDelta: number, coinsDelta: number) => ({
 describe('finance presentation helpers', () => {
   it('uses operator-facing action and source labels', () => {
     expect(financeActionLabel('shop_redeem')).toBe('商店兑换');
+    expect(financeActionLabel('sso_wallet_debit')).toBe('游戏消费扣币');
+    expect(financeRelatedTypeLabel('sso_wallet')).toBe('第三方游戏');
     expect(financeActionLabel('future_action')).toBe('future_action');
     expect(financeRelatedTypeLabel('admin')).toBe('管理员操作');
   });

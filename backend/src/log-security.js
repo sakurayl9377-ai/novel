@@ -5,8 +5,11 @@ const sensitiveQueryKeys = new Set([
   "apikey",
   "auth",
   "authorization",
+  "client_secret",
   "code",
+  "code_verifier",
   "password",
+  "refresh_token",
   "secret",
   "token",
 ]);
@@ -33,11 +36,11 @@ export function redactSensitiveText(value) {
   return String(value || "")
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${redacted}`)
     .replace(
-      /([?&](?:access_token|api_key|apikey|auth|authorization|code|password|secret|token)=)[^&#\s]*/gi,
+      /([?&](?:access_token|api_key|apikey|auth|authorization|client_secret|code|code_verifier|password|refresh_token|secret|token)=)[^&#\s]*/gi,
       `$1${redacted}`,
     )
     .replace(
-      /(["'](?:accessToken|apiKey|authorization|password|secret|token)["']\s*:\s*["'])[^"']*/gi,
+      /(["'](?:accessToken|apiKey|authorization|clientSecret|client_secret|codeVerifier|code_verifier|password|refreshToken|refresh_token|secret|token)["']\s*:\s*["'])[^"']*/gi,
       `$1${redacted}`,
     );
 }
@@ -79,12 +82,20 @@ export function secureLoggerOptions() {
         "req.headers.authorization",
         "req.headers.cookie",
         "req.headers['sec-websocket-protocol']",
+        "req.headers['x-sakura-user-token']",
         "headers.authorization",
         "headers.cookie",
         "headers['sec-websocket-protocol']",
+        "headers['x-sakura-user-token']",
         "authorization",
         "token",
         "accessToken",
+        "refreshToken",
+        "refresh_token",
+        "clientSecret",
+        "client_secret",
+        "codeVerifier",
+        "code_verifier",
         "password",
         "secret",
         "apiKey",
@@ -93,6 +104,12 @@ export function secureLoggerOptions() {
         "*.authorization",
         "*.token",
         "*.accessToken",
+        "*.refreshToken",
+        "*.refresh_token",
+        "*.clientSecret",
+        "*.client_secret",
+        "*.codeVerifier",
+        "*.code_verifier",
         "*.password",
         "*.secret",
         "*.apiKey",

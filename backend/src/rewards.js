@@ -1,4 +1,4 @@
-import { one, run } from "./db.js";
+import { db, one, run } from "./db.js";
 import { levelFromPoints, levelThresholds } from "./growth.js";
 
 export const dailyRewardCaps = {
@@ -49,6 +49,8 @@ export const rewardRules = {
   },
 };
 
+const cappedRewardActions = Object.keys(rewardRules);
+
 export function publicRewardRules() {
   return {
     dailyCaps: dailyRewardCaps,
@@ -64,10 +66,35 @@ export function publicRewardRules() {
   };
 }
 
-export function grantReward(userId, action, related = {}) {
+export function grantReward(
+  userId,
+  action,
+  related = {},
+  { withinTransaction = false } = {},
+) {
   const rule = rewardRules[action];
   if (!rule || !userId) return null;
 
+  if (withinTransaction) {
+    return grantRewardWithinTransaction(userId, action, rule, related);
+  }
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = grantRewardWithinTransaction(userId, action, rule, related);
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Preserve the original reward error.
+    }
+    throw error;
+  }
+}
+
+function grantRewardWithinTransaction(userId, action, rule, related) {
   if (rule.once) {
     const existing = one(
       `SELECT id FROM user_reward_events
@@ -84,7 +111,8 @@ export function grantReward(userId, action, related = {}) {
        FROM user_reward_events
        WHERE user_id = ?
          AND action = ?
-         AND date(created_at) = date('now')`,
+         AND created_at >= datetime('now', '+8 hours', 'start of day', '-8 hours')
+         AND created_at < datetime('now', '+8 hours', 'start of day', '+1 day', '-8 hours')`,
       [userId, action],
     );
     if ((today?.count || 0) >= rule.dailyLimit) return null;
@@ -96,8 +124,10 @@ export function grantReward(userId, action, related = {}) {
        COALESCE(SUM(coins_delta), 0) AS coins
      FROM user_reward_events
      WHERE user_id = ?
-       AND date(created_at) = date('now')`,
-    [userId],
+       AND action IN (${cappedRewardActions.map(() => "?").join(", ")})
+       AND created_at >= datetime('now', '+8 hours', 'start of day', '-8 hours')
+       AND created_at < datetime('now', '+8 hours', 'start of day', '+1 day', '-8 hours')`,
+    [userId, ...cappedRewardActions],
   );
   const user = one("SELECT points FROM users WHERE id = ?", [userId]);
   const currentPoints = user?.points || 0;

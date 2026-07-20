@@ -15,6 +15,7 @@
     "smoke": "node src/smoke-test.js",
     "test": "node --import=./src/test-env.js --test --test-concurrency=1 \"src/*.test.js\"",
     "test:ai-novels": "node src/ai-novel-test.js",
+    "sso:client": "node scripts/manage-sso-client.js",
     "prewarm:video-covers": "node scripts/prewarm-video-home-covers.js",
     "security": "node src/security-test.js"
   },

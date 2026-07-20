@@ -176,6 +176,11 @@ test("transport and upload security regressions", async (t) => {
       assert.equal(safeText.includes(secret), false);
       assert.match(safeText, /Bearer \[REDACTED\]/);
 
+      const ssoText = redactSensitiveText(
+        `{"refresh_token":"${secret}","clientSecret":"${secret}","code_verifier":"${secret}"}`,
+      );
+      assert.equal(ssoText.includes(secret), false);
+
       const serializedRequest = secureRequestSerializer({
         method: "GET",
         url,

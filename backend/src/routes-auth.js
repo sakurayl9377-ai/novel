@@ -1,9 +1,11 @@
 import { createSession, loginWithPassword, serializeAuth } from './auth.js';
 import { isRegistrationIpBlocked } from './chat-moderation.js';
 import { config } from './config.js';
-import { one, run } from './db.js';
+import { db, one, run } from './db.js';
 import { sendVerificationEmail } from './mailer.js';
 import { enforceRateLimits } from './rate-limit.js';
+import { ssoRoutes } from './routes-sso.js';
+import { revokeSsoCredentialsForUser } from './sso.js';
 import {
   createSvgCaptcha,
   hashCode,
@@ -30,6 +32,8 @@ const betaTestEmail = 'reader-beta-session@local.invalid';
 const betaTestNickname = 'Sakura Beta 测试员';
 
 export async function authRoutes(app) {
+  await app.register(ssoRoutes);
+
   app.post('/auth/beta-session', async (request, reply) => {
     if (!canCreateBetaTestSession(request)) {
       return reply.code(404).send({ error: 'not_found' });
@@ -271,27 +275,51 @@ export async function authRoutes(app) {
     const user = one('SELECT * FROM users WHERE email = ?', [targetEmail]);
     if (!user) throw badRequest('email not registered');
 
-    consumeEmailCode({
+    const verificationId = consumeEmailCode({
       email: targetEmail,
       purpose: 'reset_password',
       code: emailCode,
+      deferSuccess: true,
     });
+    const passwordHash = hashPassword(password);
 
-    run(
-      `UPDATE users
-       SET password_hash = ?,
-           updated_at = datetime('now')
-       WHERE id = ?`,
-      [hashPassword(password), user.id],
-    );
-    run(
-      `UPDATE auth_tokens
-       SET revoked_at = datetime('now')
-       WHERE user_id = ? AND revoked_at IS NULL`,
-      [user.id],
-    );
-    const updated = one('SELECT * FROM users WHERE id = ?', [user.id]);
-    return serializeAuth(updated, createSession(user.id));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const consumed = run(
+        `UPDATE email_verifications
+         SET verified_at = datetime('now')
+         WHERE id = ? AND verified_at IS NULL`,
+        [verificationId],
+      );
+      if (Number(consumed.changes || 0) !== 1) {
+        throw badRequest('email code invalid');
+      }
+      run(
+        `UPDATE users
+         SET password_hash = ?,
+             updated_at = datetime('now')
+         WHERE id = ?`,
+        [passwordHash, user.id],
+      );
+      run(
+        `UPDATE auth_tokens
+         SET revoked_at = datetime('now')
+         WHERE user_id = ? AND revoked_at IS NULL`,
+        [user.id],
+      );
+      revokeSsoCredentialsForUser(user.id);
+      const updated = one('SELECT * FROM users WHERE id = ?', [user.id]);
+      const auth = serializeAuth(updated, createSession(user.id));
+      db.exec('COMMIT');
+      return auth;
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // Preserve the original password reset error.
+      }
+      throw error;
+    }
   });
 
   app.post('/auth/login', async (request, reply) => {
@@ -368,7 +396,7 @@ function consumeImageCaptcha({ captchaId, captchaCode, ip }) {
   ]);
 }
 
-function consumeEmailCode({ email, purpose, code }) {
+function consumeEmailCode({ email, purpose, code, deferSuccess = false }) {
   const row = one(
     `SELECT *
      FROM email_verifications
@@ -395,10 +423,13 @@ function consumeEmailCode({ email, purpose, code }) {
     );
     throw badRequest('email code invalid');
   }
-  run(
-    "UPDATE email_verifications SET verified_at = datetime('now') WHERE id = ?",
-    [row.id],
-  );
+  if (!deferSuccess) {
+    run(
+      "UPDATE email_verifications SET verified_at = datetime('now') WHERE id = ?",
+      [row.id],
+    );
+  }
+  return row.id;
 }
 
 function cryptoRandomId() {
