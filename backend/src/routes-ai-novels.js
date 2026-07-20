@@ -550,6 +550,18 @@ export async function aiNovelRoutes(app) {
       const chapters = splitNovelChapters(content);
       if (!chapters.length) throw badRequest("chapter content is empty");
       const publish = request.user.role === "admin";
+      if (
+        !publish &&
+        one(
+          `SELECT 1 AS present
+           FROM ai_novel_chapters
+           WHERE novel_id = ? AND status = 'pending'
+           LIMIT 1`,
+          [novelId],
+        )
+      ) {
+        throw conflict("serial_chapter_review_in_progress");
+      }
       const startOrder = Number(
         one(
           `SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
@@ -558,20 +570,65 @@ export async function aiNovelRoutes(app) {
           [novelId],
         )?.next_order || 0,
       );
-      insertChapters(
-        novelId,
-        chapters,
-        publish ? "published" : "pending",
-        publish ? request.user.id : null,
-        startOrder,
-      );
-      run(
-        `UPDATE ai_novels
-         SET revision = revision + 1, updated_at = datetime('now')
-         WHERE id = ?`,
-        [novelId],
-      );
-      return { items: creatorChapterRows(novelId).map(creatorChapterJson) };
+      let submissionBatchId = null;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const batch = run(
+          `INSERT INTO ai_novel_chapter_submission_batches
+             (novel_id, status, review_note, chapter_count, submitted_at,
+              reviewed_by, reviewed_at, published_at)
+           VALUES (?, ?, ?, ?, datetime('now'), ?, '', '')`,
+          [
+            novelId,
+            publish ? "published" : "pending",
+            publish ? "管理员直接发布连载章节" : "",
+            chapters.length,
+            publish ? request.user.id : null,
+          ],
+        );
+        submissionBatchId = Number(batch.lastInsertRowid);
+        if (publish) {
+          run(
+            `UPDATE ai_novel_chapter_submission_batches
+             SET reviewed_at = datetime('now'), published_at = datetime('now')
+             WHERE id = ?`,
+            [submissionBatchId],
+          );
+        }
+        insertChapters(
+          novelId,
+          chapters,
+          publish ? "published" : "pending",
+          publish ? request.user.id : null,
+          startOrder,
+          submissionBatchId,
+        );
+        run(
+          `UPDATE ai_novels
+           SET revision = revision + 1, updated_at = datetime('now')
+           WHERE id = ?`,
+          [novelId],
+        );
+        if (publish) {
+          recordNovelReviewEvent({
+            novelId,
+            chapterId: null,
+            submissionBatchId,
+            revision: 1,
+            decision: "direct_publish",
+            note: "管理员直接发布连载章节",
+            reviewerId: request.user.id,
+          });
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return {
+        items: creatorChapterRows(novelId).map(creatorChapterJson),
+        submissionBatchId,
+      };
     },
   );
 
@@ -2473,12 +2530,13 @@ function insertChapters(
   status = "pending",
   reviewerId = null,
   startOrder = 0,
+  submissionBatchId = null,
 ) {
   const statement = db.prepare(
     `INSERT INTO ai_novel_chapters
-     (novel_id, title, content, sort_order, status, submitted_at, reviewed_by,
+     (novel_id, title, content, sort_order, status, submission_batch_id, submitted_at, reviewed_by,
       reviewed_at, published_at)
-     VALUES (?, ?, ?, ?, ?,
+     VALUES (?, ?, ?, ?, ?, ?,
              CASE WHEN ? IN ('pending', 'published') THEN datetime('now') ELSE '' END,
              ?,
              CASE WHEN ? IS NULL THEN '' ELSE datetime('now') END,
@@ -2491,6 +2549,7 @@ function insertChapters(
       chapter.content,
       startOrder + index,
       status,
+      submissionBatchId,
       status,
       reviewerId,
       reviewerId,

@@ -643,6 +643,64 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
     const batchPublic = await jsonRequest(app, "GET", "/ai-novels");
     assert.equal(batchPublic.total, 2);
 
+    const directChapterUpload = await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${draft.item.numericId}/chapters`,
+      {
+        content: "Chapter 5: Upload batch\nThe first direct-upload chapter.\n\nChapter 6: Upload batch\nThe second direct-upload chapter.",
+      },
+      writer.token,
+    );
+    assert.ok(directChapterUpload.submissionBatchId);
+    const directBatchId = directChapterUpload.submissionBatchId;
+    assert.equal(
+      directChapterUpload.items.filter(
+        (chapter) => chapter.submissionBatchId === directBatchId && chapter.status === "pending",
+      ).length,
+      2,
+    );
+    const directQueue = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-review-queue?status=pending",
+      undefined,
+      admin.token,
+    );
+    const directQueuedNovel = directQueue.items
+      .flatMap((author) => author.novels)
+      .find((novel) => novel.numericId === draft.item.numericId);
+    assert.ok(directQueuedNovel);
+    const directQueuedBatch = directQueuedNovel.chapterBatches.find(
+      (batch) => batch.id === directBatchId,
+    );
+    assert.ok(directQueuedBatch);
+    assert.equal(directQueuedBatch.chapters.length, 2);
+    const blockedDirectUpload = await rawJsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${draft.item.numericId}/chapters`,
+      { content: "Chapter 7: Blocked\nThis must wait for the prior batch." },
+      writer.token,
+    );
+    assert.equal(blockedDirectUpload.statusCode, 409);
+    assert.equal(blockedDirectUpload.json().error, "serial_chapter_review_in_progress");
+    const directApproval = await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-chapter-submission-batches/${directBatchId}/review`,
+      { decision: "approve", expectedRevision: directQueuedBatch.revision },
+      admin.token,
+    );
+    assert.equal(directApproval.item.status, "published");
+    assert.equal(directApproval.chapters.length, 2);
+    const directPublicChapters = await jsonRequest(
+      app,
+      "GET",
+      `/ai-novels/${draft.item.numericId}/chapters`,
+    );
+    assert.equal(directPublicChapters.items.length, 6);
+
     const atomicDraft = await jsonRequest(
       app,
       "POST",

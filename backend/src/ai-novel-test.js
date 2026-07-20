@@ -85,21 +85,37 @@ try {
   );
   assert(beforeChapterReview.items.length === 2, "pending serial chapters must stay hidden");
 
-  const chapterQueue = await request(
+  const reviewQueue = await request(
     "GET",
-    `${api}/admin/ai-novel-chapters?status=pending`,
+    `${api}/admin/ai-novel-review-queue?status=pending`,
     undefined,
     admin.token,
   );
-  assert(chapterQueue.items.length === 2, "admin must see two pending serial chapters");
-  for (const chapter of chapterQueue.items) {
-    await request(
-      "POST",
-      `${api}/admin/ai-novel-chapters/${chapter.id}/review`,
-      { decision: "approve" },
-      admin.token,
-    );
-  }
+  const queuedNovel = reviewQueue.items
+    .flatMap((author) => author.novels)
+    .find((novel) => novel.numericId === submission.item.numericId);
+  assert(queuedNovel, "admin review queue must include the pending serial novel");
+  assert(queuedNovel.chapterBatches.length === 1, "serial upload must create one review batch");
+  const queuedBatch = queuedNovel.chapterBatches[0];
+  assert(
+    queuedBatch.chapters.length === 2,
+    "submission batch must contain both pending serial chapters",
+  );
+  const submissionBatchId = queuedBatch.id;
+  const submissionBatch = await request(
+    "GET",
+    `${api}/admin/ai-novel-chapter-submission-batches/${submissionBatchId}`,
+    undefined,
+    admin.token,
+  );
+  assert(submissionBatch.item.revision === queuedBatch.revision, "batch revision must match review queue");
+  assert(submissionBatch.chapters.length === 2, "submission batch must contain both serial chapters");
+  await request(
+    "POST",
+    `${api}/admin/ai-novel-chapter-submission-batches/${submissionBatchId}/review`,
+    { decision: "approve", expectedRevision: submissionBatch.item.revision },
+    admin.token,
+  );
 
   const finalChapters = await request(
     "GET",
