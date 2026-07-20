@@ -1234,11 +1234,15 @@ class _ReadingScreenState extends State<ReadingScreen>
         await _showTtsMediaControls(playing: true);
       }
       if (!started && mounted) {
-        await ttsProvider.mediaControlService.stop();
+        if (ttsProvider.hasActiveReadingSession) {
+          await _showTtsMediaControls(playing: false);
+        } else {
+          await ttsProvider.mediaControlService.stop();
+          setState(() => _showTtsPanel = false);
+        }
         final message = ttsProvider.lastErrorMessage.isNotEmpty
             ? ttsProvider.lastErrorMessage
             : '语音朗读启动失败，请检查语音设置';
-        setState(() => _showTtsPanel = false);
         messenger.showSnackBar(SnackBar(content: Text(message)));
       }
       return started;

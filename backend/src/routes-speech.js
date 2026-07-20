@@ -35,7 +35,14 @@ export async function speechRoutes(app) {
         });
         return reply.type("audio/mpeg").send(audio);
       } catch (error) {
-        throw badRequest(String(error.message || "speech_tts_failed"));
+        const code = String(error.message || "speech_tts_failed");
+        if (code === "speech_tts_timeout") {
+          throw speechServiceError(code, 504);
+        }
+        if (code === "speech_tts_connection_closed" || error?.code) {
+          throw speechServiceError("speech_tts_connection_failed", 502);
+        }
+        throw badRequest(code);
       }
     },
   );
@@ -62,4 +69,10 @@ export async function speechRoutes(app) {
       }
     },
   );
+}
+
+function speechServiceError(code, statusCode) {
+  const error = new Error(code);
+  error.statusCode = statusCode;
+  return error;
 }

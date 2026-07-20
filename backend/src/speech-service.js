@@ -97,8 +97,9 @@ function synthesizeWithIflytek({ settings, text, voice, rate, volume, pitch }) {
     };
     const timer = setTimeout(() => {
       finish(new Error("speech_tts_timeout"));
-      ws.close();
-    }, 30000);
+      ws.terminate();
+    }, 20000);
+    timer.unref?.();
     ws.on("open", () => {
       ws.send(JSON.stringify({
         common: { app_id: settings.appId },
