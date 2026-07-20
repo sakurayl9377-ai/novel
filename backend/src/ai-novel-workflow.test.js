@@ -499,6 +499,133 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       fourthSubmitted.chapters.filter((chapter) => chapter.status === "pending").length,
       1,
     );
+
+    const batchDraft = await jsonRequest(
+      app,
+      "POST",
+      "/creator/ai-novels/drafts",
+      {},
+      writer.token,
+    );
+    const batchSaved = await jsonRequest(
+      app,
+      "PUT",
+      `/creator/ai-novels/${batchDraft.item.numericId}/draft`,
+      {
+        expectedRevision: batchDraft.item.revision,
+        title: "批量审核演示",
+        penName: "星海",
+        category: "科幻",
+        coverUrl: cover.url,
+        description: "用于验证作者、书籍和章节分层审核的测试作品。",
+        chapters: [{ title: "第一章 汇流", content: "两条审核队列在这里汇合。" }],
+      },
+      writer.token,
+    );
+    await jsonRequest(
+      app,
+      "POST",
+      `/creator/ai-novels/${batchDraft.item.numericId}/submit`,
+      { expectedRevision: batchSaved.item.revision },
+      writer.token,
+    );
+
+    const groupedQueue = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-review-queue?status=pending",
+      undefined,
+      admin.token,
+    );
+    assert.equal(groupedQueue.total, 1);
+    assert.equal(groupedQueue.summary.pendingNovelCount, 1);
+    assert.equal(groupedQueue.summary.pendingChapterCount, 1);
+    assert.equal(groupedQueue.items.length, 1);
+    assert.equal(groupedQueue.items[0].ownerNickname, "流程作者");
+    const queuedNovel = groupedQueue.items[0].novels.find(
+      (item) => item.numericId === batchDraft.item.numericId,
+    );
+    const queuedSerial = groupedQueue.items[0].novels.find(
+      (item) => item.numericId === draft.item.numericId,
+    );
+    assert.equal(queuedNovel.status, "pending");
+    assert.equal(queuedNovel.chapters.length, 1);
+    const queuedChapter = queuedSerial.chapters.find((chapter) => chapter.status === "pending");
+    assert.equal(queuedChapter.changeType, "add");
+
+    const rejectedWithoutNote = await rawJsonRequest(
+      app,
+      "POST",
+      "/admin/ai-novel-reviews/batch",
+      {
+        decision: "reject",
+        items: [{
+          kind: "novel",
+          id: queuedNovel.numericId,
+          expectedRevision: queuedNovel.revision,
+        }],
+      },
+      admin.token,
+    );
+    assert.equal(rejectedWithoutNote.statusCode, 400);
+    assert.equal(rejectedWithoutNote.json().error, "reviewNote is required when rejecting");
+
+    const staleBatch = await rawJsonRequest(
+      app,
+      "POST",
+      "/admin/ai-novel-reviews/batch",
+      {
+        decision: "approve",
+        items: [
+          {
+            kind: "novel",
+            id: queuedNovel.numericId,
+            expectedRevision: queuedNovel.revision,
+          },
+          {
+            kind: "chapter",
+            id: queuedChapter.id,
+            expectedRevision: queuedChapter.revision + 1,
+          },
+        ],
+      },
+      admin.token,
+    );
+    assert.equal(staleBatch.statusCode, 409);
+    assert.equal(staleBatch.json().error, "revision_conflict");
+
+    const batchApproved = await jsonRequest(
+      app,
+      "POST",
+      "/admin/ai-novel-reviews/batch",
+      {
+        decision: "approve",
+        items: [
+          {
+            kind: "novel",
+            id: queuedNovel.numericId,
+            expectedRevision: queuedNovel.revision,
+          },
+          {
+            kind: "chapter",
+            id: queuedChapter.id,
+            expectedRevision: queuedChapter.revision,
+          },
+        ],
+      },
+      admin.token,
+    );
+    assert.equal(batchApproved.reviewed.length, 2);
+    const queueAfterBatch = await jsonRequest(
+      app,
+      "GET",
+      "/admin/ai-novel-review-queue?status=pending",
+      undefined,
+      admin.token,
+    );
+    assert.equal(queueAfterBatch.total, 0);
+    const batchPublic = await jsonRequest(app, "GET", "/ai-novels");
+    assert.equal(batchPublic.total, 2);
   } finally {
     await app.close();
     for (const file of uploadedFiles) {

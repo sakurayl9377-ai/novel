@@ -608,6 +608,17 @@ export async function aiNovelRoutes(app) {
   );
 
   app.get(
+    "/admin/ai-novel-review-queue",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const { page, pageSize, offset } = pageParams(request.query || {});
+      const status = reviewQueueStatus(request.query?.status);
+      const q = optionalString(request.query?.q, 100);
+      return groupedReviewQueue({ status, q, page, pageSize, offset });
+    },
+  );
+
+  app.get(
     "/admin/ai-novels/:id",
     { preHandler: app.adminRequired },
     async (request) => adminNovelDetail(numericNovelId(request.params.id)),
@@ -640,6 +651,55 @@ export async function aiNovelRoutes(app) {
   );
 
   app.post(
+    "/admin/ai-novel-reviews/batch",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const { decision, reviewNote } = reviewDecisionInput(request.body);
+      const targets = batchReviewTargets(request.body?.items);
+      const reviewed = withReviewTransaction(() => {
+        const prepared = targets.map((target) => {
+          if (target.kind === "novel") {
+            const item = requirePendingNovelReview(target.id);
+            requireExpectedRevision(target.expectedRevision, item.revision);
+            return { ...target, item };
+          }
+          const chapter = requirePendingChapterReview(target.id);
+          requireExpectedRevision(target.expectedRevision, chapter.revision);
+          return { ...target, chapter };
+        });
+        const selectedNovelIds = new Set(
+          prepared
+            .filter((target) => target.kind === "novel")
+            .map((target) => target.id),
+        );
+        if (prepared.some((target) =>
+          target.kind === "chapter" && selectedNovelIds.has(Number(target.chapter.novel_id)))) {
+          throw conflict("batch_review_nested_target_conflict");
+        }
+        for (const target of prepared) {
+          if (target.kind === "novel") {
+            reviewNovelSubmission({
+              item: target.item,
+              decision,
+              reviewNote,
+              reviewerId: request.user.id,
+            });
+          } else {
+            reviewChapterSubmission({
+              chapter: target.chapter,
+              decision,
+              reviewNote,
+              reviewerId: request.user.id,
+            });
+          }
+        }
+        return prepared.map((target) => ({ kind: target.kind, id: target.id }));
+      });
+      return { reviewed };
+    },
+  );
+
+  app.post(
     "/admin/ai-novels/:id/review",
     { preHandler: app.adminRequired },
     async (request) => {
@@ -652,57 +712,16 @@ export async function aiNovelRoutes(app) {
       if (decision === "reject" && !reviewNote) {
         throw badRequest("reviewNote is required when rejecting");
       }
-      const item = one("SELECT * FROM ai_novels WHERE id = ?", [id]);
-      if (!item) throw notFound("novel_not_found");
-      if (item.status !== "pending") throw conflict("novel_review_not_pending");
+      const item = requirePendingNovelReview(id);
       if (request.body?.expectedRevision !== undefined) {
         requireExpectedRevision(request.body.expectedRevision, item.revision);
       }
-      const status = decision === "approve" ? "published" : "rejected";
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        run(
-          `UPDATE ai_novels
-           SET status = ?, review_note = ?, reviewed_by = ?,
-               revision = revision + 1, reviewed_at = datetime('now'),
-               published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
-               updated_at = datetime('now')
-           WHERE id = ? AND status = 'pending'`,
-          [status, reviewNote, request.user.id, status, id],
-        );
-        run(
-          `UPDATE ai_novel_chapters
-           SET status = ?, review_note = ?, reviewed_by = ?,
-               revision = revision + 1, reviewed_at = datetime('now'),
-               published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
-               updated_at = datetime('now')
-           WHERE novel_id = ? AND status = 'pending'`,
-          [status, reviewNote, request.user.id, status, id],
-        );
-        recordNovelReviewEvent({
-          novelId: id,
-          chapterId: null,
-          revision: Number(item.revision || 1),
-          decision,
-          note: reviewNote,
-          reviewerId: request.user.id,
-        });
-        run(
-          `INSERT INTO system_notifications (user_id, title, content, category)
-           VALUES (?, ?, ?, 'ai_novel_review')`,
-          [
-            item.user_id,
-            status === "published" ? "AI 小说审核通过" : "AI 小说需要修改",
-            status === "published"
-              ? `《${item.title}》已审核通过并发布到 AI 创作区。`
-              : `《${item.title}》未通过审核：${reviewNote}`,
-          ],
-        );
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      withReviewTransaction(() => reviewNovelSubmission({
+        item,
+        decision,
+        reviewNote,
+        reviewerId: request.user.id,
+      }));
       return { item: creatorNovelJson(creatorNovelRow(id)) };
     },
   );
@@ -723,72 +742,16 @@ export async function aiNovelRoutes(app) {
       if (decision === "reject" && !reviewNote) {
         throw badRequest("reviewNote is required when rejecting");
       }
-      const chapter = one(
-        `SELECT c.*, n.title AS novel_title, n.user_id,
-                n.status AS novel_status
-         FROM ai_novel_chapters c
-         JOIN ai_novels n ON n.id = c.novel_id
-         WHERE c.id = ?`,
-        [chapterId],
-      );
-      if (!chapter) throw notFound("chapter_not_found");
-      if (chapter.novel_status !== "published") {
-        throw conflict("chapter_requires_novel_review");
-      }
-      if (chapter.status !== "pending") {
-        throw conflict("chapter_review_not_pending");
-      }
+      const chapter = requirePendingChapterReview(chapterId);
       if (request.body?.expectedRevision !== undefined) {
         requireExpectedRevision(request.body.expectedRevision, chapter.revision);
       }
-      const status = decision === "approve" ? "published" : "rejected";
-      const isRevision = chapter.replaces_chapter_id != null;
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        if (decision === "approve") {
-          applyApprovedChapterRevision(chapter, request.user.id);
-        }
-        run(
-          `UPDATE ai_novel_chapters
-           SET status = ?, review_note = ?, reviewed_by = ?,
-               revision = revision + 1, reviewed_at = datetime('now'),
-               published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
-               updated_at = datetime('now')
-           WHERE id = ? AND status = 'pending'`,
-          [status, reviewNote, request.user.id, status, chapterId],
-        );
-        run(
-          `UPDATE ai_novels
-           SET revision = revision + 1, updated_at = datetime('now')
-           WHERE id = ?`,
-          [chapter.novel_id],
-        );
-        recordNovelReviewEvent({
-          novelId: chapter.novel_id,
-          chapterId,
-          revision: Number(chapter.revision || 1),
-          decision,
-          note: reviewNote,
-          reviewerId: request.user.id,
-        });
-        run(
-          `INSERT INTO system_notifications (user_id, title, content, category)
-           VALUES (?, ?, ?, 'ai_novel_review')`,
-          [
-            chapter.user_id,
-            status === "published"
-              ? (isRevision ? "章节修改审核通过" : "连载章节审核通过")
-              : (isRevision ? "章节修改需要调整" : "连载章节需要修改"),
-            status === "published"
-              ? `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改已生效" : "已发布"}。`
-              : `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改" : "章节"}未通过审核：${reviewNote}`,
-          ],
-        );
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      withReviewTransaction(() => reviewChapterSubmission({
+        chapter,
+        decision,
+        reviewNote,
+        reviewerId: request.user.id,
+      }));
       const updated = one(
         `SELECT c.*, n.title AS novel_title, n.user_id,
                 original.title AS original_title,
@@ -804,6 +767,321 @@ export async function aiNovelRoutes(app) {
       );
       return { item: creatorChapterJson(updated) };
     },
+  );
+}
+
+function groupedReviewQueue({ status, q, page, pageSize, offset }) {
+  const scopeSql = reviewQueueScopeSql(status);
+  const searchSql = reviewQueueSearchSql(q);
+  const searchParams = reviewQueueSearchParams(q);
+  const summary = one(
+    `SELECT COUNT(DISTINCT CASE WHEN n.status = 'pending' THEN n.id END) AS pending_novel_count,
+            COUNT(CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count
+     FROM ai_novels n
+     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id`,
+  ) || {};
+  const total = Number(
+    one(
+      `SELECT COUNT(DISTINCT n.user_id) AS count
+       FROM ai_novels n
+       JOIN users u ON u.id = n.user_id
+       WHERE ${scopeSql} ${searchSql}`,
+      searchParams,
+    )?.count || 0,
+  );
+  const authors = all(
+    `SELECT u.id AS owner_id, u.nickname AS owner_nickname, u.email AS owner_email,
+            COUNT(DISTINCT n.id) AS novel_count,
+            COUNT(DISTINCT CASE WHEN n.status = 'pending' THEN n.id END) AS pending_novel_count,
+            COUNT(DISTINCT CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count,
+            MAX(n.updated_at) AS last_updated_at
+     FROM ai_novels n
+     JOIN users u ON u.id = n.user_id
+     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     WHERE ${scopeSql} ${searchSql}
+     GROUP BY u.id
+     ORDER BY MAX(CASE WHEN n.status = 'pending' THEN 1 ELSE 0 END) DESC,
+              last_updated_at DESC, u.id DESC
+     LIMIT ? OFFSET ?`,
+    [...searchParams, pageSize, offset],
+  );
+  if (!authors.length) {
+    return {
+      items: [],
+      page,
+      pageSize,
+      total,
+      summary: reviewQueueSummary(summary),
+    };
+  }
+
+  const ownerIds = authors.map((author) => Number(author.owner_id));
+  const ownerPlaceholders = ownerIds.map(() => "?").join(", ");
+  const bookRows = all(
+    `SELECT n.*, u.nickname AS owner_nickname, u.email AS owner_email,
+            COUNT(CASE WHEN c.replaces_chapter_id IS NULL THEN c.id END) AS chapter_count,
+            SUM(CASE WHEN c.status = 'published' AND c.replaces_chapter_id IS NULL THEN 1 ELSE 0 END) AS published_chapter_count,
+            SUM(CASE WHEN c.status = 'pending' THEN 1 ELSE 0 END) AS pending_chapter_count
+     FROM ai_novels n
+     JOIN users u ON u.id = n.user_id
+     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     WHERE n.user_id IN (${ownerPlaceholders}) AND ${scopeSql} ${searchSql}
+     GROUP BY n.id
+     ORDER BY n.user_id,
+              CASE n.status WHEN 'pending' THEN 0 ELSE 1 END,
+              n.updated_at DESC, n.id DESC`,
+    [...ownerIds, ...searchParams],
+  );
+  const chapterRows = all(
+    `SELECT c.*, n.title AS novel_title, n.user_id,
+            original.title AS original_title,
+            original.content AS original_content,
+            original.sort_order AS original_sort_order,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_chapters c
+     JOIN ai_novels n ON n.id = c.novel_id
+     JOIN users u ON u.id = n.user_id
+     LEFT JOIN ai_novel_chapters original ON original.id = c.replaces_chapter_id
+     WHERE n.user_id IN (${ownerPlaceholders})
+       AND c.status = ? AND ${scopeSql} ${searchSql}
+     ORDER BY n.user_id, n.id, COALESCE(original.sort_order, c.sort_order), c.id`,
+    [...ownerIds, status, ...searchParams],
+  ).map(creatorChapterJson);
+  const chaptersByNovel = new Map();
+  for (const chapter of chapterRows) {
+    const chapters = chaptersByNovel.get(chapter.novelId) || [];
+    chapters.push(chapter);
+    chaptersByNovel.set(chapter.novelId, chapters);
+  }
+  const novelsByAuthor = new Map();
+  for (const row of bookRows) {
+    const novel = creatorNovelJson(row);
+    novel.chapters = chaptersByNovel.get(novel.numericId) || [];
+    const novels = novelsByAuthor.get(novel.ownerId) || [];
+    novels.push(novel);
+    novelsByAuthor.set(novel.ownerId, novels);
+  }
+  return {
+    items: authors.map((author) => ({
+      ownerId: Number(author.owner_id),
+      ownerNickname: author.owner_nickname || "",
+      ownerEmail: author.owner_email || "",
+      novelCount: Number(author.novel_count || 0),
+      pendingNovelCount: Number(author.pending_novel_count || 0),
+      pendingChapterCount: Number(author.pending_chapter_count || 0),
+      novels: novelsByAuthor.get(Number(author.owner_id)) || [],
+    })),
+    page,
+    pageSize,
+    total,
+    summary: reviewQueueSummary(summary),
+  };
+}
+
+function reviewQueueSummary(row) {
+  return {
+    pendingNovelCount: Number(row.pending_novel_count || 0),
+    pendingChapterCount: Number(row.pending_chapter_count || 0),
+  };
+}
+
+function reviewQueueStatus(value) {
+  const status = aiNovelStatus(value, { optional: true }) || "pending";
+  if (!["pending", "published", "rejected"].includes(status)) {
+    throw badRequest("status is invalid");
+  }
+  return status;
+}
+
+function reviewQueueScopeSql(status) {
+  if (status === "pending") {
+    return `(n.status = 'pending'
+      OR (n.status = 'published' AND EXISTS (
+        SELECT 1 FROM ai_novel_chapters pending_chapter
+        WHERE pending_chapter.novel_id = n.id AND pending_chapter.status = 'pending'
+      )))`;
+  }
+  if (status === "rejected") {
+    return `(n.status = 'rejected'
+      OR (n.status = 'published' AND EXISTS (
+        SELECT 1 FROM ai_novel_chapters rejected_chapter
+        WHERE rejected_chapter.novel_id = n.id AND rejected_chapter.status = 'rejected'
+      )))`;
+  }
+  return "n.status = 'published'";
+}
+
+function reviewQueueSearchSql(q) {
+  if (!q) return "";
+  return `AND (n.title LIKE ? OR n.pen_name LIKE ? OR u.nickname LIKE ? OR u.email LIKE ?
+    OR EXISTS (
+      SELECT 1 FROM ai_novel_chapters searched_chapter
+      WHERE searched_chapter.novel_id = n.id AND searched_chapter.title LIKE ?
+    ))`;
+}
+
+function reviewQueueSearchParams(q) {
+  return q ? Array(5).fill(`%${q}%`) : [];
+}
+
+function reviewDecisionInput(body) {
+  const decision = requiredString(body?.decision, "decision", 20);
+  if (!["approve", "reject"].includes(decision)) {
+    throw badRequest("decision is invalid");
+  }
+  const reviewNote = optionalString(body?.reviewNote, 500);
+  if (decision === "reject" && !reviewNote) {
+    throw badRequest("reviewNote is required when rejecting");
+  }
+  return { decision, reviewNote };
+}
+
+function batchReviewTargets(value) {
+  if (!Array.isArray(value) || !value.length) {
+    throw badRequest("batch_review_items_required");
+  }
+  if (value.length > 100) throw badRequest("batch_review_limit_exceeded");
+  const seen = new Set();
+  return value.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw badRequest("batch_review_item_invalid");
+    }
+    const kind = requiredString(raw.kind, `items[${index}].kind`, 20);
+    if (!["novel", "chapter"].includes(kind)) {
+      throw badRequest("batch_review_item_invalid");
+    }
+    const id = positiveInteger(raw.id, `items[${index}].id`);
+    const expectedRevision = positiveInteger(
+      raw.expectedRevision,
+      `items[${index}].expectedRevision`,
+    );
+    const key = `${kind}:${id}`;
+    if (seen.has(key)) throw badRequest("batch_review_duplicate");
+    seen.add(key);
+    return { kind, id, expectedRevision };
+  });
+}
+
+function requirePendingNovelReview(id) {
+  const item = one("SELECT * FROM ai_novels WHERE id = ?", [id]);
+  if (!item) throw notFound("novel_not_found");
+  if (item.status !== "pending") throw conflict("novel_review_not_pending");
+  return item;
+}
+
+function requirePendingChapterReview(chapterId) {
+  const chapter = one(
+    `SELECT c.*, n.title AS novel_title, n.user_id,
+            n.status AS novel_status
+     FROM ai_novel_chapters c
+     JOIN ai_novels n ON n.id = c.novel_id
+     WHERE c.id = ?`,
+    [chapterId],
+  );
+  if (!chapter) throw notFound("chapter_not_found");
+  if (chapter.novel_status !== "published") {
+    throw conflict("chapter_requires_novel_review");
+  }
+  if (chapter.status !== "pending") {
+    throw conflict("chapter_review_not_pending");
+  }
+  return chapter;
+}
+
+function withReviewTransaction(callback) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = callback();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function reviewNovelSubmission({ item, decision, reviewNote, reviewerId }) {
+  const status = decision === "approve" ? "published" : "rejected";
+  run(
+    `UPDATE ai_novels
+     SET status = ?, review_note = ?, reviewed_by = ?,
+         revision = revision + 1, reviewed_at = datetime('now'),
+         published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
+         updated_at = datetime('now')
+     WHERE id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, status, item.id],
+  );
+  run(
+    `UPDATE ai_novel_chapters
+     SET status = ?, review_note = ?, reviewed_by = ?,
+         revision = revision + 1, reviewed_at = datetime('now'),
+         published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
+         updated_at = datetime('now')
+     WHERE novel_id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, status, item.id],
+  );
+  recordNovelReviewEvent({
+    novelId: item.id,
+    chapterId: null,
+    revision: Number(item.revision || 1),
+    decision,
+    note: reviewNote,
+    reviewerId,
+  });
+  run(
+    `INSERT INTO system_notifications (user_id, title, content, category)
+     VALUES (?, ?, ?, 'ai_novel_review')`,
+    [
+      item.user_id,
+      status === "published" ? "AI 小说审核通过" : "AI 小说需要修改",
+      status === "published"
+        ? `《${item.title}》已审核通过并发布到 AI 创作区。`
+        : `《${item.title}》未通过审核：${reviewNote}`,
+    ],
+  );
+}
+
+function reviewChapterSubmission({ chapter, decision, reviewNote, reviewerId }) {
+  const status = decision === "approve" ? "published" : "rejected";
+  const isRevision = chapter.replaces_chapter_id != null;
+  if (decision === "approve") {
+    applyApprovedChapterRevision(chapter, reviewerId);
+  }
+  run(
+    `UPDATE ai_novel_chapters
+     SET status = ?, review_note = ?, reviewed_by = ?,
+         revision = revision + 1, reviewed_at = datetime('now'),
+         published_at = CASE WHEN ? = 'published' THEN datetime('now') ELSE '' END,
+         updated_at = datetime('now')
+     WHERE id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, status, chapter.id],
+  );
+  run(
+    `UPDATE ai_novels
+     SET revision = revision + 1, updated_at = datetime('now')
+     WHERE id = ?`,
+    [chapter.novel_id],
+  );
+  recordNovelReviewEvent({
+    novelId: chapter.novel_id,
+    chapterId: chapter.id,
+    revision: Number(chapter.revision || 1),
+    decision,
+    note: reviewNote,
+    reviewerId,
+  });
+  run(
+    `INSERT INTO system_notifications (user_id, title, content, category)
+     VALUES (?, ?, ?, 'ai_novel_review')`,
+    [
+      chapter.user_id,
+      status === "published"
+        ? (isRevision ? "章节修改审核通过" : "连载章节审核通过")
+        : (isRevision ? "章节修改需要调整" : "连载章节需要修改"),
+      status === "published"
+        ? `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改已生效" : "已发布"}。`
+        : `《${chapter.novel_title}》的“${chapter.title}”${isRevision ? "修改" : "章节"}未通过审核：${reviewNote}`,
+    ],
   );
 }
 
