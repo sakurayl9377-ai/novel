@@ -1,29 +1,37 @@
 <script setup lang="ts">
 import {
   Check,
+  CloseBold,
   Delete,
+  DocumentChecked,
   EditPen,
   Plus,
   Reading,
   Refresh,
   Search,
-  UploadFilled,
   View,
 } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, onMounted, reactive, ref } from 'vue';
 
 import NovelEditorDrawer from '@/components/ai-novels/NovelEditorDrawer.vue';
 import NovelReviewDrawer from '@/components/ai-novels/NovelReviewDrawer.vue';
 import {
+  batchReviewNovels,
   createNovelDraft,
   deleteNovel,
+  getReviewQueue,
   listCreatorNovels,
-  listReviewChapters,
-  listReviewNovels,
 } from '@/services/ai-novels';
 import { useSessionStore } from '@/stores/session';
-import type { AiNovelChapter, AiNovelStatus, AiNovelSummary } from '@/types/ai-novel';
+import type {
+  AiNovelChapter,
+  AiNovelReviewAuthor,
+  AiNovelReviewBook,
+  AiNovelReviewTarget,
+  AiNovelStatus,
+  AiNovelSummary,
+} from '@/types/ai-novel';
 import { formatDateTime } from '@/utils/format';
 
 const session = useSessionStore();
@@ -31,14 +39,18 @@ const activeTab = ref('mine');
 const creatorLoading = ref(false);
 const reviewLoading = ref(false);
 const creating = ref(false);
+const batchReviewing = ref(false);
 const creatorItems = ref<AiNovelSummary[]>([]);
 const creatorTotal = ref(0);
-const reviewNovelItems = ref<AiNovelSummary[]>([]);
-const reviewChapterItems = ref<AiNovelChapter[]>([]);
+const reviewAuthors = ref<AiNovelReviewAuthor[]>([]);
 const reviewTotal = ref(0);
 const pendingNovelCount = ref(0);
 const pendingChapterCount = ref(0);
-const reviewMode = ref<'novel' | 'chapter'>('novel');
+const expandedAuthors = ref<string[]>([]);
+const expandedBooks = ref<string[]>([]);
+const selectedReviewTargets = ref<AiNovelReviewTarget[]>([]);
+const batchRejectOpen = ref(false);
+const batchReviewNote = ref('');
 const editorOpen = ref(false);
 const editorNovelId = ref<number | null>(null);
 const reviewOpen = ref(false);
@@ -59,6 +71,9 @@ const reviewQuery = reactive({
 });
 
 const totalPending = computed(() => pendingNovelCount.value + pendingChapterCount.value);
+const selectedTargetKeys = computed(() => new Set(selectedReviewTargets.value.map(reviewTargetKey)));
+const selectedTargetCount = computed(() => selectedReviewTargets.value.length);
+const canBatchReview = computed(() => reviewQuery.status === 'pending' && selectedTargetCount.value > 0);
 
 onMounted(async () => {
   await loadCreatorList();
@@ -78,16 +93,20 @@ async function loadCreatorList(): Promise<void> {
   }
 }
 
-async function loadReviewList(): Promise<void> {
+async function loadReviewQueue(): Promise<void> {
   if (!session.isAdmin) return;
   reviewLoading.value = true;
   try {
-    const data = reviewMode.value === 'novel'
-      ? await listReviewNovels(reviewQuery)
-      : await listReviewChapters(reviewQuery);
+    const data = await getReviewQueue(reviewQuery);
+    reviewAuthors.value = data.items;
     reviewTotal.value = data.total;
-    if (reviewMode.value === 'novel') reviewNovelItems.value = data.items as AiNovelSummary[];
-    else reviewChapterItems.value = data.items as AiNovelChapter[];
+    pendingNovelCount.value = data.summary.pendingNovelCount;
+    pendingChapterCount.value = data.summary.pendingChapterCount;
+    selectedReviewTargets.value = [];
+    const authorKeys = new Set(data.items.map(authorKey));
+    const bookKeys = new Set(data.items.flatMap((author) => author.novels.map(bookKey)));
+    expandedAuthors.value = expandedAuthors.value.filter((key) => authorKeys.has(key));
+    expandedBooks.value = expandedBooks.value.filter((key) => bookKeys.has(key));
   } catch (error) {
     ElMessage.error(errorMessage(error));
   } finally {
@@ -98,34 +117,24 @@ async function loadReviewList(): Promise<void> {
 async function refreshQueueCounts(): Promise<void> {
   if (!session.isAdmin) return;
   try {
-    const [novels, chapters] = await Promise.all([
-      listReviewNovels({ status: 'pending', page: 1, pageSize: 1 }),
-      listReviewChapters({ status: 'pending', page: 1, pageSize: 1 }),
-    ]);
-    pendingNovelCount.value = novels.total;
-    pendingChapterCount.value = chapters.total;
+    const data = await getReviewQueue({ status: 'pending', page: 1, pageSize: 1 });
+    pendingNovelCount.value = data.summary.pendingNovelCount;
+    pendingChapterCount.value = data.summary.pendingChapterCount;
   } catch {
     // The visible queue will surface actionable errors when opened.
   }
 }
 
 async function refreshReviewWorkbench(): Promise<void> {
-  await Promise.all([loadReviewList(), refreshQueueCounts()]);
+  await loadReviewQueue();
 }
 
 async function changeMainTab(name: string | number): Promise<void> {
   activeTab.value = String(name);
   if (activeTab.value === 'review') {
     reviewQuery.page = 1;
-    await loadReviewList();
+    await loadReviewQueue();
   }
-}
-
-async function changeReviewMode(mode: 'novel' | 'chapter'): Promise<void> {
-  reviewMode.value = mode;
-  reviewQuery.page = 1;
-  reviewQuery.status = 'pending';
-  await loadReviewList();
 }
 
 async function createDraft(): Promise<void> {
@@ -178,7 +187,8 @@ async function handleEditorSaved(): Promise<void> {
 }
 
 async function handleReviewed(): Promise<void> {
-  await Promise.all([loadReviewList(), refreshQueueCounts()]);
+  if (activeTab.value === 'review') await loadReviewQueue();
+  else await refreshQueueCounts();
 }
 
 function searchCreator(): void {
@@ -188,7 +198,112 @@ function searchCreator(): void {
 
 function searchReview(): void {
   reviewQuery.page = 1;
-  void loadReviewList();
+  void loadReviewQueue();
+}
+
+function authorKey(author: AiNovelReviewAuthor): string {
+  return `author-${author.ownerId}`;
+}
+
+function bookKey(book: AiNovelReviewBook): string {
+  return `book-${book.numericId}`;
+}
+
+function reviewTargetKey(target: AiNovelReviewTarget): string {
+  return `${target.kind}-${target.id}`;
+}
+
+function novelReviewTarget(book: AiNovelReviewBook): AiNovelReviewTarget[] {
+  return book.status === 'pending'
+    ? [{ kind: 'novel', id: book.numericId, expectedRevision: book.revision }]
+    : [];
+}
+
+function chapterReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
+  if (book.status !== 'published') return [];
+  return book.chapters
+    .filter((chapter) => chapter.status === 'pending')
+    .map((chapter) => ({ kind: 'chapter' as const, id: chapter.id, expectedRevision: chapter.revision }));
+}
+
+function reviewTargetsForBook(book: AiNovelReviewBook): AiNovelReviewTarget[] {
+  return [...novelReviewTarget(book), ...chapterReviewTargets(book)];
+}
+
+function reviewTargetsForAuthor(author: AiNovelReviewAuthor): AiNovelReviewTarget[] {
+  return author.novels.flatMap(reviewTargetsForBook);
+}
+
+function hasEveryTarget(targets: AiNovelReviewTarget[]): boolean {
+  return targets.length > 0 && targets.every((target) => selectedTargetKeys.value.has(reviewTargetKey(target)));
+}
+
+function hasSomeTarget(targets: AiNovelReviewTarget[]): boolean {
+  return targets.some((target) => selectedTargetKeys.value.has(reviewTargetKey(target)));
+}
+
+function toggleTargets(targets: AiNovelReviewTarget[], checked: boolean): void {
+  const selected = new Map(selectedReviewTargets.value.map((target) => [reviewTargetKey(target), target]));
+  for (const target of targets) {
+    const key = reviewTargetKey(target);
+    if (checked) selected.set(key, target);
+    else selected.delete(key);
+  }
+  selectedReviewTargets.value = [...selected.values()];
+}
+
+function toggleAuthorSelection(author: AiNovelReviewAuthor, checked: boolean): void {
+  toggleTargets(reviewTargetsForAuthor(author), checked);
+}
+
+function toggleBookSelection(book: AiNovelReviewBook, checked: boolean): void {
+  toggleTargets(reviewTargetsForBook(book), checked);
+}
+
+function toggleChapterSelection(chapter: AiNovelChapter, checked: boolean): void {
+  toggleTargets([{ kind: 'chapter', id: chapter.id, expectedRevision: chapter.revision }], checked);
+}
+
+async function confirmBatchApprove(): Promise<void> {
+  if (!canBatchReview.value) return;
+  try {
+    await ElMessageBox.confirm(
+      `将审核通过已选择的 ${selectedTargetCount.value} 项内容，并立即发布可发布内容。`,
+      '批量通过审核',
+      { type: 'warning', confirmButtonText: '确认通过', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  await submitBatchReview('approve');
+}
+
+function openBatchReject(): void {
+  if (!canBatchReview.value) return;
+  batchReviewNote.value = '';
+  batchRejectOpen.value = true;
+}
+
+async function submitBatchReview(decision: 'approve' | 'reject'): Promise<void> {
+  const reviewNote = batchReviewNote.value.trim();
+  if (decision === 'reject' && !reviewNote) {
+    ElMessage.warning('请填写具体审核意见');
+    return;
+  }
+  batchReviewing.value = true;
+  try {
+    const result = await batchReviewNovels(selectedReviewTargets.value, decision, reviewNote);
+    batchRejectOpen.value = false;
+    batchReviewNote.value = '';
+    await loadReviewQueue();
+    ElMessage.success(decision === 'approve'
+      ? `已通过 ${result.reviewed.length} 项审核`
+      : `已退回 ${result.reviewed.length} 项内容`);
+  } catch (error) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    batchReviewing.value = false;
+  }
 }
 
 function statusLabel(status: AiNovelStatus): string {
@@ -222,9 +337,13 @@ function serializationLabel(status: string): string {
   return status === 'completed' ? '已完结' : '连载中';
 }
 
-function chapterChangeLabel(value: unknown): string {
-  const chapter = value as AiNovelChapter;
-  return chapter.changeType === 'update' ? '修改' : '新增';
+function chapterChangeLabel(value: AiNovelChapter): string {
+  return value.changeType === 'update' ? '修改' : '新增';
+}
+
+function chapterReviewAction(book: AiNovelReviewBook, chapter: AiNovelChapter): void {
+  if (book.status === 'published') openChapterReview(chapter);
+  else openNovelReview(book);
 }
 
 function errorMessage(error: unknown): string {
@@ -348,21 +467,24 @@ function errorMessage(error: unknown): string {
             <span class="tab-label"><ElIcon><Check /></ElIcon>审核工作台<ElBadge v-if="totalPending" :value="totalPending" /></span>
           </template>
 
-          <div class="queue-switcher">
-            <button :class="{ active: reviewMode === 'novel' }" type="button" @click="changeReviewMode('novel')">
-              <UploadFilled /><span><strong>整书首发审核</strong><small>{{ pendingNovelCount }} 项待处理</small></span>
-            </button>
-            <button :class="{ active: reviewMode === 'chapter' }" type="button" @click="changeReviewMode('chapter')">
-              <Reading /><span><strong>章节新增与修改</strong><small>{{ pendingChapterCount }} 项待处理</small></span>
-            </button>
-          </div>
+          <section class="review-queue-head">
+            <div>
+              <span class="eyebrow">AUTHOR REVIEW QUEUE</span>
+              <h3>按作者、书籍和章节逐层处理</h3>
+              <p>整书首发作为一个审核项；已发布作品的新增和修改章节可单独审核或批量处理。</p>
+            </div>
+            <div class="queue-counters" aria-label="待审核统计">
+              <span><b>{{ pendingNovelCount }}</b>整书待审</span>
+              <span><b>{{ pendingChapterCount }}</b>章节待审</span>
+            </div>
+          </section>
 
           <div class="toolbar review-toolbar">
             <div class="toolbar-filters">
               <ElInput
                 v-model="reviewQuery.q"
                 clearable
-                :placeholder="reviewMode === 'novel' ? '搜索作品或投稿人' : '搜索作品、章节或投稿人'"
+                placeholder="搜索作者、作品或章节"
                 :prefix-icon="Search"
                 @keyup.enter="searchReview"
                 @clear="searchReview"
@@ -371,74 +493,138 @@ function errorMessage(error: unknown): string {
                 <ElOption label="待审核" value="pending" />
                 <ElOption label="已通过" value="published" />
                 <ElOption label="已退回" value="rejected" />
-                <ElOption v-if="reviewMode === 'novel'" label="草稿" value="draft" />
               </ElSelect>
               <ElButton :icon="Search" @click="searchReview">筛选</ElButton>
               <ElButton :icon="Refresh" circle title="刷新" @click="refreshReviewWorkbench" />
             </div>
+            <div class="batch-actions">
+              <span class="selection-summary">已选择 <strong>{{ selectedTargetCount }}</strong> 项</span>
+              <ElButton
+                type="primary"
+                :icon="Check"
+                :disabled="!canBatchReview"
+                :loading="batchReviewing"
+                @click="confirmBatchApprove"
+              >批量通过</ElButton>
+              <ElButton
+                type="danger"
+                :icon="CloseBold"
+                :disabled="!canBatchReview"
+                :loading="batchReviewing"
+                @click="openBatchReject"
+              >批量退回</ElButton>
+            </div>
           </div>
 
-          <ElTable
-            v-if="reviewMode === 'novel'"
-            v-loading="reviewLoading"
-            :data="reviewNovelItems"
-            class="novel-table"
-            empty-text="当前筛选条件下没有整书投稿"
-          >
-            <ElTableColumn label="投稿作品" min-width="300">
-              <template #default="scope">
-                <div class="novel-cell compact">
-                  <img v-if="scope.row.coverUrl" :src="scope.row.coverUrl" alt="">
-                  <div v-else class="cover-placeholder"><ElIcon><Reading /></ElIcon></div>
-                  <div><strong>{{ scope.row.title }}</strong><span>{{ scope.row.author }} · {{ scope.row.category }}</span></div>
+          <ElCollapse v-loading="reviewLoading" v-model="expandedAuthors" class="author-review-collapse">
+            <ElCollapseItem
+              v-for="author in reviewAuthors"
+              :key="authorKey(author)"
+              :name="authorKey(author)"
+            >
+              <template #title>
+                <div class="author-collapse-title">
+                  <ElCheckbox
+                    :model-value="hasEveryTarget(reviewTargetsForAuthor(author))"
+                    :indeterminate="hasSomeTarget(reviewTargetsForAuthor(author)) && !hasEveryTarget(reviewTargetsForAuthor(author))"
+                    :disabled="!reviewTargetsForAuthor(author).length || reviewQuery.status !== 'pending'"
+                    aria-label="选择作者的全部待审核内容"
+                    @click.stop
+                    @change="toggleAuthorSelection(author, Boolean($event))"
+                  />
+                  <span class="author-avatar">{{ (author.ownerNickname || '作者').slice(0, 1) }}</span>
+                  <div class="author-copy">
+                    <strong>{{ author.ownerNickname || '未命名作者' }}</strong>
+                    <small>{{ author.ownerEmail || '未记录邮箱' }}</small>
+                  </div>
+                  <div class="author-queue-meta">
+                    <ElTag v-if="author.pendingNovelCount" type="warning" effect="plain">{{ author.pendingNovelCount }} 本整书待审</ElTag>
+                    <ElTag v-if="author.pendingChapterCount" type="info" effect="plain">{{ author.pendingChapterCount }} 章待审</ElTag>
+                    <span>{{ author.novelCount }} 本作品</span>
+                  </div>
                 </div>
               </template>
-            </ElTableColumn>
-            <ElTableColumn label="投稿人" min-width="200">
-              <template #default="scope"><div class="owner-cell"><strong>{{ scope.row.ownerNickname }}</strong><small>{{ scope.row.ownerEmail }}</small></div></template>
-            </ElTableColumn>
-            <ElTableColumn label="章节" width="90" prop="chapterCount" />
-            <ElTableColumn label="状态" width="100">
-              <template #default="scope"><ElTag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</ElTag></template>
-            </ElTableColumn>
-            <ElTableColumn label="提交时间" width="150">
-              <template #default="scope">{{ formatDateTime(scope.row.submittedAt || scope.row.updatedAt) }}</template>
-            </ElTableColumn>
-            <ElTableColumn label="操作" width="120" fixed="right">
-              <template #default="scope"><ElButton type="primary" :icon="View" @click="openNovelReview(scope.row)">{{ scope.row.status === 'pending' ? '开始审核' : '查看详情' }}</ElButton></template>
-            </ElTableColumn>
-          </ElTable>
 
-          <ElTable
-            v-else
-            v-loading="reviewLoading"
-            :data="reviewChapterItems"
-            class="novel-table"
-            empty-text="当前筛选条件下没有连载章节"
-          >
-            <ElTableColumn label="作品 / 章节" min-width="310">
-              <template #default="scope"><div class="chapter-review-cell"><strong>{{ scope.row.novelTitle }}</strong><span>第 {{ scope.row.index + 1 }} 章 · {{ scope.row.title }}</span></div></template>
-            </ElTableColumn>
-            <ElTableColumn label="投稿人" min-width="200">
-              <template #default="scope"><div class="owner-cell"><strong>{{ scope.row.ownerNickname }}</strong><small>{{ scope.row.ownerEmail }}</small></div></template>
-            </ElTableColumn>
-            <ElTableColumn label="变更" width="88">
-              <template #default="scope">
-                <ElTag :type="scope.row.changeType === 'update' ? 'warning' : 'success'" effect="plain">
-                  {{ chapterChangeLabel(scope.row) }}
-                </ElTag>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn label="状态" width="100">
-              <template #default="scope"><ElTag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</ElTag></template>
-            </ElTableColumn>
-            <ElTableColumn label="提交时间" width="150">
-              <template #default="scope">{{ formatDateTime(scope.row.submittedAt || scope.row.updatedAt) }}</template>
-            </ElTableColumn>
-            <ElTableColumn label="操作" width="120" fixed="right">
-              <template #default="scope"><ElButton type="primary" :icon="View" @click="openChapterReview(scope.row)">{{ scope.row.status === 'pending' ? '开始审核' : '查看详情' }}</ElButton></template>
-            </ElTableColumn>
-          </ElTable>
+              <ElCollapse v-model="expandedBooks" class="book-review-collapse">
+                <ElCollapseItem
+                  v-for="book in author.novels"
+                  :key="bookKey(book)"
+                  :name="bookKey(book)"
+                >
+                  <template #title>
+                    <div class="book-collapse-title">
+                      <ElCheckbox
+                        :model-value="hasEveryTarget(reviewTargetsForBook(book))"
+                        :indeterminate="hasSomeTarget(reviewTargetsForBook(book)) && !hasEveryTarget(reviewTargetsForBook(book))"
+                        :disabled="!reviewTargetsForBook(book).length || reviewQuery.status !== 'pending'"
+                        aria-label="选择书籍的全部待审核内容"
+                        @click.stop
+                        @change="toggleBookSelection(book, Boolean($event))"
+                      />
+                      <img v-if="book.coverUrl" :src="book.coverUrl" alt="">
+                      <span v-else class="book-cover-placeholder"><ElIcon><Reading /></ElIcon></span>
+                      <div class="book-copy">
+                        <strong>{{ book.title }}</strong>
+                        <small>笔名：{{ book.author }} · {{ book.category }} · {{ book.chapterCount }} 章</small>
+                      </div>
+                      <div class="book-queue-meta">
+                        <ElTag :type="statusType(book.status)" effect="light">
+                          {{ book.status === 'pending' ? '整书待审' : statusLabel(book.status) }}
+                        </ElTag>
+                        <ElTag v-if="book.status === 'published'" type="info" effect="plain">{{ serializationLabel(book.serializationStatus) }}</ElTag>
+                        <span>{{ formatDateTime(book.submittedAt || book.updatedAt) }}</span>
+                      </div>
+                      <ElButton type="primary" link :icon="View" @click.stop="openNovelReview(book)">
+                        {{ book.status === 'pending' ? '审核整书' : '查看作品' }}
+                      </ElButton>
+                    </div>
+                  </template>
+
+                  <section class="book-chapter-panel">
+                    <header>
+                      <div>
+                        <strong>{{ book.status === 'pending' ? '首发稿章节' : '章节新增与修改' }}</strong>
+                        <small>{{ book.status === 'pending' ? '这些章节随整书审核一起发布' : '可独立审核，已发布正文保持线上版本' }}</small>
+                      </div>
+                      <span>{{ book.chapters.length }} 章</span>
+                    </header>
+                    <div v-if="book.chapters.length" class="chapter-review-list">
+                      <article v-for="chapter in book.chapters" :key="chapter.id" class="chapter-review-row">
+                        <ElCheckbox
+                          v-if="book.status === 'published' && chapter.status === 'pending'"
+                          :model-value="hasEveryTarget([{ kind: 'chapter', id: chapter.id, expectedRevision: chapter.revision }])"
+                          aria-label="选择章节"
+                          @change="toggleChapterSelection(chapter, Boolean($event))"
+                        />
+                        <span v-else class="chapter-readonly-icon"><ElIcon><DocumentChecked /></ElIcon></span>
+                        <div class="chapter-copy">
+                          <strong>第 {{ chapter.index + 1 }} 章 · {{ chapter.title }}</strong>
+                          <small>{{ chapter.changeType === 'update' ? '修改已发布章节' : book.status === 'pending' ? '随整书首发' : '新增连载章节' }}</small>
+                        </div>
+                        <div class="chapter-queue-meta">
+                          <ElTag :type="statusType(chapter.status)" effect="plain">{{ statusLabel(chapter.status) }}</ElTag>
+                          <ElTag v-if="book.status === 'published'" :type="chapter.changeType === 'update' ? 'warning' : 'success'" effect="plain">
+                            {{ chapterChangeLabel(chapter) }}
+                          </ElTag>
+                          <span>{{ formatDateTime(chapter.submittedAt || chapter.updatedAt) }}</span>
+                        </div>
+                        <ElButton type="primary" link :icon="View" @click="chapterReviewAction(book, chapter)">
+                          {{ book.status === 'pending' ? '查看整书' : chapter.status === 'pending' ? '审核章节' : '查看章节' }}
+                        </ElButton>
+                      </article>
+                    </div>
+                    <p v-else class="empty-chapters">当前筛选条件下没有章节记录。</p>
+                  </section>
+                </ElCollapseItem>
+              </ElCollapse>
+            </ElCollapseItem>
+          </ElCollapse>
+
+          <ElEmpty
+            v-if="!reviewLoading && !reviewAuthors.length"
+            :image-size="72"
+            :description="reviewQuery.status === 'pending' ? '当前没有待审核的作者内容' : '当前筛选条件下没有审核记录'"
+          />
 
           <div v-if="reviewTotal > reviewQuery.pageSize" class="pagination-row">
             <ElPagination
@@ -448,7 +634,7 @@ function errorMessage(error: unknown): string {
               layout="total, sizes, prev, pager, next"
               :page-sizes="[10, 20, 50]"
               :total="reviewTotal"
-              @change="loadReviewList"
+              @change="loadReviewQueue"
             />
           </div>
         </ElTabPane>
@@ -466,6 +652,30 @@ function errorMessage(error: unknown): string {
       :target="reviewTarget"
       @reviewed="handleReviewed"
     />
+    <ElDialog v-model="batchRejectOpen" title="批量退回作者修改" width="min(560px, 92vw)" append-to-body>
+      <ElAlert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="退回意见将同时发送给所有已选择的作者内容。"
+      />
+      <ElForm label-position="top" class="batch-reject-form">
+        <ElFormItem label="统一审核意见" required>
+          <ElInput
+            v-model="batchReviewNote"
+            type="textarea"
+            :rows="5"
+            maxlength="500"
+            show-word-limit
+            placeholder="请写清楚需要修改的位置和要求"
+          />
+        </ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton :disabled="batchReviewing" @click="batchRejectOpen = false">取消</ElButton>
+        <ElButton type="danger" :icon="CloseBold" :loading="batchReviewing" @click="submitBatchReview('reject')">确认退回</ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -725,52 +935,281 @@ function errorMessage(error: unknown): string {
   margin-top: 18px;
 }
 
-.queue-switcher {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+.review-queue-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
   margin-bottom: 16px;
+  padding: 2px 2px 0;
 }
 
-.queue-switcher button {
+.review-queue-head h3,
+.review-queue-head p {
+  margin: 0;
+}
+
+.review-queue-head h3 {
+  margin-top: 5px;
+  color: var(--ink-900);
+  font-size: 18px;
+}
+
+.review-queue-head p {
+  max-width: 700px;
+  margin-top: 6px;
+  color: var(--ink-500);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.queue-counters,
+.batch-actions,
+.author-queue-meta,
+.book-queue-meta,
+.chapter-queue-meta {
   display: flex;
   align-items: center;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 14px 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.queue-counters {
+  justify-content: flex-end;
+}
+
+.queue-counters span {
+  display: grid;
+  gap: 2px;
+  min-width: 70px;
   color: var(--ink-500);
-  background: var(--surface-muted);
-  text-align: left;
+  font-size: 11px;
+  text-align: right;
 }
 
-.queue-switcher button > svg {
-  width: 24px;
-  color: var(--ink-300);
+.queue-counters b {
+  color: var(--ink-900);
+  font-size: 20px;
+  line-height: 1;
 }
 
-.queue-switcher button > span {
+.review-toolbar {
+  align-items: flex-start;
+}
+
+.batch-actions {
+  justify-content: flex-end;
+}
+
+.selection-summary {
+  color: var(--ink-500);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.selection-summary strong {
+  color: var(--sakura-600);
+}
+
+.author-review-collapse,
+.book-review-collapse {
+  border-top: 1px solid var(--line);
+}
+
+.author-review-collapse :deep(.el-collapse-item__header),
+.book-review-collapse :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 68px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  background: var(--surface);
+}
+
+.author-review-collapse :deep(.el-collapse-item__wrap),
+.book-review-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: 0;
+}
+
+.author-review-collapse :deep(.el-collapse-item__content),
+.book-review-collapse :deep(.el-collapse-item__content) {
+  padding-bottom: 0;
+}
+
+.author-review-collapse :deep(.el-collapse-item__arrow),
+.book-review-collapse :deep(.el-collapse-item__arrow) {
+  margin-left: 10px;
+}
+
+.author-collapse-title,
+.book-collapse-title {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  align-items: center;
+  gap: 11px;
+}
+
+.author-collapse-title {
+  grid-template-columns: auto 34px minmax(150px, 1fr) auto;
+  padding: 12px 0;
+}
+
+.author-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #f1c5d2;
+  border-radius: 50%;
+  color: var(--sakura-600);
+  background: var(--sakura-50);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.author-copy,
+.book-copy,
+.chapter-copy {
+  min-width: 0;
   display: grid;
   gap: 3px;
 }
 
-.queue-switcher button small {
+.author-copy strong,
+.book-copy strong,
+.chapter-copy strong {
+  overflow: hidden;
+  color: var(--ink-900);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.author-copy small,
+.book-copy small,
+.chapter-copy small,
+.book-queue-meta span,
+.chapter-queue-meta span,
+.author-queue-meta > span {
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.author-queue-meta {
+  justify-content: flex-end;
+}
+
+.book-review-collapse {
+  margin: 0 12px 12px 58px;
+  border: 1px solid var(--line);
+}
+
+.book-review-collapse :deep(.el-collapse-item__header) {
+  min-height: 76px;
+  padding: 0 12px;
+  background: var(--surface-muted);
+}
+
+.book-collapse-title {
+  grid-template-columns: auto 39px minmax(180px, 1fr) auto auto;
+  padding: 8px 0;
+}
+
+.book-collapse-title img,
+.book-cover-placeholder {
+  width: 39px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #f0d2dc;
+  border-radius: 6px;
+  color: var(--sakura-500);
+  object-fit: cover;
+  background: var(--sakura-50);
+}
+
+.book-queue-meta {
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.book-chapter-panel {
+  padding: 13px 16px 16px;
+  background: #fffdfd;
+}
+
+.book-chapter-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.book-chapter-panel > header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.book-chapter-panel > header strong {
+  color: var(--ink-900);
+  font-size: 13px;
+}
+
+.book-chapter-panel > header small,
+.book-chapter-panel > header > span {
+  color: var(--ink-500);
   font-size: 11px;
 }
 
-.queue-switcher button.active {
-  border-color: #efb1c4;
-  color: var(--sakura-600);
-  background: var(--sakura-50);
-  box-shadow: inset 0 0 0 1px rgb(220 84 127 / 7%);
+.book-chapter-panel > header > span {
+  white-space: nowrap;
 }
 
-.queue-switcher button.active > svg {
-  color: var(--sakura-500);
+.chapter-review-list {
+  display: grid;
+  border-top: 1px solid var(--line);
 }
 
-.review-toolbar {
-  justify-content: flex-start;
+.chapter-review-row {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 58px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.chapter-review-row:last-child {
+  border-bottom: 0;
+}
+
+.chapter-readonly-icon {
+  width: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-300);
+}
+
+.chapter-queue-meta {
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.empty-chapters {
+  margin: 0;
+  padding: 12px 0 2px;
+  color: var(--ink-500);
+  font-size: 12px;
+}
+
+.batch-reject-form {
+  margin-top: 16px;
 }
 
 @media (max-width: 1180px) {
@@ -811,8 +1250,60 @@ function errorMessage(error: unknown): string {
     width: 100%;
   }
 
-  .queue-switcher {
-    grid-template-columns: 1fr;
+  .review-queue-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .queue-counters,
+  .batch-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .batch-actions > .el-button {
+    flex: 1 1 0;
+  }
+
+  .author-collapse-title {
+    grid-template-columns: auto 34px minmax(0, 1fr);
+  }
+
+  .author-queue-meta {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .book-review-collapse {
+    margin-left: 0;
+  }
+
+  .book-collapse-title {
+    grid-template-columns: auto 39px minmax(0, 1fr);
+  }
+
+  .book-queue-meta,
+  .book-collapse-title > .el-button {
+    grid-column: 3;
+    justify-content: flex-start;
+  }
+
+  .book-chapter-panel {
+    padding-inline: 12px;
+  }
+
+  .chapter-review-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .chapter-queue-meta {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .chapter-review-row > .el-button {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 
   .pagination-row {

@@ -2,6 +2,7 @@ export type AiNovelStatus = 'draft' | 'pending' | 'published' | 'rejected';
 export type AiNovelSerializationStatus = 'ongoing' | 'completed';
 export type AiChapterChangeType = 'published' | 'add' | 'update';
 export type AiReviewDecision = 'approve' | 'reject' | 'direct_publish';
+export type AiReviewTargetKind = 'novel' | 'chapter';
 
 export interface AiNovelSummary {
   id: string;
@@ -75,6 +76,37 @@ export interface AiNovelDetail {
 export interface AiChapterReviewDetail {
   item: AiNovelChapter;
   reviews: AiNovelReviewEvent[];
+}
+
+export interface AiNovelReviewBook extends AiNovelSummary {
+  chapters: AiNovelChapter[];
+}
+
+export interface AiNovelReviewAuthor {
+  ownerId: number;
+  ownerNickname: string;
+  ownerEmail: string;
+  novelCount: number;
+  pendingNovelCount: number;
+  pendingChapterCount: number;
+  novels: AiNovelReviewBook[];
+}
+
+export interface AiNovelReviewQueue {
+  items: AiNovelReviewAuthor[];
+  page: number;
+  pageSize: number;
+  total: number;
+  summary: {
+    pendingNovelCount: number;
+    pendingChapterCount: number;
+  };
+}
+
+export interface AiNovelReviewTarget {
+  kind: AiReviewTargetKind;
+  id: number;
+  expectedRevision: number;
 }
 
 export interface PageResponse<T> {

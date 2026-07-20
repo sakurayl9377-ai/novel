@@ -181,7 +181,7 @@ function errorMessage(error: unknown): string {
               <ElDescriptionsItem label="连载状态">
                 {{ novelDetail.item.serializationStatus === 'completed' ? '已完结' : '连载中' }}
               </ElDescriptionsItem>
-              <ElDescriptionsItem label="投稿人">
+              <ElDescriptionsItem label="作者">
                 {{ novelDetail.item.ownerNickname }} · {{ novelDetail.item.ownerEmail }}
               </ElDescriptionsItem>
               <ElDescriptionsItem label="提交版本">R{{ novelDetail.item.revision }}</ElDescriptionsItem>
@@ -220,7 +220,7 @@ function errorMessage(error: unknown): string {
         <ElDescriptions :column="2" border>
           <ElDescriptionsItem label="所属作品">{{ chapterDetail.item.novelTitle }}</ElDescriptionsItem>
           <ElDescriptionsItem label="章节序号">第 {{ chapterDetail.item.index + 1 }} 章</ElDescriptionsItem>
-          <ElDescriptionsItem label="投稿人">
+          <ElDescriptionsItem label="作者">
             {{ chapterDetail.item.ownerNickname }} · {{ chapterDetail.item.ownerEmail }}
           </ElDescriptionsItem>
           <ElDescriptionsItem label="提交版本">R{{ chapterDetail.item.revision }}</ElDescriptionsItem>

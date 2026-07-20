@@ -3,6 +3,8 @@ import type {
   AiChapterReviewDetail,
   AiNovelChapter,
   AiNovelDetail,
+  AiNovelReviewQueue,
+  AiNovelReviewTarget,
   AiNovelSummary,
   CoverUploadResponse,
   EditableChapter,
@@ -41,6 +43,10 @@ export function listReviewNovels(query: NovelListQuery): Promise<PageResponse<Ai
 
 export function listReviewChapters(query: NovelListQuery): Promise<PageResponse<AiNovelChapter>> {
   return apiRequest(`/admin/ai-novel-chapters${queryString(query)}`);
+}
+
+export function getReviewQueue(query: NovelListQuery): Promise<AiNovelReviewQueue> {
+  return apiRequest(`/admin/ai-novel-review-queue${queryString(query)}`);
 }
 
 export function createNovelDraft(): Promise<AiNovelDetail> {
@@ -98,6 +104,17 @@ export function reviewChapter(
   return apiRequest(`/admin/ai-novel-chapters/${id}/review`, {
     method: 'POST',
     body: { decision, expectedRevision, reviewNote },
+  });
+}
+
+export function batchReviewNovels(
+  items: AiNovelReviewTarget[],
+  decision: 'approve' | 'reject',
+  reviewNote = '',
+): Promise<{ reviewed: Array<Pick<AiNovelReviewTarget, 'kind' | 'id'>> }> {
+  return apiRequest('/admin/ai-novel-reviews/batch', {
+    method: 'POST',
+    body: { items, decision, reviewNote },
   });
 }
 
