@@ -298,6 +298,49 @@ void main() {
     expect(service.spokenTexts, ['0123456789', '456789']);
     expect(service.enginesAtSpeak.last, TtsSettings.engineIflytek);
   });
+
+  test(
+    'recoverable synthesis failure keeps the reading session resumable',
+    () async {
+      final service = _RecordingTtsService();
+      final provider = _NoStorageTtsProvider(ttsService: service);
+      addTearDown(provider.dispose);
+      final novel = Novel(id: 'tts-recoverable', title: '超时后继续');
+      final chapter = Chapter(
+        id: 'recoverable-chapter-1',
+        novelId: novel.id,
+        title: '第一章',
+        index: 0,
+        content: '0123456789',
+      );
+
+      expect(
+        await provider.startReadingSession(
+          novel: novel,
+          chapters: [chapter],
+          chapterIndex: 0,
+          content: chapter.content,
+          startOffset: 0,
+          loadChapterContent: (chapter) async => chapter.content,
+          saveProgress: (_) async {},
+          canOpenChapter: (_) => true,
+        ),
+        isTrue,
+      );
+      service.onProgress?.call(4, 5, '4');
+      service.emitRecoverableError('网络连接不稳定，请检查网络后点击继续');
+
+      expect(provider.hasActiveReadingSession, isTrue);
+      expect(provider.isPaused, isTrue);
+      expect(provider.currentStartOffset, 4);
+      expect(provider.lastErrorMessage, '网络连接不稳定，请检查网络后点击继续');
+
+      expect(await provider.playReadingSession(), isTrue);
+      expect(provider.hasActiveReadingSession, isTrue);
+      expect(provider.isSpeaking, isTrue);
+      expect(service.spokenTexts, ['0123456789', '456789']);
+    },
+  );
 }
 
 class _NoStorageTtsProvider extends TtsProvider {
@@ -321,9 +364,13 @@ class _RecordingTtsService extends TtsService {
   final List<String> spokenTexts = [];
   final List<String> enginesAtSpeak = [];
   String _error = '';
+  bool _recoverable = false;
 
   @override
   String get lastErrorMessage => _error;
+
+  @override
+  bool get lastErrorIsRecoverable => _recoverable;
 
   @override
   Future<bool> speak(String text) async {
@@ -331,11 +378,19 @@ class _RecordingTtsService extends TtsService {
     enginesAtSpeak.add(settings.engine);
     if (settings.engine == failingEngine) {
       _error = '模拟的新引擎启动失败';
+      _recoverable = false;
       return false;
     }
     _error = '';
+    _recoverable = false;
     onStart?.call();
     return true;
+  }
+
+  void emitRecoverableError(String message) {
+    _error = message;
+    _recoverable = true;
+    onError?.call();
   }
 
   @override

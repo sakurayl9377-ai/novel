@@ -39,8 +39,17 @@ class TtsProvider extends ChangeNotifier {
         unawaited(_persistReadingProgress(readingSession));
       }
       _isSpeaking = false;
-      _isPaused = false;
       _lastErrorMessage = _ttsService.lastErrorMessage;
+      if (readingSession != null && _ttsService.lastErrorIsRecoverable) {
+        _isPaused = true;
+        _speechOwnerKey = readingSession.ownerKey;
+        _restartReadingOnPlay = true;
+        unawaited(_setWakelockEnabled(false));
+        unawaited(_mediaControlService.setPlaying(false));
+        notifyListeners();
+        return;
+      }
+      _isPaused = false;
       _readingSession = null;
       _speechOwnerKey = '';
       _restartReadingOnPlay = false;
@@ -329,6 +338,14 @@ class TtsProvider extends ChangeNotifier {
       ownerKey: session.ownerKey,
     );
     if (!started) {
+      if (_readingSession == session && _ttsService.lastErrorIsRecoverable) {
+        _isPaused = true;
+        _speechOwnerKey = session.ownerKey;
+        _restartReadingOnPlay = true;
+        await _syncReadingMediaControls();
+        notifyListeners();
+        return false;
+      }
       _readingSession = null;
       _speechOwnerKey = '';
       await _mediaControlService.stop();
@@ -457,8 +474,12 @@ class TtsProvider extends ChangeNotifier {
       started = result;
       _lastErrorMessage = result ? '' : _ttsService.lastErrorMessage;
       _isSpeaking = result;
-      _isPaused = false;
+      _isPaused =
+          !result &&
+          _readingSession != null &&
+          _ttsService.lastErrorIsRecoverable;
       if (result) _restartReadingOnPlay = false;
+      if (_isPaused) _restartReadingOnPlay = true;
       if (!result) {
         await _setWakelockEnabled(false);
       }

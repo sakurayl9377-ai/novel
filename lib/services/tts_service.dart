@@ -42,7 +42,7 @@ class TtsService {
   StreamSubscription<Duration>? _playerDurationSubscription;
   String _lastErrorMessage = '';
   Duration _currentAudioDuration = Duration.zero;
-  Future<Uint8List>? _prefetchedIflytekAudio;
+  Future<_IflytekPrefetchResult>? _prefetchedIflytekAudio;
   int _prefetchedIflytekIndex = -1;
   bool _systemEnginePrepared = false;
   _SystemUtterancePhase _systemUtterancePhase = _SystemUtterancePhase.idle;
@@ -57,6 +57,9 @@ class TtsService {
   String get currentText => _currentText;
   int get currentPos => _currentPos;
   String get lastErrorMessage => _lastErrorMessage;
+  bool get lastErrorIsRecoverable => _lastErrorIsRecoverable;
+
+  bool _lastErrorIsRecoverable = false;
 
   TtsService() {
     _flutterTts = FlutterTts();
@@ -134,6 +137,9 @@ class TtsService {
         _chunks = const [];
         _isSpeaking = false;
         _isPaused = false;
+        _lastErrorMessage = '系统语音朗读中断，请重新开始朗读';
+        _lastErrorIsRecoverable = false;
+        onErrorMessage?.call(_lastErrorMessage);
         onError?.call();
       });
 
@@ -147,6 +153,8 @@ class TtsService {
     if (_isStarting) return false;
     final token = ++_speakToken;
     _isStarting = true;
+    _lastErrorMessage = '';
+    _lastErrorIsRecoverable = false;
     try {
       if (!_isInitialized) {
         await _init().timeout(const Duration(seconds: 3), onTimeout: () {});
@@ -192,7 +200,9 @@ class TtsService {
       return _speakSystemChunk(token);
     } catch (e) {
       if (token == _speakToken) {
-        _lastErrorMessage = e.toString();
+        final failure = _friendlyTtsFailure(e);
+        _lastErrorMessage = failure.message;
+        _lastErrorIsRecoverable = failure.recoverable;
         onErrorMessage?.call(_lastErrorMessage);
       }
       return false;
@@ -528,6 +538,8 @@ class TtsService {
       if (token != _speakToken) return false;
       _isSpeaking = true;
       _isPaused = false;
+      _lastErrorMessage = '';
+      _lastErrorIsRecoverable = false;
       _prefetchNextIflytekChunk(token);
       onStart?.call();
       return true;
@@ -535,7 +547,9 @@ class TtsService {
       if (token == _speakToken) {
         _isSpeaking = false;
         _isPaused = false;
-        _lastErrorMessage = e.toString();
+        final failure = _friendlyTtsFailure(e);
+        _lastErrorMessage = failure.message;
+        _lastErrorIsRecoverable = failure.recoverable;
         onErrorMessage?.call(_lastErrorMessage);
         onError?.call();
       }
@@ -545,9 +559,12 @@ class TtsService {
 
   Future<Uint8List> _loadIflytekAudioForChunk(int index) async {
     if (_prefetchedIflytekIndex == index && _prefetchedIflytekAudio != null) {
-      final audio = await _prefetchedIflytekAudio!;
+      final result = await _prefetchedIflytekAudio!;
       _clearIflytekPrefetch();
-      return audio;
+      if (result.error != null) {
+        Error.throwWithStackTrace(result.error!, result.stackTrace!);
+      }
+      return result.bytes!;
     }
     return _synthesizeIflytekChunk(_chunks[index]);
   }
@@ -567,7 +584,11 @@ class TtsService {
     final nextIndex = _chunkIndex + 1;
     if (token != _speakToken || nextIndex >= _chunks.length) return;
     _prefetchedIflytekIndex = nextIndex;
-    _prefetchedIflytekAudio = _synthesizeIflytekChunk(_chunks[nextIndex]);
+    _prefetchedIflytekAudio = _synthesizeIflytekChunk(_chunks[nextIndex]).then(
+      _IflytekPrefetchResult.success,
+      onError: (Object error, StackTrace stackTrace) =>
+          _IflytekPrefetchResult.failure(error, stackTrace),
+    );
   }
 
   void _clearIflytekPrefetch() {
@@ -748,6 +769,19 @@ class TtsService {
     return await _flutterTts.getVoices;
   }
 
+  ({String message, bool recoverable}) _friendlyTtsFailure(Object error) {
+    if (error is IflytekTtsException) {
+      return (message: error.message, recoverable: error.isRetryable);
+    }
+    if (error is TimeoutException) {
+      return (message: '语音服务响应超时，请检查网络后点击继续', recoverable: true);
+    }
+    if (error is StateError) {
+      return (message: error.message, recoverable: false);
+    }
+    return (message: '语音播放失败，请稍后点击继续', recoverable: true);
+  }
+
   Future<void> _applySelectedSystemVoice() async {
     final name = settings.systemVoiceName.trim();
     final locale = settings.systemVoiceLocale.trim();
@@ -788,6 +822,19 @@ class _TtsChunk {
 
   final String text;
   final int offset;
+}
+
+class _IflytekPrefetchResult {
+  const _IflytekPrefetchResult.success(this.bytes)
+    : error = null,
+      stackTrace = null;
+
+  const _IflytekPrefetchResult.failure(this.error, this.stackTrace)
+    : bytes = null;
+
+  final Uint8List? bytes;
+  final Object? error;
+  final StackTrace? stackTrace;
 }
 
 enum _SystemUtterancePhase { idle, submitting, queued, started }
