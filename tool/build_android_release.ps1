@@ -1,5 +1,5 @@
 param(
-    [int]$MaxSizeMiB = 120
+    [int]$MaxSizeMiB = 128
 )
 
 $ErrorActionPreference = "Stop"

@@ -6,7 +6,7 @@ param(
     [string]$ApkUrl,
     [string[]]$Notes = @(),
     [switch]$Force,
-    [int]$MaxSizeMiB = 120
+    [int]$MaxSizeMiB = 128
 )
 
 $ErrorActionPreference = "Stop"
