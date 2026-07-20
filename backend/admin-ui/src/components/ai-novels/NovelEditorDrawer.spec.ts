@@ -159,6 +159,40 @@ describe('NovelEditorDrawer', () => {
     expect(serviceMocks.submitNovel).toHaveBeenCalledWith(2, 2);
     wrapper.unmount();
   });
+
+  it('allows published work metadata to be submitted as a separate review change', async () => {
+    serviceMocks.getCreatorNovel.mockResolvedValue(publishedNovelDetail());
+    serviceMocks.saveNovelDraft.mockImplementation(async (_id, payload) => {
+      expect(payload.title).toBe('月港协议：修订版');
+      expect(payload.description).toBe('更新后的作品简介，会在审核通过后替换线上展示。');
+      return publishedNovelDetail({
+        revision: 2,
+        metadataRevision: metadataRevision('draft'),
+      });
+    });
+    serviceMocks.submitNovel.mockResolvedValue(publishedNovelDetail({
+      revision: 3,
+      metadataRevision: metadataRevision('pending'),
+    }));
+
+    const wrapper = mount(NovelEditorDrawer, {
+      props: { modelValue: false, novelId: 2 },
+      global: { stubs: { ElDrawer: DrawerStub } },
+      attachTo: document.body,
+    });
+    await wrapper.setProps({ modelValue: true });
+    await flushPromises();
+
+    expect(wrapper.find('.field-title input').attributes('disabled')).toBeUndefined();
+    await wrapper.find('.field-title input').setValue('月港协议：修订版');
+    await wrapper.find('.field-description textarea').setValue('更新后的作品简介，会在审核通过后替换线上展示。');
+    await submitButton(wrapper).trigger('click');
+    await flushPromises();
+
+    expect(serviceMocks.saveNovelDraft).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.submitNovel).toHaveBeenCalledWith(2, 2);
+    wrapper.unmount();
+  });
 });
 
 function submitButton(wrapper: ReturnType<typeof mount>) {
@@ -225,6 +259,8 @@ function novelDetail(options: {
       updatedAt: '',
     }],
     reviews: [],
+    metadataRevision: null,
+    metadataReviews: [],
   };
 }
 
@@ -232,6 +268,7 @@ function publishedNovelDetail(options: {
   revision?: number;
   includeDraftChanges?: boolean;
   changesPending?: boolean;
+  metadataRevision?: AiNovelDetail['metadataRevision'];
 } = {}): AiNovelDetail {
   const changeStatus = options.changesPending ? 'pending' : 'draft';
   const chapters: AiNovelDetail['chapters'] = [
@@ -268,6 +305,33 @@ function publishedNovelDetail(options: {
     },
     chapters,
     reviews: [],
+    metadataRevision: options.metadataRevision || null,
+    metadataReviews: [],
+  };
+}
+
+function metadataRevision(status: 'draft' | 'pending'): NonNullable<AiNovelDetail['metadataRevision']> {
+  return {
+    id: 40,
+    novelId: 2,
+    novelTitle: '月港协议',
+    title: '月港协议：修订版',
+    penName: '绘梨衣',
+    category: 'AI原创',
+    coverUrl: '/novel-api/uploads/content/novel-covers/test.png',
+    description: '更新后的作品简介，会在审核通过后替换线上展示。',
+    serializationStatus: 'ongoing',
+    status,
+    reviewNote: '',
+    revision: 2,
+    ownerId: 1,
+    ownerNickname: '管理员',
+    ownerEmail: 'admin@example.invalid',
+    submittedAt: '',
+    reviewedAt: '',
+    publishedAt: '',
+    createdAt: '',
+    updatedAt: '',
   };
 }
 

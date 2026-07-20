@@ -45,6 +45,7 @@ const creatorTotal = ref(0);
 const reviewAuthors = ref<AiNovelReviewAuthor[]>([]);
 const reviewTotal = ref(0);
 const pendingNovelCount = ref(0);
+const pendingMetadataCount = ref(0);
 const pendingChapterCount = ref(0);
 const expandedAuthors = ref<string[]>([]);
 const expandedBooks = ref<string[]>([]);
@@ -54,7 +55,7 @@ const batchReviewNote = ref('');
 const editorOpen = ref(false);
 const editorNovelId = ref<number | null>(null);
 const reviewOpen = ref(false);
-const reviewTarget = ref<{ kind: 'novel' | 'chapter'; id: number } | null>(null);
+const reviewTarget = ref<{ kind: 'novel' | 'metadata' | 'chapter'; id: number } | null>(null);
 
 const creatorQuery = reactive({
   q: '',
@@ -70,7 +71,9 @@ const reviewQuery = reactive({
   pageSize: 10,
 });
 
-const totalPending = computed(() => pendingNovelCount.value + pendingChapterCount.value);
+const totalPending = computed(() =>
+  pendingNovelCount.value + pendingMetadataCount.value + pendingChapterCount.value,
+);
 const selectedTargetKeys = computed(() => new Set(selectedReviewTargets.value.map(reviewTargetKey)));
 const selectedTargetCount = computed(() => selectedReviewTargets.value.length);
 const canBatchReview = computed(() => reviewQuery.status === 'pending' && selectedTargetCount.value > 0);
@@ -101,6 +104,7 @@ async function loadReviewQueue(): Promise<void> {
     reviewAuthors.value = data.items;
     reviewTotal.value = data.total;
     pendingNovelCount.value = data.summary.pendingNovelCount;
+    pendingMetadataCount.value = data.summary.pendingMetadataCount;
     pendingChapterCount.value = data.summary.pendingChapterCount;
     selectedReviewTargets.value = [];
     const authorKeys = new Set(data.items.map(authorKey));
@@ -119,6 +123,7 @@ async function refreshQueueCounts(): Promise<void> {
   try {
     const data = await getReviewQueue({ status: 'pending', page: 1, pageSize: 1 });
     pendingNovelCount.value = data.summary.pendingNovelCount;
+    pendingMetadataCount.value = data.summary.pendingMetadataCount;
     pendingChapterCount.value = data.summary.pendingChapterCount;
   } catch {
     // The visible queue will surface actionable errors when opened.
@@ -166,6 +171,12 @@ function openNovelReview(value: unknown): void {
 function openChapterReview(value: unknown): void {
   const item = value as AiNovelChapter;
   reviewTarget.value = { kind: 'chapter', id: item.id };
+  reviewOpen.value = true;
+}
+
+function openMetadataReview(book: AiNovelReviewBook): void {
+  if (!book.metadataRevision) return;
+  reviewTarget.value = { kind: 'metadata', id: book.metadataRevision.id };
   reviewOpen.value = true;
 }
 
@@ -219,6 +230,13 @@ function novelReviewTarget(book: AiNovelReviewBook): AiNovelReviewTarget[] {
     : [];
 }
 
+function metadataReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
+  const metadata = book.metadataRevision;
+  return metadata?.status === 'pending'
+    ? [{ kind: 'metadata', id: metadata.id, expectedRevision: metadata.revision }]
+    : [];
+}
+
 function chapterReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
   if (book.status !== 'published') return [];
   return book.chapters
@@ -227,7 +245,11 @@ function chapterReviewTargets(book: AiNovelReviewBook): AiNovelReviewTarget[] {
 }
 
 function reviewTargetsForBook(book: AiNovelReviewBook): AiNovelReviewTarget[] {
-  return [...novelReviewTarget(book), ...chapterReviewTargets(book)];
+  return [
+    ...novelReviewTarget(book),
+    ...metadataReviewTargets(book),
+    ...chapterReviewTargets(book),
+  ];
 }
 
 function reviewTargetsForAuthor(author: AiNovelReviewAuthor): AiNovelReviewTarget[] {
@@ -262,6 +284,10 @@ function toggleBookSelection(book: AiNovelReviewBook, checked: boolean): void {
 
 function toggleChapterSelection(chapter: AiNovelChapter, checked: boolean): void {
   toggleTargets([{ kind: 'chapter', id: chapter.id, expectedRevision: chapter.revision }], checked);
+}
+
+function toggleMetadataSelection(book: AiNovelReviewBook, checked: boolean): void {
+  toggleTargets(metadataReviewTargets(book), checked);
 }
 
 async function confirmBatchApprove(): Promise<void> {
@@ -328,13 +354,31 @@ function editorActionLabel(status: AiNovelStatus): string {
   return {
     draft: '继续编辑',
     pending: '查看提交',
-    published: '管理连载',
+    published: '管理作品',
     rejected: '修改重投',
   }[status];
 }
 
 function serializationLabel(status: string): string {
   return status === 'completed' ? '已完结' : '连载中';
+}
+
+function metadataStatusLabel(status: string): string {
+  return {
+    draft: '资料草稿',
+    pending: '资料待审',
+    approved: '资料已通过',
+    rejected: '资料被退回',
+  }[status] || status;
+}
+
+function metadataStatusType(status: string): 'info' | 'warning' | 'success' | 'danger' {
+  return {
+    draft: 'info',
+    pending: 'warning',
+    approved: 'success',
+    rejected: 'danger',
+  }[status] as 'info' | 'warning' | 'success' | 'danger';
 }
 
 function chapterChangeLabel(value: AiNovelChapter): string {
@@ -357,7 +401,7 @@ function errorMessage(error: unknown): string {
       <div class="workflow-copy">
         <span class="eyebrow">AI NOVEL WORKFLOW</span>
         <h2>从文件导入到发布，每一步都可预览、可修改、可追踪</h2>
-        <p>封面直接上传，TXT / Markdown 自动识别编码和章节；已发布章节可修订和续写，每次变更均经过审核并保留记录。</p>
+        <p>封面直接上传，TXT / Markdown 自动识别编码和章节；作品资料、已发布章节和新增连载均保留线上版本，审核通过后才生效。</p>
       </div>
       <div class="workflow-steps" aria-label="AI 小说工作流">
         <div><b>1</b><span><strong>上传与拆章</strong><small>先预览，不直接发布</small></span></div>
@@ -471,10 +515,11 @@ function errorMessage(error: unknown): string {
             <div>
               <span class="eyebrow">AUTHOR REVIEW QUEUE</span>
               <h3>按作者、书籍和章节逐层处理</h3>
-              <p>整书首发作为一个审核项；已发布作品的新增和修改章节可单独审核或批量处理。</p>
+              <p>整书首发、作品资料修改和章节变更分别审核；已发布内容在审核期间继续保持线上版本。</p>
             </div>
             <div class="queue-counters" aria-label="待审核统计">
               <span><b>{{ pendingNovelCount }}</b>整书待审</span>
+              <span><b>{{ pendingMetadataCount }}</b>资料待审</span>
               <span><b>{{ pendingChapterCount }}</b>章节待审</span>
             </div>
           </section>
@@ -539,6 +584,7 @@ function errorMessage(error: unknown): string {
                   </div>
                   <div class="author-queue-meta">
                     <ElTag v-if="author.pendingNovelCount" type="warning" effect="plain">{{ author.pendingNovelCount }} 本整书待审</ElTag>
+                    <ElTag v-if="author.pendingMetadataCount" type="warning" effect="plain">{{ author.pendingMetadataCount }} 项资料待审</ElTag>
                     <ElTag v-if="author.pendingChapterCount" type="info" effect="plain">{{ author.pendingChapterCount }} 章待审</ElTag>
                     <span>{{ author.novelCount }} 本作品</span>
                   </div>
@@ -572,10 +618,18 @@ function errorMessage(error: unknown): string {
                           {{ book.status === 'pending' ? '整书待审' : statusLabel(book.status) }}
                         </ElTag>
                         <ElTag v-if="book.status === 'published'" type="info" effect="plain">{{ serializationLabel(book.serializationStatus) }}</ElTag>
+                        <ElTag v-if="book.metadataRevision" :type="metadataStatusType(book.metadataRevision.status)" effect="plain">
+                          {{ metadataStatusLabel(book.metadataRevision.status) }}
+                        </ElTag>
                         <span>{{ formatDateTime(book.submittedAt || book.updatedAt) }}</span>
                       </div>
-                      <ElButton type="primary" link :icon="View" @click.stop="openNovelReview(book)">
-                        {{ book.status === 'pending' ? '审核整书' : '查看作品' }}
+                      <ElButton
+                        type="primary"
+                        link
+                        :icon="View"
+                        @click.stop="book.status === 'pending' ? openNovelReview(book) : book.metadataRevision ? openMetadataReview(book) : openNovelReview(book)"
+                      >
+                        {{ book.status === 'pending' ? '审核整书' : book.metadataRevision?.status === 'pending' ? '审核资料' : '查看作品' }}
                       </ElButton>
                     </div>
                   </template>
@@ -583,11 +637,33 @@ function errorMessage(error: unknown): string {
                   <section class="book-chapter-panel">
                     <header>
                       <div>
-                        <strong>{{ book.status === 'pending' ? '首发稿章节' : '章节新增与修改' }}</strong>
-                        <small>{{ book.status === 'pending' ? '这些章节随整书审核一起发布' : '可独立审核，已发布正文保持线上版本' }}</small>
+                        <strong>{{ book.status === 'pending' ? '首发稿章节' : '作品资料与章节变更' }}</strong>
+                        <small>{{ book.status === 'pending' ? '这些章节随整书审核一起发布' : '资料与章节均可独立审核，线上版本在审核期间继续展示' }}</small>
                       </div>
-                      <span>{{ book.chapters.length }} 章</span>
+                      <span>{{ book.metadataRevision ? '含资料修改' : `${book.chapters.length} 章` }}</span>
                     </header>
+                    <article v-if="book.status === 'published' && book.metadataRevision" class="chapter-review-row metadata-review-row">
+                      <ElCheckbox
+                        v-if="book.metadataRevision.status === 'pending'"
+                        :model-value="hasEveryTarget(metadataReviewTargets(book))"
+                        aria-label="选择作品资料修改"
+                        @change="toggleMetadataSelection(book, Boolean($event))"
+                      />
+                      <span v-else class="chapter-readonly-icon"><ElIcon><DocumentChecked /></ElIcon></span>
+                      <div class="chapter-copy">
+                        <strong>作品资料修改</strong>
+                        <small>标题、笔名、分类、封面、简介与连载状态</small>
+                      </div>
+                      <div class="chapter-queue-meta">
+                        <ElTag :type="metadataStatusType(book.metadataRevision.status)" effect="plain">
+                          {{ metadataStatusLabel(book.metadataRevision.status) }}
+                        </ElTag>
+                        <span>{{ formatDateTime(book.metadataRevision.submittedAt || book.metadataRevision.updatedAt) }}</span>
+                      </div>
+                      <ElButton type="primary" link :icon="View" @click="openMetadataReview(book)">
+                        {{ book.metadataRevision.status === 'pending' ? '审核资料' : '查看资料' }}
+                      </ElButton>
+                    </article>
                     <div v-if="book.chapters.length" class="chapter-review-list">
                       <article v-for="chapter in book.chapters" :key="chapter.id" class="chapter-review-row">
                         <ElCheckbox

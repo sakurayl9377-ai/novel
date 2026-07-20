@@ -32,6 +32,7 @@ const managedUploadUrlColumns = [
   ["home_placements", "custom_image_url"],
   ["campaigns", "banner_url"],
   ["ai_novels", "cover_url"],
+  ["ai_novel_metadata_revisions", "cover_url"],
   ["shop_items", "asset_value"],
   ["shop_items", "preview_url"],
   ["app_settings", "value"],
@@ -1284,6 +1285,55 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_ai_novels_owner
       ON ai_novels(user_id, updated_at DESC, id DESC);
 
+    CREATE TABLE IF NOT EXISTS ai_novel_metadata_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      pen_name TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'AI原创',
+      cover_url TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      serialization_status TEXT NOT NULL DEFAULT 'ongoing',
+      status TEXT NOT NULL DEFAULT 'draft',
+      review_note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      submitted_at TEXT NOT NULL DEFAULT '',
+      reviewed_by INTEGER,
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      published_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (status IN ('draft', 'pending', 'approved', 'rejected'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_metadata_revisions_novel
+      ON ai_novel_metadata_revisions(novel_id, updated_at DESC, id DESC);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_novel_metadata_active_revision
+      ON ai_novel_metadata_revisions(novel_id)
+      WHERE status IN ('draft', 'pending', 'rejected');
+
+    CREATE TABLE IF NOT EXISTS ai_novel_metadata_review_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      metadata_revision_id INTEGER NOT NULL,
+      submission_revision INTEGER NOT NULL DEFAULT 1,
+      decision TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      reviewer_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (metadata_revision_id)
+        REFERENCES ai_novel_metadata_revisions(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (decision IN ('approve', 'reject', 'direct_publish'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_metadata_review_events_revision
+      ON ai_novel_metadata_review_events(metadata_revision_id, created_at DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS ai_novel_chapters (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       novel_id INTEGER NOT NULL,
@@ -1328,6 +1378,7 @@ export function migrate() {
       ON ai_novel_review_events(novel_id, created_at DESC, id DESC);
   `);
   migrateAiNovelWorkflowSchema();
+  migrateAiNovelMetadataRevisionSchema();
   addMissingColumn("users", "bio", "TEXT NOT NULL DEFAULT ''");
   addMissingColumn("users", "gender", "TEXT NOT NULL DEFAULT 'private'");
   addMissingColumn("users", "signature", "TEXT NOT NULL DEFAULT ''");
@@ -1644,6 +1695,55 @@ function migrateAiNovelWorkflowSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_ai_novel_review_events_novel
       ON ai_novel_review_events(novel_id, created_at DESC, id DESC);
+  `);
+}
+
+function migrateAiNovelMetadataRevisionSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_novel_metadata_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      pen_name TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'AI原创',
+      cover_url TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      serialization_status TEXT NOT NULL DEFAULT 'ongoing',
+      status TEXT NOT NULL DEFAULT 'draft',
+      review_note TEXT NOT NULL DEFAULT '',
+      revision INTEGER NOT NULL DEFAULT 1,
+      submitted_at TEXT NOT NULL DEFAULT '',
+      reviewed_by INTEGER,
+      reviewed_at TEXT NOT NULL DEFAULT '',
+      published_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (status IN ('draft', 'pending', 'approved', 'rejected'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_metadata_revisions_novel
+      ON ai_novel_metadata_revisions(novel_id, updated_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_novel_metadata_active_revision
+      ON ai_novel_metadata_revisions(novel_id)
+      WHERE status IN ('draft', 'pending', 'rejected');
+    CREATE TABLE IF NOT EXISTS ai_novel_metadata_review_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      novel_id INTEGER NOT NULL,
+      metadata_revision_id INTEGER NOT NULL,
+      submission_revision INTEGER NOT NULL DEFAULT 1,
+      decision TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      reviewer_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_id) REFERENCES ai_novels(id) ON DELETE CASCADE,
+      FOREIGN KEY (metadata_revision_id)
+        REFERENCES ai_novel_metadata_revisions(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE RESTRICT,
+      CHECK (decision IN ('approve', 'reject', 'direct_publish'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_novel_metadata_review_events_revision
+      ON ai_novel_metadata_review_events(metadata_revision_id, created_at DESC, id DESC);
   `);
 }
 

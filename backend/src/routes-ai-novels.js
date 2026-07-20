@@ -188,6 +188,7 @@ export async function aiNovelRoutes(app) {
       if (current.status === "pending") throw conflict("novel_review_in_progress");
 
       const chaptersProvided = Object.hasOwn(body, "chapters");
+      const metadataProvided = hasNovelMetadataFields(body);
       const chapters = chaptersProvided
         ? structuredChapters(body.chapters)
         : all(
@@ -198,25 +199,27 @@ export async function aiNovelRoutes(app) {
             [id],
           );
       const published = current.status === "published";
-      const nextSerializationStatus = Object.hasOwn(body, "serializationStatus")
-        ? novelSerializationStatus(body.serializationStatus)
-        : current.serialization_status || "ongoing";
-      const nextMetadata = published
-        ? {
-            title: current.title,
-            penName: current.pen_name,
-            category: current.category,
-            coverUrl: current.cover_url,
-            description: current.description,
-          }
-        : draftNovelMetadata(body, request.user, current);
-      if (!published && nextMetadata.coverUrl) {
+      const nextMetadata = !published || metadataProvided
+        ? draftNovelMetadata(body, request.user, current)
+        : null;
+      if (!published && nextMetadata?.coverUrl) {
+        nextMetadata.coverUrl = requireOwnedNovelCover(
+          nextMetadata.coverUrl,
+          request.user.id,
+        );
+      }
+      if (
+        published
+        && nextMetadata?.coverUrl
+        && nextMetadata.coverUrl !== current.cover_url
+      ) {
         nextMetadata.coverUrl = requireOwnedNovelCover(
           nextMetadata.coverUrl,
           request.user.id,
         );
       }
 
+      let replacedMetadataCoverUrl = "";
       db.exec("BEGIN IMMEDIATE");
       try {
         if (!published) {
@@ -233,17 +236,23 @@ export async function aiNovelRoutes(app) {
               nextMetadata.category,
               nextMetadata.coverUrl,
               nextMetadata.description,
-              nextSerializationStatus,
+              nextMetadata.serializationStatus,
               id,
             ],
           );
         } else {
+          if (nextMetadata) {
+            replacedMetadataCoverUrl = savePublishedMetadataDraft({
+              novel: current,
+              metadata: nextMetadata,
+            });
+          }
           run(
             `UPDATE ai_novels
-             SET serialization_status = ?, revision = revision + 1,
+             SET revision = revision + 1,
                  updated_at = datetime('now')
              WHERE id = ?`,
-            [nextSerializationStatus, id],
+            [id],
           );
         }
         if (published) {
@@ -261,8 +270,11 @@ export async function aiNovelRoutes(app) {
         db.exec("ROLLBACK");
         throw error;
       }
-      if (!published && current.cover_url !== nextMetadata.coverUrl) {
+      if (!published && current.cover_url !== nextMetadata?.coverUrl) {
         cleanupReplacedNovelCover(request, request.user.id, current.cover_url);
+      }
+      if (replacedMetadataCoverUrl) {
+        cleanupReplacedNovelCover(request, request.user.id, replacedMetadataCoverUrl);
       }
       return creatorNovelDetail(id, request.user.id);
     },
@@ -285,9 +297,17 @@ export async function aiNovelRoutes(app) {
          ORDER BY sort_order, id`,
         [id],
       );
-      if (!chapterRows.length) throw badRequest("novel chapters are required");
+      const published = current.status === "published";
+      const metadataRevision = published ? activeMetadataRevision(id) : null;
+      const submittingMetadata = Boolean(
+        metadataRevision && ["draft", "rejected"].includes(metadataRevision.status),
+      );
+      if (!chapterRows.length && (!published || !submittingMetadata)) {
+        throw badRequest(published ? "novel_changes_are_required" : "novel chapters are required");
+      }
       if (
-        current.status === "published" &&
+        published &&
+        chapterRows.length &&
         one(
           `SELECT 1 AS present
            FROM ai_novel_chapters
@@ -298,40 +318,48 @@ export async function aiNovelRoutes(app) {
       ) {
         throw conflict("serial_chapter_review_in_progress");
       }
-      const chaptersForValidation = current.status === "published"
-        ? effectivePublishedChapters(id, chapterRows)
-        : chapterRows;
-      validateNovelForSubmission(current, chaptersForValidation, {
-        requireManagedCover: current.status !== "published",
-      });
+      if (!published) {
+        validateNovelForSubmission(current, chapterRows, { requireManagedCover: true });
+      } else {
+        if (submittingMetadata) validateMetadataRevisionForSubmission(metadataRevision, current);
+        if (chapterRows.length) {
+          validateNovelForSubmission(
+            current,
+            effectivePublishedChapters(id, chapterRows),
+            { requireManagedCover: false },
+          );
+        }
+      }
       const nextChapterStatus = publish ? "published" : "pending";
 
       db.exec("BEGIN IMMEDIATE");
       try {
-        run(
-          `UPDATE ai_novel_chapters
-           SET status = ?, review_note = '', revision = revision + 1,
-               submitted_at = datetime('now'),
-               reviewed_by = CASE WHEN ? THEN ? ELSE NULL END,
-               reviewed_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
-               published_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
-               updated_at = datetime('now')
-           WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
-          [
-            nextChapterStatus,
-            publish ? 1 : 0,
-            publish ? request.user.id : null,
-            publish ? 1 : 0,
-            publish ? 1 : 0,
-            id,
-          ],
-        );
-        if (publish) {
+        if (chapterRows.length) {
+          run(
+            `UPDATE ai_novel_chapters
+             SET status = ?, review_note = '', revision = revision + 1,
+                 submitted_at = datetime('now'),
+                 reviewed_by = CASE WHEN ? THEN ? ELSE NULL END,
+                 reviewed_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
+                 published_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
+                 updated_at = datetime('now')
+             WHERE novel_id = ? AND status IN ('draft', 'rejected')`,
+            [
+              nextChapterStatus,
+              publish ? 1 : 0,
+              publish ? request.user.id : null,
+              publish ? 1 : 0,
+              publish ? 1 : 0,
+              id,
+            ],
+          );
+        }
+        if (publish && chapterRows.length) {
           for (const chapter of chapterRows) {
             applyApprovedChapterRevision(chapter, request.user.id);
           }
         }
-        if (current.status !== "published") {
+        if (!published) {
           const nextNovelStatus = publish ? "published" : "pending";
           run(
             `UPDATE ai_novels
@@ -362,13 +390,23 @@ export async function aiNovelRoutes(app) {
             });
           }
         } else {
+          if (submittingMetadata) {
+            run(
+              `UPDATE ai_novel_metadata_revisions
+               SET status = 'pending', review_note = '', revision = revision + 1,
+                   submitted_at = datetime('now'), reviewed_by = NULL,
+                   reviewed_at = '', updated_at = datetime('now')
+               WHERE id = ? AND status IN ('draft', 'rejected')`,
+              [metadataRevision.id],
+            );
+          }
           run(
             `UPDATE ai_novels
              SET revision = revision + 1, updated_at = datetime('now')
              WHERE id = ?`,
             [id],
           );
-          if (publish) {
+          if (publish && chapterRows.length) {
             for (const chapter of chapterRows) {
               recordNovelReviewEvent({
                 novelId: id,
@@ -650,16 +688,29 @@ export async function aiNovelRoutes(app) {
     },
   );
 
+  app.get(
+    "/admin/ai-novel-metadata-revisions/:revisionId",
+    { preHandler: app.adminRequired },
+    async (request) => metadataRevisionDetail(
+      positiveInteger(request.params.revisionId, "metadata revision id"),
+    ),
+  );
+
   app.post(
     "/admin/ai-novel-reviews/batch",
     { preHandler: app.adminRequired },
     async (request) => {
       const { decision, reviewNote } = reviewDecisionInput(request.body);
       const targets = batchReviewTargets(request.body?.items);
-      const reviewed = withReviewTransaction(() => {
+      const result = withReviewTransaction(() => {
         const prepared = targets.map((target) => {
           if (target.kind === "novel") {
             const item = requirePendingNovelReview(target.id);
+            requireExpectedRevision(target.expectedRevision, item.revision);
+            return { ...target, item };
+          }
+          if (target.kind === "metadata") {
+            const item = requirePendingMetadataRevision(target.id);
             requireExpectedRevision(target.expectedRevision, item.revision);
             return { ...target, item };
           }
@@ -676,6 +727,7 @@ export async function aiNovelRoutes(app) {
           target.kind === "chapter" && selectedNovelIds.has(Number(target.chapter.novel_id)))) {
           throw conflict("batch_review_nested_target_conflict");
         }
+        const retiredMetadataCovers = [];
         for (const target of prepared) {
           if (target.kind === "novel") {
             reviewNovelSubmission({
@@ -684,6 +736,19 @@ export async function aiNovelRoutes(app) {
               reviewNote,
               reviewerId: request.user.id,
             });
+          } else if (target.kind === "metadata") {
+            const metadataResult = reviewMetadataRevision({
+              item: target.item,
+              decision,
+              reviewNote,
+              reviewerId: request.user.id,
+            });
+            if (metadataResult.replacedCoverUrl) {
+              retiredMetadataCovers.push({
+                userId: target.item.user_id,
+                url: metadataResult.replacedCoverUrl,
+              });
+            }
           } else {
             reviewChapterSubmission({
               chapter: target.chapter,
@@ -693,9 +758,38 @@ export async function aiNovelRoutes(app) {
             });
           }
         }
-        return prepared.map((target) => ({ kind: target.kind, id: target.id }));
+        return {
+          reviewed: prepared.map((target) => ({ kind: target.kind, id: target.id })),
+          retiredMetadataCovers,
+        };
       });
-      return { reviewed };
+      for (const cover of result.retiredMetadataCovers) {
+        cleanupReplacedNovelCover(request, cover.userId, cover.url);
+      }
+      return { reviewed: result.reviewed };
+    },
+  );
+
+  app.post(
+    "/admin/ai-novel-metadata-revisions/:revisionId/review",
+    { preHandler: app.adminRequired },
+    async (request) => {
+      const revisionId = positiveInteger(request.params.revisionId, "metadata revision id");
+      const { decision, reviewNote } = reviewDecisionInput(request.body);
+      const item = requirePendingMetadataRevision(revisionId);
+      if (request.body?.expectedRevision !== undefined) {
+        requireExpectedRevision(request.body.expectedRevision, item.revision);
+      }
+      const result = withReviewTransaction(() => reviewMetadataRevision({
+        item,
+        decision,
+        reviewNote,
+        reviewerId: request.user.id,
+      }));
+      if (result.replacedCoverUrl) {
+        cleanupReplacedNovelCover(request, item.user_id, result.replacedCoverUrl);
+      }
+      return { item: metadataRevisionJson(metadataRevisionRow(revisionId)) };
     },
   );
 
@@ -776,9 +870,14 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
   const searchParams = reviewQueueSearchParams(q);
   const summary = one(
     `SELECT COUNT(DISTINCT CASE WHEN n.status = 'pending' THEN n.id END) AS pending_novel_count,
+            COUNT(DISTINCT CASE
+              WHEN n.status = 'published' AND metadata.status = 'pending' THEN metadata.id
+            END) AS pending_metadata_count,
             COUNT(CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count
      FROM ai_novels n
-     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id`,
+     LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     LEFT JOIN ai_novel_metadata_revisions metadata
+       ON metadata.novel_id = n.id AND metadata.status = 'pending'`,
   ) || {};
   const total = Number(
     one(
@@ -793,14 +892,21 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
     `SELECT u.id AS owner_id, u.nickname AS owner_nickname, u.email AS owner_email,
             COUNT(DISTINCT n.id) AS novel_count,
             COUNT(DISTINCT CASE WHEN n.status = 'pending' THEN n.id END) AS pending_novel_count,
+            COUNT(DISTINCT CASE
+              WHEN n.status = 'published' AND metadata.status = 'pending' THEN metadata.id
+            END) AS pending_metadata_count,
             COUNT(DISTINCT CASE WHEN n.status = 'published' AND c.status = 'pending' THEN c.id END) AS pending_chapter_count,
             MAX(n.updated_at) AS last_updated_at
      FROM ai_novels n
      JOIN users u ON u.id = n.user_id
      LEFT JOIN ai_novel_chapters c ON c.novel_id = n.id
+     LEFT JOIN ai_novel_metadata_revisions metadata
+       ON metadata.novel_id = n.id AND metadata.status = 'pending'
      WHERE ${scopeSql} ${searchSql}
      GROUP BY u.id
-     ORDER BY MAX(CASE WHEN n.status = 'pending' THEN 1 ELSE 0 END) DESC,
+     ORDER BY MAX(CASE
+                WHEN n.status = 'pending' OR metadata.status = 'pending' THEN 1 ELSE 0
+              END) DESC,
               last_updated_at DESC, u.id DESC
      LIMIT ? OFFSET ?`,
     [...searchParams, pageSize, offset],
@@ -847,16 +953,34 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
      ORDER BY n.user_id, n.id, COALESCE(original.sort_order, c.sort_order), c.id`,
     [...ownerIds, status, ...searchParams],
   ).map(creatorChapterJson);
+  const metadataRows = all(
+    `SELECT metadata.*, n.user_id, n.title AS novel_title,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_metadata_revisions metadata
+     JOIN ai_novels n ON n.id = metadata.novel_id
+     JOIN users u ON u.id = n.user_id
+     WHERE n.user_id IN (${ownerPlaceholders})
+       AND metadata.status = ? AND ${scopeSql} ${searchSql}
+     ORDER BY n.user_id, n.id, metadata.updated_at DESC, metadata.id DESC`,
+    [...ownerIds, metadataStatusForReviewQueue(status), ...searchParams],
+  ).map(metadataRevisionJson);
   const chaptersByNovel = new Map();
   for (const chapter of chapterRows) {
     const chapters = chaptersByNovel.get(chapter.novelId) || [];
     chapters.push(chapter);
     chaptersByNovel.set(chapter.novelId, chapters);
   }
+  const metadataByNovel = new Map();
+  for (const metadata of metadataRows) {
+    if (!metadataByNovel.has(metadata.novelId)) {
+      metadataByNovel.set(metadata.novelId, metadata);
+    }
+  }
   const novelsByAuthor = new Map();
   for (const row of bookRows) {
     const novel = creatorNovelJson(row);
     novel.chapters = chaptersByNovel.get(novel.numericId) || [];
+    novel.metadataRevision = metadataByNovel.get(novel.numericId) || null;
     const novels = novelsByAuthor.get(novel.ownerId) || [];
     novels.push(novel);
     novelsByAuthor.set(novel.ownerId, novels);
@@ -868,6 +992,7 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
       ownerEmail: author.owner_email || "",
       novelCount: Number(author.novel_count || 0),
       pendingNovelCount: Number(author.pending_novel_count || 0),
+      pendingMetadataCount: Number(author.pending_metadata_count || 0),
       pendingChapterCount: Number(author.pending_chapter_count || 0),
       novels: novelsByAuthor.get(Number(author.owner_id)) || [],
     })),
@@ -881,6 +1006,7 @@ function groupedReviewQueue({ status, q, page, pageSize, offset }) {
 function reviewQueueSummary(row) {
   return {
     pendingNovelCount: Number(row.pending_novel_count || 0),
+    pendingMetadataCount: Number(row.pending_metadata_count || 0),
     pendingChapterCount: Number(row.pending_chapter_count || 0),
   };
 }
@@ -899,6 +1025,10 @@ function reviewQueueScopeSql(status) {
       OR (n.status = 'published' AND EXISTS (
         SELECT 1 FROM ai_novel_chapters pending_chapter
         WHERE pending_chapter.novel_id = n.id AND pending_chapter.status = 'pending'
+      ))
+      OR (n.status = 'published' AND EXISTS (
+        SELECT 1 FROM ai_novel_metadata_revisions pending_metadata
+        WHERE pending_metadata.novel_id = n.id AND pending_metadata.status = 'pending'
       )))`;
   }
   if (status === "rejected") {
@@ -906,6 +1036,10 @@ function reviewQueueScopeSql(status) {
       OR (n.status = 'published' AND EXISTS (
         SELECT 1 FROM ai_novel_chapters rejected_chapter
         WHERE rejected_chapter.novel_id = n.id AND rejected_chapter.status = 'rejected'
+      ))
+      OR (n.status = 'published' AND EXISTS (
+        SELECT 1 FROM ai_novel_metadata_revisions rejected_metadata
+        WHERE rejected_metadata.novel_id = n.id AND rejected_metadata.status = 'rejected'
       )))`;
   }
   return "n.status = 'published'";
@@ -917,11 +1051,19 @@ function reviewQueueSearchSql(q) {
     OR EXISTS (
       SELECT 1 FROM ai_novel_chapters searched_chapter
       WHERE searched_chapter.novel_id = n.id AND searched_chapter.title LIKE ?
+    ) OR EXISTS (
+      SELECT 1 FROM ai_novel_metadata_revisions searched_metadata
+      WHERE searched_metadata.novel_id = n.id
+        AND (searched_metadata.title LIKE ? OR searched_metadata.description LIKE ?)
     ))`;
 }
 
 function reviewQueueSearchParams(q) {
-  return q ? Array(5).fill(`%${q}%`) : [];
+  return q ? Array(7).fill(`%${q}%`) : [];
+}
+
+function metadataStatusForReviewQueue(status) {
+  return status === "published" ? "approved" : status;
 }
 
 function reviewDecisionInput(body) {
@@ -947,7 +1089,7 @@ function batchReviewTargets(value) {
       throw badRequest("batch_review_item_invalid");
     }
     const kind = requiredString(raw.kind, `items[${index}].kind`, 20);
-    if (!["novel", "chapter"].includes(kind)) {
+    if (!["novel", "metadata", "chapter"].includes(kind)) {
       throw badRequest("batch_review_item_invalid");
     }
     const id = positiveInteger(raw.id, `items[${index}].id`);
@@ -966,6 +1108,26 @@ function requirePendingNovelReview(id) {
   const item = one("SELECT * FROM ai_novels WHERE id = ?", [id]);
   if (!item) throw notFound("novel_not_found");
   if (item.status !== "pending") throw conflict("novel_review_not_pending");
+  return item;
+}
+
+function requirePendingMetadataRevision(revisionId) {
+  const item = one(
+    `SELECT metadata.*, n.user_id, n.status AS novel_status,
+            n.title AS novel_title, n.pen_name AS novel_pen_name,
+            n.category AS novel_category, n.cover_url AS novel_cover_url,
+            n.description AS novel_description,
+            n.serialization_status AS novel_serialization_status
+     FROM ai_novel_metadata_revisions metadata
+     JOIN ai_novels n ON n.id = metadata.novel_id
+     WHERE metadata.id = ?`,
+    [revisionId],
+  );
+  if (!item) throw notFound("metadata_revision_not_found");
+  if (item.novel_status !== "published") {
+    throw conflict("metadata_revision_requires_published_novel");
+  }
+  if (item.status !== "pending") throw conflict("metadata_revision_not_pending");
   return item;
 }
 
@@ -1039,6 +1201,77 @@ function reviewNovelSubmission({ item, decision, reviewNote, reviewerId }) {
         : `《${item.title}》未通过审核：${reviewNote}`,
     ],
   );
+}
+
+function reviewMetadataRevision({ item, decision, reviewNote, reviewerId }) {
+  const approved = decision === "approve";
+  if (approved) {
+    const applied = run(
+      `UPDATE ai_novels
+       SET title = ?, pen_name = ?, category = ?, cover_url = ?, description = ?,
+           serialization_status = ?, revision = revision + 1,
+           updated_at = datetime('now')
+       WHERE id = ? AND status = 'published'`,
+      [
+        item.title,
+        item.pen_name,
+        item.category,
+        item.cover_url,
+        item.description,
+        item.serialization_status,
+        item.novel_id,
+      ],
+    );
+    if (Number(applied.changes || 0) !== 1) {
+      throw conflict("metadata_revision_apply_conflict");
+    }
+  }
+  const status = approved ? "approved" : "rejected";
+  const reviewed = run(
+    `UPDATE ai_novel_metadata_revisions
+     SET status = ?, review_note = ?, reviewed_by = ?, revision = revision + 1,
+         reviewed_at = datetime('now'),
+         published_at = CASE WHEN ? THEN datetime('now') ELSE '' END,
+         updated_at = datetime('now')
+     WHERE id = ? AND status = 'pending'`,
+    [status, reviewNote, reviewerId, approved ? 1 : 0, item.id],
+  );
+  if (Number(reviewed.changes || 0) !== 1) {
+    throw conflict("metadata_revision_review_conflict");
+  }
+  if (approved) {
+    run(
+      `UPDATE ai_novel_metadata_revisions
+       SET cover_url = ''
+       WHERE novel_id = ? AND status = 'approved' AND id <> ?
+         AND cover_url <> ?`,
+      [item.novel_id, item.id, item.cover_url],
+    );
+  }
+  recordMetadataReviewEvent({
+    novelId: item.novel_id,
+    metadataRevisionId: item.id,
+    revision: Number(item.revision || 1),
+    decision,
+    note: reviewNote,
+    reviewerId,
+  });
+  run(
+    `INSERT INTO system_notifications (user_id, title, content, category)
+     VALUES (?, ?, ?, 'ai_novel_review')`,
+    [
+      item.user_id,
+      approved ? "作品资料修改审核通过" : "作品资料需要调整",
+      approved
+        ? `《${item.title}》的标题、简介、封面或连载状态修改已生效。`
+        : `《${item.novel_title}》的作品资料修改未通过审核：${reviewNote}`,
+    ],
+  );
+  return {
+    replacedCoverUrl: approved && item.novel_cover_url !== item.cover_url
+      ? item.novel_cover_url
+      : "",
+  };
 }
 
 function reviewChapterSubmission({ chapter, decision, reviewNote, reviewerId }) {
@@ -1232,14 +1465,41 @@ function adminNovelDetail(id) {
   return novelDetailJson(row);
 }
 
+function metadataRevisionRow(revisionId) {
+  return one(
+    `SELECT metadata.*, n.user_id, n.title AS novel_title,
+            u.nickname AS owner_nickname, u.email AS owner_email
+     FROM ai_novel_metadata_revisions metadata
+     JOIN ai_novels n ON n.id = metadata.novel_id
+     JOIN users u ON u.id = n.user_id
+     WHERE metadata.id = ?`,
+    [revisionId],
+  );
+}
+
+function metadataRevisionDetail(revisionId) {
+  const row = metadataRevisionRow(revisionId);
+  if (!row) throw notFound("metadata_revision_not_found");
+  const novel = creatorNovelRow(row.novel_id);
+  if (!novel) throw notFound("novel_not_found");
+  return {
+    item: metadataRevisionJson(row),
+    novel: creatorNovelJson(novel),
+    reviews: metadataReviewEventRows(row.novel_id, revisionId),
+  };
+}
+
 function novelDetailJson(row) {
   const novelId = Number(row.id);
+  const metadataRevision = activeMetadataRevision(novelId);
   return {
     item: creatorNovelJson(row),
     chapters: creatorChapterRows(novelId).map((chapter) =>
       creatorChapterJson(chapter, true),
     ),
     reviews: reviewEventRows(novelId),
+    metadataRevision: metadataRevision ? metadataRevisionJson(metadataRevision) : null,
+    metadataReviews: metadataReviewEventRows(novelId),
   };
 }
 
@@ -1545,7 +1805,175 @@ function draftNovelMetadata(body, user, current = {}) {
     category: value("category", "category", 40, "AI原创") || "AI原创",
     coverUrl: value("coverUrl", "cover_url", 1000),
     description: value("description", "description", 2000),
+    serializationStatus: Object.hasOwn(body, "serializationStatus")
+      ? novelSerializationStatus(body.serializationStatus)
+      : novelSerializationStatus(current.serialization_status, { optional: true }) || "ongoing",
   };
+}
+
+function hasNovelMetadataFields(body) {
+  return [
+    "title",
+    "penName",
+    "category",
+    "coverUrl",
+    "description",
+    "serializationStatus",
+  ].some((key) => Object.hasOwn(body, key));
+}
+
+function activeMetadataRevision(novelId) {
+  return one(
+    `SELECT * FROM ai_novel_metadata_revisions
+     WHERE novel_id = ? AND status IN ('draft', 'pending', 'rejected')
+     ORDER BY id DESC
+     LIMIT 1`,
+    [novelId],
+  );
+}
+
+function metadataRevisionJson(row) {
+  return {
+    id: Number(row.id),
+    novelId: Number(row.novel_id),
+    novelTitle: row.novel_title || "",
+    title: row.title,
+    penName: row.pen_name || "",
+    category: row.category || "AI原创",
+    coverUrl: row.cover_url || "",
+    description: row.description || "",
+    serializationStatus: row.serialization_status || "ongoing",
+    status: row.status,
+    reviewNote: row.review_note || "",
+    revision: Number(row.revision || 1),
+    ownerId: Number(row.user_id || 0),
+    ownerNickname: row.owner_nickname || "",
+    ownerEmail: row.owner_email || "",
+    submittedAt: row.submitted_at || "",
+    reviewedAt: row.reviewed_at || "",
+    publishedAt: row.published_at || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+function metadataReviewEventRows(novelId, metadataRevisionId) {
+  const revisionWhere = metadataRevisionId === undefined
+    ? ""
+    : "AND event.metadata_revision_id = ?";
+  const params = metadataRevisionId === undefined
+    ? [novelId]
+    : [novelId, metadataRevisionId];
+  return all(
+    `SELECT event.*, u.nickname AS reviewer_nickname, u.email AS reviewer_email
+     FROM ai_novel_metadata_review_events event
+     JOIN users u ON u.id = event.reviewer_id
+     WHERE event.novel_id = ? ${revisionWhere}
+     ORDER BY event.created_at DESC, event.id DESC`,
+    params,
+  ).map((event) => ({
+    id: Number(event.id),
+    novelId: Number(event.novel_id),
+    metadataRevisionId: Number(event.metadata_revision_id),
+    submissionRevision: Number(event.submission_revision || 1),
+    decision: event.decision,
+    note: event.note || "",
+    reviewerId: Number(event.reviewer_id),
+    reviewerNickname: event.reviewer_nickname || "",
+    reviewerEmail: event.reviewer_email || "",
+    createdAt: event.created_at || "",
+  }));
+}
+
+function recordMetadataReviewEvent({
+  novelId,
+  metadataRevisionId,
+  revision,
+  decision,
+  note,
+  reviewerId,
+}) {
+  run(
+    `INSERT INTO ai_novel_metadata_review_events
+       (novel_id, metadata_revision_id, submission_revision, decision, note, reviewer_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [novelId, metadataRevisionId, revision, decision, note || "", reviewerId],
+  );
+}
+
+function metadataMatches(row, metadata) {
+  return row.title === metadata.title
+    && row.pen_name === metadata.penName
+    && row.category === metadata.category
+    && row.cover_url === metadata.coverUrl
+    && row.description === metadata.description
+    && (row.serialization_status || "ongoing") === metadata.serializationStatus;
+}
+
+function savePublishedMetadataDraft({ novel, metadata }) {
+  const existing = activeMetadataRevision(novel.id);
+  if (existing?.status === "pending") {
+    if (!metadataMatches(existing, metadata)) {
+      throw conflict("metadata_review_in_progress");
+    }
+    return "";
+  }
+  if (metadataMatches(novel, metadata)) {
+    if (!existing) return "";
+    run("DELETE FROM ai_novel_metadata_revisions WHERE id = ?", [existing.id]);
+    return existing.cover_url !== novel.cover_url ? existing.cover_url : "";
+  }
+  if (existing) {
+    run(
+      `UPDATE ai_novel_metadata_revisions
+       SET title = ?, pen_name = ?, category = ?, cover_url = ?, description = ?,
+           serialization_status = ?, status = 'draft', review_note = '',
+           reviewed_by = NULL, reviewed_at = '', revision = revision + 1,
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        metadata.title,
+        metadata.penName,
+        metadata.category,
+        metadata.coverUrl,
+        metadata.description,
+        metadata.serializationStatus,
+        existing.id,
+      ],
+    );
+    return existing.cover_url !== metadata.coverUrl
+      && existing.cover_url !== novel.cover_url
+      ? existing.cover_url
+      : "";
+  }
+  run(
+    `INSERT INTO ai_novel_metadata_revisions
+       (novel_id, title, pen_name, category, cover_url, description,
+        serialization_status, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')`,
+    [
+      novel.id,
+      metadata.title,
+      metadata.penName,
+      metadata.category,
+      metadata.coverUrl,
+      metadata.description,
+      metadata.serializationStatus,
+    ],
+  );
+  return "";
+}
+
+function validateMetadataRevisionForSubmission(metadata, novel) {
+  requiredString(metadata.title, "title", 100);
+  requiredString(metadata.pen_name, "penName", 50);
+  requiredString(metadata.category, "category", 40);
+  requiredString(metadata.description, "description", 2000);
+  novelSerializationStatus(metadata.serialization_status);
+  const coverUrl = requiredString(metadata.cover_url, "coverUrl", 1000);
+  if (coverUrl !== novel.cover_url) {
+    requireOwnedNovelCover(coverUrl, novel.user_id);
+  }
 }
 
 function validateNovelForSubmission(

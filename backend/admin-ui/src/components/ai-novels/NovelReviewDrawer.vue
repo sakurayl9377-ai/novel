@@ -6,20 +6,24 @@ import { computed, ref, watch } from 'vue';
 import { ApiError } from '@/services/api';
 import {
   getReviewChapter,
+  getReviewMetadata,
   getReviewNovel,
   reviewChapter,
+  reviewMetadata,
   reviewNovel,
 } from '@/services/ai-novels';
 import type {
   AiChapterReviewDetail,
+  AiMetadataReviewDetail,
   AiNovelDetail,
+  AiNovelMetadataReviewEvent,
   AiNovelReviewEvent,
 } from '@/types/ai-novel';
 import { formatDateTime } from '@/utils/format';
 
 const props = defineProps<{
   modelValue: boolean;
-  target: { kind: 'novel' | 'chapter'; id: number } | null;
+  target: { kind: 'novel' | 'metadata' | 'chapter'; id: number } | null;
 }>();
 
 const emit = defineEmits<{
@@ -30,6 +34,7 @@ const emit = defineEmits<{
 const loading = ref(false);
 const deciding = ref(false);
 const novelDetail = ref<AiNovelDetail | null>(null);
+const metadataDetail = ref<AiMetadataReviewDetail | null>(null);
 const chapterDetail = ref<AiChapterReviewDetail | null>(null);
 const openChapter = ref<number | string>('');
 const rejectionOpen = ref(false);
@@ -43,19 +48,30 @@ const rejectionTemplates = [
 ];
 
 const isNovel = computed(() => props.target?.kind === 'novel');
+const isMetadata = computed(() => props.target?.kind === 'metadata');
 const title = computed(() => isNovel.value
   ? novelDetail.value?.item.title || '整书审核'
-  : chapterDetail.value?.item.title || '章节审核');
+  : isMetadata.value
+    ? metadataDetail.value?.item.title || '作品资料修改'
+    : chapterDetail.value?.item.title || '章节审核');
 const pending = computed(() => isNovel.value
   ? novelDetail.value?.item.status === 'pending'
-  : chapterDetail.value?.item.status === 'pending');
+  : isMetadata.value
+    ? metadataDetail.value?.item.status === 'pending'
+    : chapterDetail.value?.item.status === 'pending');
 const isChapterRevision = computed(() =>
   !isNovel.value && chapterDetail.value?.item.changeType === 'update',
 );
 const chapterChangeLabel = computed(() => isChapterRevision.value ? '修改已发布章节' : '新增连载章节');
-const approveLabel = computed(() => isChapterRevision.value ? '通过并更新' : '通过并发布');
-const reviews = computed<AiNovelReviewEvent[]>(() =>
-  isNovel.value ? novelDetail.value?.reviews || [] : chapterDetail.value?.reviews || [],
+const approveLabel = computed(() => isMetadata.value
+  ? '通过并更新资料'
+  : isChapterRevision.value ? '通过并更新' : '通过并发布');
+const reviews = computed<Array<AiNovelReviewEvent | AiNovelMetadataReviewEvent>>(() =>
+  isNovel.value
+    ? novelDetail.value?.reviews || []
+    : isMetadata.value
+      ? metadataDetail.value?.reviews || []
+      : chapterDetail.value?.reviews || [],
 );
 
 watch(
@@ -77,11 +93,14 @@ async function loadDetail(): Promise<void> {
   if (!props.target) return;
   loading.value = true;
   novelDetail.value = null;
+  metadataDetail.value = null;
   chapterDetail.value = null;
   try {
     if (props.target.kind === 'novel') {
       novelDetail.value = await getReviewNovel(props.target.id);
       openChapter.value = novelDetail.value.chapters[0]?.id || '';
+    } else if (props.target.kind === 'metadata') {
+      metadataDetail.value = await getReviewMetadata(props.target.id);
     } else {
       chapterDetail.value = await getReviewChapter(props.target.id);
     }
@@ -111,13 +130,17 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
   }
   const revision = isNovel.value
     ? novelDetail.value?.item.revision
-    : chapterDetail.value?.item.revision;
+    : isMetadata.value
+      ? metadataDetail.value?.item.revision
+      : chapterDetail.value?.item.revision;
   if (!revision) return;
 
   deciding.value = true;
   try {
     if (props.target.kind === 'novel') {
       await reviewNovel(props.target.id, decision, revision, rejectionNote.value.trim());
+    } else if (props.target.kind === 'metadata') {
+      await reviewMetadata(props.target.id, decision, revision, rejectionNote.value.trim());
     } else {
       await reviewChapter(props.target.id, decision, revision, rejectionNote.value.trim());
     }
@@ -125,7 +148,9 @@ async function decide(decision: 'approve' | 'reject'): Promise<void> {
     emit('reviewed');
     emit('update:modelValue', false);
     ElMessage.success(decision === 'approve'
-      ? (isChapterRevision.value ? '审核通过，线上章节已更新' : '审核通过，内容已发布')
+      ? (isMetadata.value
+        ? '审核通过，线上作品资料已更新'
+        : isChapterRevision.value ? '审核通过，线上章节已更新' : '审核通过，内容已发布')
       : '已退回创作者修改');
   } catch (error) {
     ElMessage.error(errorMessage(error));
@@ -164,7 +189,7 @@ function errorMessage(error: unknown): string {
         <div>
           <span class="eyebrow">REVIEW WORKBENCH</span>
           <h2>{{ title }}</h2>
-          <p>{{ isNovel ? '整书首次发布审核' : `《${chapterDetail?.item.novelTitle || ''}》${chapterChangeLabel}` }}</p>
+          <p>{{ isNovel ? '整书首次发布审核' : isMetadata ? `《${metadataDetail?.novel.title || ''}》的作品资料修改` : `《${chapterDetail?.item.novelTitle || ''}》${chapterChangeLabel}` }}</p>
         </div>
       </div>
     </template>
@@ -213,6 +238,45 @@ function errorMessage(error: unknown): string {
               <article v-if="openChapter === chapter.id" class="chapter-text">{{ chapter.content }}</article>
             </ElCollapseItem>
           </ElCollapse>
+        </section>
+      </template>
+
+      <template v-else-if="metadataDetail">
+        <section class="review-section metadata-comparison-section">
+          <header>
+            <div><span class="eyebrow">METADATA DIFF</span><h3>当前线上资料与待审修改稿</h3></div>
+            <ElTag type="warning" effect="plain">审核通过后统一替换线上资料</ElTag>
+          </header>
+          <div class="metadata-comparison">
+            <section class="metadata-version">
+              <span>当前线上资料</span>
+              <div class="metadata-cover-row">
+                <img v-if="metadataDetail.novel.coverUrl" :src="metadataDetail.novel.coverUrl" alt="当前线上封面">
+                <div v-else class="metadata-cover-missing">无封面</div>
+                <ElDescriptions :column="1" border>
+                  <ElDescriptionsItem label="作品名称">{{ metadataDetail.novel.title }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="作者笔名">{{ metadataDetail.novel.author }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="作品分类">{{ metadataDetail.novel.category }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="连载状态">{{ metadataDetail.novel.serializationStatus === 'completed' ? '已完结' : '连载中' }}</ElDescriptionsItem>
+                </ElDescriptions>
+              </div>
+              <article class="metadata-description">{{ metadataDetail.novel.description }}</article>
+            </section>
+            <section class="metadata-version">
+              <span>待审修改稿</span>
+              <div class="metadata-cover-row">
+                <img v-if="metadataDetail.item.coverUrl" :src="metadataDetail.item.coverUrl" alt="待审封面">
+                <div v-else class="metadata-cover-missing">无封面</div>
+                <ElDescriptions :column="1" border>
+                  <ElDescriptionsItem label="作品名称">{{ metadataDetail.item.title }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="作者笔名">{{ metadataDetail.item.penName }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="作品分类">{{ metadataDetail.item.category }}</ElDescriptionsItem>
+                  <ElDescriptionsItem label="连载状态">{{ metadataDetail.item.serializationStatus === 'completed' ? '已完结' : '连载中' }}</ElDescriptionsItem>
+                </ElDescriptions>
+              </div>
+              <article class="metadata-description">{{ metadataDetail.item.description }}</article>
+            </section>
+          </div>
         </section>
       </template>
 
@@ -274,14 +338,14 @@ function errorMessage(error: unknown): string {
     <template #footer>
       <div class="review-footer">
         <span v-if="pending">
-          {{ isChapterRevision ? '请对照线上版本确认修改内容。' : '请确认正文完整、章节边界正确、封面与简介合规。' }}
+          {{ isMetadata ? '请对照线上资料确认标题、简介、封面和连载状态修改。' : isChapterRevision ? '请对照线上版本确认修改内容。' : '请确认正文完整、章节边界正确、封面与简介合规。' }}
         </span>
         <span v-else>该内容已完成审核。</span>
         <ElButton @click="emit('update:modelValue', false)">关闭</ElButton>
         <ElButton v-if="pending" type="danger" plain :icon="CloseBold" @click="openRejection">退回修改</ElButton>
         <ElPopconfirm
           v-if="pending"
-          :title="isChapterRevision ? '确认通过并替换当前线上章节？' : '确认审核通过并立即发布？'"
+          :title="isMetadata ? '确认通过并统一更新当前线上作品资料？' : isChapterRevision ? '确认通过并替换当前线上章节？' : '确认审核通过并立即发布？'"
           width="220"
           :confirm-button-text="approveLabel"
           cancel-button-text="取消"
@@ -489,6 +553,64 @@ function errorMessage(error: unknown): string {
   grid-template-columns: 1fr 1fr;
 }
 
+.metadata-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.metadata-version {
+  min-width: 0;
+  padding: 16px 18px 20px;
+}
+
+.metadata-version + .metadata-version {
+  border-left: 1px solid var(--line);
+}
+
+.metadata-version > span {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.metadata-cover-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.metadata-cover-row > img,
+.metadata-cover-missing {
+  width: 88px;
+  aspect-ratio: 3 / 4;
+  border-radius: 8px;
+}
+
+.metadata-cover-row > img {
+  object-fit: cover;
+}
+
+.metadata-cover-missing {
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line);
+  color: var(--ink-500);
+  background: var(--surface-muted);
+  font-size: 11px;
+}
+
+.metadata-description {
+  min-height: 92px;
+  margin-top: 14px;
+  color: #343139;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .chapter-comparison > section {
   min-width: 0;
 }
@@ -568,7 +690,16 @@ function errorMessage(error: unknown): string {
     grid-template-columns: 1fr;
   }
 
+  .metadata-comparison {
+    grid-template-columns: 1fr;
+  }
+
   .chapter-comparison > section + section {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .metadata-version + .metadata-version {
     border-top: 1px solid var(--line);
     border-left: 0;
   }

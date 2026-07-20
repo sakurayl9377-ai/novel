@@ -120,10 +120,27 @@ test("AI novel migration preserves legacy submissions and enables drafts", () =>
       one(
         `SELECT 1 AS present
          FROM sqlite_master
+         WHERE type = 'table' AND name = 'ai_novel_metadata_revisions'`,
+      ),
+      "published work metadata revisions must be available after migration",
+    );
+    assert.ok(
+      one(
+        `SELECT 1 AS present
+         FROM sqlite_master
          WHERE type = 'trigger'
            AND name = 'trg_active_upload_ai_novels_cover_url_retirement'`,
       ),
       "managed upload reference trigger must be rebuilt after table migration",
+    );
+    assert.ok(
+      one(
+        `SELECT 1 AS present
+         FROM sqlite_master
+         WHERE type = 'trigger'
+           AND name = 'trg_active_upload_ai_novel_metadata_revisions_cover_url_retirement'`,
+      ),
+      "metadata revision cover uploads must remain protected while awaiting review",
     );
     assert.ok(
       one(

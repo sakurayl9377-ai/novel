@@ -245,7 +245,9 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       },
       writer.token,
     );
-    assert.equal(revisionDraft.item.serializationStatus, "completed");
+    assert.equal(revisionDraft.item.serializationStatus, "ongoing");
+    assert.equal(revisionDraft.metadataRevision?.status, "draft");
+    assert.equal(revisionDraft.metadataRevision?.serializationStatus, "completed");
     const revisionProposal = revisionDraft.chapters.find(
       (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
     );
@@ -263,6 +265,7 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       (chapter) => chapter.replacesChapterId === secondPublishedChapter.id,
     );
     assert.equal(pendingRevision?.status, "pending");
+    assert.equal(revisionSubmitted.metadataRevision?.status, "pending");
 
     const publicDuringRevision = await jsonRequest(
       app,
@@ -370,6 +373,19 @@ test("AI novel V2 supports upload, draft, review, revision and resubmission", as
       `/ai-novels/${draft.item.numericId}/chapters/${secondPublishedChapter.id}`,
     );
     assert.match(publicAfterRevisionApproval.item.content, /航行日志/);
+    const publicBeforeMetadataApproval = await jsonRequest(app, "GET", "/ai-novels");
+    assert.equal(publicBeforeMetadataApproval.items[0].serializationStatus, "ongoing");
+    const metadataReview = await jsonRequest(
+      app,
+      "POST",
+      `/admin/ai-novel-metadata-revisions/${revisedAgainSubmitted.metadataRevision.id}/review`,
+      {
+        decision: "approve",
+        expectedRevision: revisedAgainSubmitted.metadataRevision.revision,
+      },
+      admin.token,
+    );
+    assert.equal(metadataReview.item.status, "approved");
     const publicAfterCompletion = await jsonRequest(app, "GET", "/ai-novels");
     assert.equal(publicAfterCompletion.items[0].serializationStatus, "completed");
     assert.equal(publicAfterCompletion.items[0].status, "已完结");

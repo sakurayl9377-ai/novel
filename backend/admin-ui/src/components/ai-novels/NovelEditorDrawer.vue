@@ -87,7 +87,9 @@ const form = reactive({
 const status = computed(() => detail.value?.item.status || 'draft');
 const isPending = computed(() => status.value === 'pending');
 const isPublished = computed(() => status.value === 'published');
-const metadataLocked = computed(() => isPending.value || isPublished.value);
+const metadataRevision = computed(() => detail.value?.metadataRevision || null);
+const metadataPending = computed(() => metadataRevision.value?.status === 'pending');
+const metadataLocked = computed(() => isPending.value || metadataPending.value);
 const visibleChapters = computed(() => isPending.value ? previewChapters.value : chapters.value);
 const activeChapter = computed(() =>
   visibleChapters.value.find((chapter) => chapter.clientId === selectedChapterId.value)
@@ -114,6 +116,33 @@ const rejectedChapterSummary = computed(() =>
     .join('；'),
 );
 const reviewableChapterCount = computed(() => chapters.value.filter(isChapterReviewable).length);
+const metadataHasChanges = computed(() => {
+  if (!isPublished.value || !detail.value) return false;
+  const online = detail.value.item;
+  return form.title !== online.title
+    || form.penName !== online.author
+    || form.category !== online.category
+    || form.coverUrl !== online.coverUrl
+    || form.description !== online.description
+    || form.serializationStatus !== online.serializationStatus;
+});
+const metadataChangeLabel = computed(() => {
+  const revision = metadataRevision.value;
+  if (!revision) return '';
+  return {
+    draft: '资料修改草稿',
+    pending: '资料审核中',
+    rejected: '资料修改被退回',
+    approved: '资料修改已生效',
+  }[revision.status] || '';
+});
+const submissionLabel = computed(() => {
+  if (!isPublished.value) return status.value === 'rejected' ? '修改并重新提交' : '提交审核';
+  const changes: string[] = [];
+  if (metadataHasChanges.value) changes.push('资料修改');
+  if (reviewableChapterCount.value) changes.push(`${reviewableChapterCount.value} 章变更`);
+  return changes.length ? `提交审核：${changes.join('、')}` : '提交审核';
+});
 const dirty = computed(() => Boolean(detail.value) && serializeDraft() !== savedSnapshot.value);
 
 watch(
@@ -166,13 +195,14 @@ async function loadDetail(): Promise<void> {
 
 function applyDetail(data: AiNovelDetail): void {
   detail.value = data;
+  const proposedMetadata = data.item.status === 'published' ? data.metadataRevision : null;
   Object.assign(form, {
-    title: data.item.title,
-    penName: data.item.author,
-    category: data.item.category,
-    coverUrl: data.item.coverUrl,
-    description: data.item.description,
-    serializationStatus: data.item.serializationStatus || 'ongoing',
+    title: proposedMetadata?.title || data.item.title,
+    penName: proposedMetadata?.penName || data.item.author,
+    category: proposedMetadata?.category || data.item.category,
+    coverUrl: proposedMetadata?.coverUrl || data.item.coverUrl,
+    description: proposedMetadata?.description || data.item.description,
+    serializationStatus: proposedMetadata?.serializationStatus || data.item.serializationStatus || 'ongoing',
   });
   chapters.value = data.item.status === 'published'
     ? mergePublishedChapters(data.chapters)
@@ -238,7 +268,9 @@ async function submitForReview(): Promise<void> {
     const submitted = await submitNovel(props.novelId, saved.item.revision);
     applyDetail(submitted);
     emit('saved');
-    ElMessage.success(isPublished.value ? '章节变更已提交审核' : '作品已提交审核');
+    ElMessage.success(isPublished.value
+      ? '资料或章节变更已提交审核，线上版本将保持不变直至通过。'
+      : '作品已提交审核');
     emit('update:modelValue', false);
   } catch (error) {
     await handleMutationError(error);
@@ -400,12 +432,34 @@ function validateEditableChapters(requireOne: boolean): string {
 }
 
 function validateSubmission(): EditorIssue | null {
-  if (pendingSerialCount.value > 0) {
+  const metadataIssue = validateMetadataSubmission();
+  if (metadataIssue) return metadataIssue;
+  if (!isPublished.value) {
+    const chapterIssue = validateEditableChapters(true);
+    return chapterIssue ? { message: chapterIssue, section: 'chapters' } : null;
+  }
+  if (!metadataHasChanges.value && reviewableChapterCount.value === 0) {
     return {
-      message: '已有连载章节正在审核，请等待本批次完成后再提交',
+      message: metadataPending.value
+        ? '作品资料正在审核，请等待审核结果或继续准备新的章节草稿'
+        : '请先修改作品资料、已发布章节，或添加新的连载章节',
+      section: 'footer',
+    };
+  }
+  if (pendingSerialCount.value > 0 && reviewableChapterCount.value > 0) {
+    return {
+      message: '已有连载章节正在审核，请等待本批次完成后再提交新的章节变更',
       section: 'chapters',
     };
   }
+  const chapterIssue = reviewableChapterCount.value > 0
+    ? validateEditableChapters(false)
+    : '';
+  return chapterIssue ? { message: chapterIssue, section: 'chapters' } : null;
+}
+
+function validateMetadataSubmission(): EditorIssue | null {
+  if (isPublished.value && !metadataHasChanges.value) return null;
   if (!form.title.trim() || form.title.trim() === '未命名作品') {
     return { message: '请填写明确的作品名称', section: 'metadata', field: 'title' };
   }
@@ -421,8 +475,7 @@ function validateSubmission(): EditorIssue | null {
   if (!form.description.trim()) {
     return { message: '请填写作品简介', section: 'metadata', field: 'description' };
   }
-  const chapterIssue = validateEditableChapters(true);
-  return chapterIssue ? { message: chapterIssue, section: 'chapters' } : null;
+  return null;
 }
 
 async function presentEditorIssue(issue: EditorIssue): Promise<void> {
@@ -639,7 +692,7 @@ function asUploadError(error: unknown): UploadAjaxError {
       <div class="drawer-heading">
         <div>
           <span class="eyebrow">CREATOR WORKSPACE</span>
-          <h2>{{ isPublished ? '管理连载章节' : '编辑 AI 小说' }}</h2>
+          <h2>{{ isPublished ? '管理已发布作品' : '编辑 AI 小说' }}</h2>
         </div>
         <ElTag v-if="detail" :type="status === 'rejected' ? 'danger' : status === 'published' ? 'success' : status === 'pending' ? 'warning' : 'info'">
           {{ statusLabel(status) }} · R{{ detail.item.revision }}
@@ -674,6 +727,22 @@ function asUploadError(error: unknown): UploadAjaxError {
           :description="rejectedChapterSummary"
         />
         <ElAlert
+          v-if="isPublished && metadataRevision?.status === 'rejected'"
+          type="error"
+          :closable="false"
+          show-icon
+          title="作品资料修改被退回"
+          :description="metadataRevision.reviewNote || '请根据审核意见修改资料后重新提交。'"
+        />
+        <ElAlert
+          v-if="isPublished && metadataPending"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="作品资料正在审核"
+          description="标题、简介、封面和连载状态会继续展示当前线上版本，审核通过后才替换。"
+        />
+        <ElAlert
           v-if="isPublished && pendingSerialCount > 0"
           type="warning"
           :closable="false"
@@ -682,17 +751,20 @@ function asUploadError(error: unknown): UploadAjaxError {
           description="你可以继续准备草稿，但需要等待当前批次审核完成后再提交。"
         />
         <ElAlert
-          v-if="isPublished && !rejectedChapterSummary && pendingSerialCount === 0"
+          v-if="isPublished && !rejectedChapterSummary && pendingSerialCount === 0 && !metadataPending"
           type="success"
            :closable="false"
            show-icon
            :title="`作品已发布 ${publishedChapterCount} 章`"
-           description="已发布章节会保留线上版本；章节修改和新增内容需分别提交审核，通过后才会在 App 生效。"
+           description="线上版本保持可读；作品资料、章节修改和新增内容均需审核通过后才会在 App 生效。"
         />
 
         <div ref="metadataSectionRef">
           <ElCollapse v-model="openSections" class="editor-collapse">
             <ElCollapseItem name="metadata" title="作品资料与封面">
+            <p v-if="isPublished && metadataChangeLabel" class="metadata-change-state">
+              {{ metadataChangeLabel }}。线上资料会在审核通过后统一更新。
+            </p>
             <div class="metadata-grid">
               <div class="cover-column">
                 <ElUpload
@@ -731,7 +803,7 @@ function asUploadError(error: unknown): UploadAjaxError {
                  <ElFormItem label="连载状态">
                    <ElSegmented
                      v-model="form.serializationStatus"
-                     :disabled="isPending"
+                  :disabled="metadataLocked"
                      :options="[
                        { label: '连载中', value: 'ongoing' },
                        { label: '已完结', value: 'completed' },
@@ -955,7 +1027,7 @@ function asUploadError(error: unknown): UploadAjaxError {
           :loading="submitting"
           :disabled="saving || submitting"
           @click="submitForReview"
-         >{{ isPublished ? `提交章节变更${reviewableChapterCount ? ` (${reviewableChapterCount})` : ''}` : status === 'rejected' ? '修改并重新提交' : '提交审核' }}</ElButton>
+         >{{ submissionLabel }}</ElButton>
       </div>
     </template>
   </ElDrawer>
@@ -1006,6 +1078,13 @@ function asUploadError(error: unknown): UploadAjaxError {
   grid-template-columns: 180px minmax(0, 1fr);
   gap: 26px;
   padding: 6px 2px 18px;
+}
+
+.metadata-change-state {
+  margin: 8px 2px 14px;
+  color: var(--ink-500);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .cover-frame {

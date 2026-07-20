@@ -26,6 +26,7 @@ const managedUploadReferenceColumns = [
   ["home_placements", "custom_image_url"],
   ["campaigns", "banner_url"],
   ["ai_novels", "cover_url"],
+  ["ai_novel_metadata_revisions", "cover_url"],
   ["shop_items", "asset_value"],
   ["shop_items", "preview_url"],
   ["app_settings", "value"],
@@ -57,6 +58,8 @@ export function referencedUploadUrls() {
         AND COALESCE(json_extract(campaign_json, '$.banner_url'), '') <> ''
      UNION ALL
      SELECT cover_url AS url FROM ai_novels WHERE cover_url <> ''
+     UNION ALL
+     SELECT cover_url AS url FROM ai_novel_metadata_revisions WHERE cover_url <> ''
      UNION ALL
      SELECT asset_value AS url FROM shop_items WHERE asset_value <> ''
      UNION ALL

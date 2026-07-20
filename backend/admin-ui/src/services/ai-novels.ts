@@ -1,8 +1,10 @@
 import { apiFormRequest, apiRequest, queryString } from '@/services/api';
 import type {
   AiChapterReviewDetail,
+  AiMetadataReviewDetail,
   AiNovelChapter,
   AiNovelDetail,
+  AiNovelMetadataRevision,
   AiNovelReviewQueue,
   AiNovelReviewTarget,
   AiNovelSummary,
@@ -65,6 +67,10 @@ export function getReviewChapter(id: number): Promise<AiChapterReviewDetail> {
   return apiRequest(`/admin/ai-novel-chapters/${id}`);
 }
 
+export function getReviewMetadata(id: number): Promise<AiMetadataReviewDetail> {
+  return apiRequest(`/admin/ai-novel-metadata-revisions/${id}`);
+}
+
 export function saveNovelDraft(id: number, payload: SaveNovelDraftPayload): Promise<AiNovelDetail> {
   return apiRequest(`/creator/ai-novels/${id}/draft`, {
     method: 'PUT',
@@ -102,6 +108,18 @@ export function reviewChapter(
   reviewNote = '',
 ): Promise<{ item: AiNovelChapter }> {
   return apiRequest(`/admin/ai-novel-chapters/${id}/review`, {
+    method: 'POST',
+    body: { decision, expectedRevision, reviewNote },
+  });
+}
+
+export function reviewMetadata(
+  id: number,
+  decision: 'approve' | 'reject',
+  expectedRevision: number,
+  reviewNote = '',
+): Promise<{ item: AiNovelMetadataRevision }> {
+  return apiRequest(`/admin/ai-novel-metadata-revisions/${id}/review`, {
     method: 'POST',
     body: { decision, expectedRevision, reviewNote },
   });
