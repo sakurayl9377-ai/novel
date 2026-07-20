@@ -23,6 +23,7 @@ import { adminRaceRoutes } from './routes-admin-race.js';
 import { adminShopRoutes } from './routes-admin-shop.js';
 import { adminSettingsAssetRoutes } from './routes-admin-settings-assets.js';
 import { aiNovelRoutes } from './routes-ai-novels.js';
+import { appReleaseUploadRoutes } from './routes-app-release-upload.js';
 import { authRoutes } from './routes-auth.js';
 import { contentRoutes } from './routes-content.js';
 import { gameRoutes } from './routes-game.js';
@@ -111,6 +112,7 @@ export async function buildServer() {
       api.register(speechRoutes);
       api.register(telemetryRoutes);
       api.register(aiNovelRoutes);
+      api.register(appReleaseUploadRoutes);
       api.register(adminRoutes);
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);

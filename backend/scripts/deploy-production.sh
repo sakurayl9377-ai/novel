@@ -75,19 +75,27 @@ previous_release=""
 helper_target="/usr/local/sbin/novel-mihomo-control"
 updater_target="/usr/local/libexec/mihomo-update-subscription"
 deploy_script_target="/usr/local/sbin/novel-backend-deploy"
+app_release_target="/usr/local/sbin/novel-app-release-deploy"
 helper_backup="$work_dir/novel-mihomo-control.previous"
 updater_backup="$work_dir/mihomo-update-subscription.previous"
 deploy_script_backup="$work_dir/novel-backend-deploy.previous"
+app_release_backup="$work_dir/novel-app-release-deploy.previous"
 sudoers_path="/etc/sudoers.d/${app_user}-novel-mihomo-control"
 sudoers_backup="$work_dir/mihomo-sudoers.previous"
+app_release_sudoers_path="/etc/sudoers.d/${app_user}-novel-app-release"
+app_release_sudoers_backup="$work_dir/app-release-sudoers.previous"
 sudoers_next="${sudoers_path}.next.$$"
 helper_next="$(dirname "$helper_target")/.novel-mihomo-control.next.$$"
 updater_next="$(dirname "$updater_target")/.mihomo-update-subscription.next.$$"
 deploy_script_next="$(dirname "$deploy_script_target")/.novel-backend-deploy.next.$$"
+app_release_next="$(dirname "$app_release_target")/.novel-app-release-deploy.next.$$"
 sudoers_restore="${sudoers_path}.restore.$$"
+app_release_sudoers_next="${app_release_sudoers_path}.next.$$"
+app_release_sudoers_restore="${app_release_sudoers_path}.restore.$$"
 helper_restore="$(dirname "$helper_target")/.novel-mihomo-control.restore.$$"
 updater_restore="$(dirname "$updater_target")/.mihomo-update-subscription.restore.$$"
 deploy_script_restore="$(dirname "$deploy_script_target")/.novel-backend-deploy.restore.$$"
+app_release_restore="$(dirname "$app_release_target")/.novel-app-release-deploy.restore.$$"
 switched=false
 tools_installed=false
 committed=false
@@ -102,10 +110,14 @@ cleanup() {
     "$helper_next" \
     "$updater_next" \
     "$deploy_script_next" \
+    "$app_release_next" \
     "$sudoers_restore" \
+    "$app_release_sudoers_next" \
+    "$app_release_sudoers_restore" \
     "$helper_restore" \
     "$updater_restore" \
-    "$deploy_script_restore"
+    "$deploy_script_restore" \
+    "$app_release_restore"
 }
 
 remove_retired_video_releases() {
@@ -173,6 +185,21 @@ restore_tools() {
   else
     rm -f "$deploy_script_target" || restore_status=1
   fi
+  if [[ -f "$app_release_backup" ]]; then
+    install -o root -g root -m 0755 "$app_release_backup" "$app_release_restore" \
+      && mv -Tf "$app_release_restore" "$app_release_target" \
+      || restore_status=1
+  else
+    rm -f "$app_release_target" || restore_status=1
+  fi
+  if [[ -f "$app_release_sudoers_backup" ]]; then
+    install -o root -g root -m 0440 "$app_release_sudoers_backup" "$app_release_sudoers_restore" \
+      && visudo -cf "$app_release_sudoers_restore" >/dev/null \
+      && mv -Tf "$app_release_sudoers_restore" "$app_release_sudoers_path" \
+      || restore_status=1
+  else
+    rm -f "$app_release_sudoers_path" || restore_status=1
+  fi
   return "$restore_status"
 }
 
@@ -238,6 +265,7 @@ PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$staged_dir"/scripts/
 PYTHONPYCACHEPREFIX="$python_cache" python3 "$staged_dir/scripts/test_mihomo_subscription_update.py"
 /bin/bash -n \
   "$staged_dir/scripts/deploy-production.sh" \
+  "$staged_dir/scripts/deploy-app-release.sh" \
   "$staged_dir/scripts/bootstrap-production-deploy.sh" \
   "$staged_dir/scripts/migrate-production-layout.sh" \
   "$staged_dir/scripts/audit-production.sh" \
@@ -271,24 +299,34 @@ chown -R "$app_user:$app_user" "$new_release"
 [[ -f "$new_release/scripts/mihomo-admin-control.py" ]] || fail "mihomo_helper_missing"
 [[ -f "$new_release/scripts/mihomo-subscription-update.py" ]] || fail "mihomo_updater_missing"
 [[ -f "$new_release/scripts/deploy-production.sh" ]] || fail "deploy_script_missing"
+[[ -f "$new_release/scripts/deploy-app-release.sh" ]] || fail "app_release_helper_missing"
 [[ -f "$new_release/scripts/sanitize-retired-video-database.js" ]] || fail "database_sanitizer_missing"
 [[ -f "$helper_target" ]] && cp -a "$helper_target" "$helper_backup"
 [[ -f "$updater_target" ]] && cp -a "$updater_target" "$updater_backup"
 [[ -f "$deploy_script_target" ]] && cp -a "$deploy_script_target" "$deploy_script_backup"
+[[ -f "$app_release_target" ]] && cp -a "$app_release_target" "$app_release_backup"
 [[ -f "$sudoers_path" ]] && cp -a "$sudoers_path" "$sudoers_backup"
+[[ -f "$app_release_sudoers_path" ]] && cp -a "$app_release_sudoers_path" "$app_release_sudoers_backup"
 tools_installed=true
 install -d -m 0755 -o root -g root "$(dirname "$updater_target")"
 install -o root -g root -m 0755 "$new_release/scripts/mihomo-admin-control.py" "$helper_next"
 install -o root -g root -m 0755 "$new_release/scripts/mihomo-subscription-update.py" "$updater_next"
 install -o root -g root -m 0755 "$new_release/scripts/deploy-production.sh" "$deploy_script_next"
+install -o root -g root -m 0755 "$new_release/scripts/deploy-app-release.sh" "$app_release_next"
 printf '%s ALL=(root) NOPASSWD: %s\n' "$app_user" "$helper_target" > "$sudoers_next"
 chown root:root "$sudoers_next"
 chmod 0440 "$sudoers_next"
 visudo -cf "$sudoers_next" >/dev/null
+printf '%s ALL=(root) NOPASSWD: %s\n' "$app_user" "$app_release_target" > "$app_release_sudoers_next"
+chown root:root "$app_release_sudoers_next"
+chmod 0440 "$app_release_sudoers_next"
+visudo -cf "$app_release_sudoers_next" >/dev/null
 mv -Tf "$helper_next" "$helper_target"
 mv -Tf "$updater_next" "$updater_target"
 mv -Tf "$deploy_script_next" "$deploy_script_target"
 mv -Tf "$sudoers_next" "$sudoers_path"
+mv -Tf "$app_release_next" "$app_release_target"
+mv -Tf "$app_release_sudoers_next" "$app_release_sudoers_path"
 
 rm -f "${app_link}.next"
 ln -s "$new_release" "${app_link}.next"
