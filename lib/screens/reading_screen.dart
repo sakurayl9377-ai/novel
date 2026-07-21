@@ -2249,8 +2249,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      isDismissible: false,
-      enableDrag: false,
+      isDismissible: true,
+      enableDrag: true,
       backgroundColor: isNight ? AppTheme.nightCard : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),

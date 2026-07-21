@@ -12,6 +12,57 @@ import '../services/ai_creation_service.dart';
 import '../services/novel_offline_cache_service.dart';
 import '../services/storage_service.dart';
 
+const Object _novelCacheStateUnset = Object();
+
+class NovelCacheDownloadState {
+  const NovelCacheDownloadState({
+    required this.range,
+    required this.running,
+    this.cancelRequested = false,
+    this.progress,
+    this.result,
+    this.error,
+  });
+
+  final NovelCacheBatchRange range;
+  final bool running;
+  final bool cancelRequested;
+  final NovelCacheBatchProgress? progress;
+  final NovelCacheBatchResult? result;
+  final Object? error;
+
+  NovelCacheDownloadState copyWith({
+    NovelCacheBatchRange? range,
+    bool? running,
+    bool? cancelRequested,
+    Object? progress = _novelCacheStateUnset,
+    Object? result = _novelCacheStateUnset,
+    Object? error = _novelCacheStateUnset,
+  }) {
+    return NovelCacheDownloadState(
+      range: range ?? this.range,
+      running: running ?? this.running,
+      cancelRequested: cancelRequested ?? this.cancelRequested,
+      progress: identical(progress, _novelCacheStateUnset)
+          ? this.progress
+          : progress as NovelCacheBatchProgress?,
+      result: identical(result, _novelCacheStateUnset)
+          ? this.result
+          : result as NovelCacheBatchResult?,
+      error: identical(error, _novelCacheStateUnset) ? this.error : error,
+    );
+  }
+}
+
+class _NovelCacheDownloadJob {
+  _NovelCacheDownloadJob(this.state, {required this.source});
+
+  NovelCacheDownloadState state;
+  final BookSource source;
+  bool cancelRequested = false;
+  late final Future<NovelCacheBatchResult?> future;
+}
+
 class BookSourceProvider extends ChangeNotifier {
   static const String _selectedSourceKey = 'selected_novel_source_id';
 
@@ -52,6 +103,7 @@ class BookSourceProvider extends ChangeNotifier {
   final Map<String, Future<void>> _chapterRefreshInflight = {};
   final Map<String, DateTime> _chapterLastRefreshAttempt = {};
   final Map<String, Set<String>> _cacheIdentitiesByNovelId = {};
+  final Map<String, _NovelCacheDownloadJob> _novelCacheDownloads = {};
   bool _isSearching = false;
   int _searchRequestId = 0;
 
@@ -348,14 +400,11 @@ class BookSourceProvider extends ChangeNotifier {
         if (AiCreationService.isAiNovel(novel)) {
           return _aiCreationService.fetchChapterContent(novel, chapter);
         }
-        final source = _sources.firstWhere(
-          (candidate) => candidate.id == novel.sourceId,
-          orElse: () => _sources.isNotEmpty
-              ? _sources.first
-              : novel.sourceId == BookSourceService.wenku8Source.id
-              ? BookSourceService.wenku8Source
-              : BookSourceService.bqg995Source,
-        );
+        final key = ContentIdentity.novel(novel).contentKey;
+        final download = _novelCacheDownloads[key];
+        final source = download?.state.running == true
+            ? download!.source
+            : _resolveBookSource(novel);
         return _sourceService.getChapterContent(chapter, source);
       },
     );
@@ -394,8 +443,106 @@ class BookSourceProvider extends ChangeNotifier {
     return _storage.removeDownloadedNovelChapter(novel, chapterId);
   }
 
-  Future<void> clearDownloadedChapters(Novel novel) {
-    return _storage.clearDownloadedNovelChapters(novel);
+  Future<void> clearDownloadedChapters(Novel novel) async {
+    final key = ContentIdentity.novel(novel).contentKey;
+    final job = _novelCacheDownloads[key];
+    if (job?.state.running == true) return;
+    await _storage.clearDownloadedNovelChapters(novel);
+    if (job != null && !job.state.running) {
+      _novelCacheDownloads.remove(key);
+      notifyListeners();
+    }
+  }
+
+  NovelCacheDownloadState? downloadStateFor(Novel novel) =>
+      _novelCacheDownloads[ContentIdentity.novel(novel).contentKey]?.state;
+
+  Future<NovelCacheBatchResult?> startNovelCacheDownload(
+    Novel novel,
+    List<Chapter> chapters, {
+    required NovelCacheBatchRange range,
+    int startIndex = 0,
+  }) {
+    if (novel.isLocal || chapters.isEmpty) {
+      return Future<NovelCacheBatchResult?>.value();
+    }
+
+    final key = ContentIdentity.novel(novel).contentKey;
+    final existing = _novelCacheDownloads[key];
+    if (existing != null && existing.state.running) return existing.future;
+
+    final job = _NovelCacheDownloadJob(
+      NovelCacheDownloadState(range: range, running: true),
+      source: _resolveBookSource(novel),
+    );
+    final completer = Completer<NovelCacheBatchResult?>();
+    job.future = completer.future;
+    _novelCacheDownloads[key] = job;
+    notifyListeners();
+    final stableChapters = List<Chapter>.unmodifiable(chapters);
+
+    unawaited(
+      _runNovelCacheDownload(
+        key: key,
+        job: job,
+        novel: novel,
+        chapters: stableChapters,
+        range: range,
+        startIndex: startIndex,
+      ).then(completer.complete),
+    );
+    return job.future;
+  }
+
+  bool cancelNovelCacheDownload(Novel novel) {
+    final key = ContentIdentity.novel(novel).contentKey;
+    final job = _novelCacheDownloads[key];
+    if (job == null || !job.state.running || job.cancelRequested) return false;
+    job.cancelRequested = true;
+    job.state = job.state.copyWith(cancelRequested: true);
+    notifyListeners();
+    return true;
+  }
+
+  Future<NovelCacheBatchResult?> _runNovelCacheDownload({
+    required String key,
+    required _NovelCacheDownloadJob job,
+    required Novel novel,
+    required List<Chapter> chapters,
+    required NovelCacheBatchRange range,
+    required int startIndex,
+  }) async {
+    NovelCacheBatchResult? result;
+    Object? error;
+    try {
+      final currentIndex = startIndex.clamp(0, chapters.length - 1).toInt();
+      await pinCurrentChapter(novel, chapters[currentIndex]);
+      result = await cacheChapters(
+        novel,
+        chapters,
+        range: range,
+        startIndex: currentIndex,
+        shouldCancel: () => job.cancelRequested,
+        onProgress: (progress) {
+          if (!identical(_novelCacheDownloads[key], job)) return;
+          job.state = job.state.copyWith(progress: progress);
+          notifyListeners();
+        },
+      );
+    } catch (caught) {
+      error = caught;
+    } finally {
+      if (identical(_novelCacheDownloads[key], job)) {
+        job.state = job.state.copyWith(
+          running: false,
+          cancelRequested: false,
+          result: result,
+          error: error,
+        );
+        notifyListeners();
+      }
+    }
+    return result;
   }
 
   Future<NovelCacheBatchResult> cacheChapters(
@@ -439,6 +586,17 @@ class BookSourceProvider extends ChangeNotifier {
           r'(site maintenance|network connection|failed to get chapter|\u7b14\u8da3\u9601\u6211\u7684\u4e66\u67b6\u8054\u7cfb\u6211\u4eec|\u7ad9\u70b9\u7ef4\u62a4|\u68c0\u67e5\u7f51\u7edc|\u83b7\u53d6\u7ae0\u8282\u5185\u5bb9\u5931\u8d25)',
           caseSensitive: false,
         ).hasMatch(normalized);
+  }
+
+  BookSource _resolveBookSource(Novel novel) {
+    return _sources.firstWhere(
+      (candidate) => candidate.id == novel.sourceId,
+      orElse: () => _sources.isNotEmpty
+          ? _sources.first
+          : novel.sourceId == BookSourceService.wenku8Source.id
+          ? BookSourceService.wenku8Source
+          : BookSourceService.bqg995Source,
+    );
   }
 
   void clearSearch() {

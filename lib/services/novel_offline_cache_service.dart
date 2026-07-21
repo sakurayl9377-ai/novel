@@ -128,6 +128,7 @@ class NovelOfflineCacheService {
   NovelOfflineCacheService(this._rootDirectory);
 
   static const int manifestSchemaVersion = 1;
+  static const int defaultMaxConcurrentDownloads = 4;
 
   final Directory _rootDirectory;
   final Map<String, Future<void>> _mutationQueues = <String, Future<void>>{};
@@ -258,18 +259,19 @@ class NovelOfflineCacheService {
   ) async {
     if (chapter.novelId != novel.id) return null;
     final identity = ContentIdentity.novel(novel);
-    final manifest = await _readManifest(identity);
-    final entry = manifest?.chapters[chapter.id];
-    if (entry == null || !_entryMatchesChapter(entry, chapter)) return null;
+    return _synchronized(identity.contentKey, () async {
+      final manifest = await _readManifest(identity);
+      final entry = manifest?.chapters[chapter.id];
+      if (entry == null || !_entryMatchesChapter(entry, chapter)) return null;
 
-    final file = File(
-      '${_persistentBookDirectory(identity).path}${Platform.pathSeparator}'
-      '${entry.fileName}',
-    );
-    final content = await _readNonEmptyText(file);
-    if (content == null) return null;
-    if (_hash(content) != entry.digest) return null;
-    return (content: content, downloaded: entry.downloaded);
+      final file = File(
+        '${_persistentBookDirectory(identity).path}${Platform.pathSeparator}'
+        '${entry.fileName}',
+      );
+      final content = await _readNonEmptyText(file);
+      if (content == null || _hash(content) != entry.digest) return null;
+      return (content: content, downloaded: entry.downloaded);
+    });
   }
 
   Future<void> savePersistentChapterList(Novel novel, List<Chapter> chapters) {
@@ -308,17 +310,19 @@ class NovelOfflineCacheService {
 
   Future<List<Chapter>> getPersistentChapterList(Novel novel) async {
     final identity = ContentIdentity.novel(novel);
-    final manifest = await _readManifest(identity);
-    if (manifest == null) return const <Chapter>[];
-    final entries = manifest.catalog.isNotEmpty
-        ? List<_NovelOfflineCatalogEntry>.of(manifest.catalog)
-        : manifest.chapters.values
-              .map(_NovelOfflineCatalogEntry.fromManifestEntry)
-              .toList(growable: false);
-    entries.sort((left, right) => left.index.compareTo(right.index));
-    return List<Chapter>.unmodifiable(
-      entries.map((entry) => entry.toChapter(novel.id)),
-    );
+    return _synchronized(identity.contentKey, () async {
+      final manifest = await _readManifest(identity);
+      if (manifest == null) return const <Chapter>[];
+      final entries = manifest.catalog.isNotEmpty
+          ? List<_NovelOfflineCatalogEntry>.of(manifest.catalog)
+          : manifest.chapters.values
+                .map(_NovelOfflineCatalogEntry.fromManifestEntry)
+                .toList(growable: false);
+      entries.sort((left, right) => left.index.compareTo(right.index));
+      return List<Chapter>.unmodifiable(
+        entries.map((entry) => entry.toChapter(novel.id)),
+      );
+    });
   }
 
   Future<void> saveDownloadedChapter(
@@ -405,42 +409,44 @@ class NovelOfflineCacheService {
 
   Future<NovelOfflineStatus> getStatus(Novel novel) async {
     final identity = ContentIdentity.novel(novel);
-    final manifest = await _readManifest(identity);
-    if (manifest == null) {
+    return _synchronized(identity.contentKey, () async {
+      final manifest = await _readManifest(identity);
+      if (manifest == null) {
+        return NovelOfflineStatus(
+          contentKey: identity.contentKey,
+          chapters: const <NovelOfflineChapterStatus>[],
+          pinnedChapterId: null,
+          totalBytes: 0,
+        );
+      }
+      final bookDirectory = _persistentBookDirectory(identity);
+      final chapters = <NovelOfflineChapterStatus>[];
+      var pinnedChapterIsValid = false;
+      for (final entry in manifest.chapters.values) {
+        if (!await _isPersistentEntryValid(bookDirectory, entry)) continue;
+        final pinned = manifest.pinnedChapterId == entry.chapterId;
+        if (pinned) pinnedChapterIsValid = true;
+        chapters.add(
+          NovelOfflineChapterStatus(
+            chapterId: entry.chapterId,
+            chapterIndex: entry.chapterIndex,
+            title: entry.title,
+            downloaded: entry.downloaded,
+            pinned: pinned,
+            byteSize: entry.byteSize,
+          ),
+        );
+      }
+      chapters.sort(
+        (left, right) => left.chapterIndex.compareTo(right.chapterIndex),
+      );
       return NovelOfflineStatus(
         contentKey: identity.contentKey,
-        chapters: const <NovelOfflineChapterStatus>[],
-        pinnedChapterId: null,
-        totalBytes: 0,
+        chapters: List<NovelOfflineChapterStatus>.unmodifiable(chapters),
+        pinnedChapterId: pinnedChapterIsValid ? manifest.pinnedChapterId : null,
+        totalBytes: chapters.fold<int>(0, (sum, entry) => sum + entry.byteSize),
       );
-    }
-    final bookDirectory = _persistentBookDirectory(identity);
-    final chapters = <NovelOfflineChapterStatus>[];
-    var pinnedChapterIsValid = false;
-    for (final entry in manifest.chapters.values) {
-      if (!await _isPersistentEntryValid(bookDirectory, entry)) continue;
-      final pinned = manifest.pinnedChapterId == entry.chapterId;
-      if (pinned) pinnedChapterIsValid = true;
-      chapters.add(
-        NovelOfflineChapterStatus(
-          chapterId: entry.chapterId,
-          chapterIndex: entry.chapterIndex,
-          title: entry.title,
-          downloaded: entry.downloaded,
-          pinned: pinned,
-          byteSize: entry.byteSize,
-        ),
-      );
-    }
-    chapters.sort(
-      (left, right) => left.chapterIndex.compareTo(right.chapterIndex),
-    );
-    return NovelOfflineStatus(
-      contentKey: identity.contentKey,
-      chapters: List<NovelOfflineChapterStatus>.unmodifiable(chapters),
-      pinnedChapterId: pinnedChapterIsValid ? manifest.pinnedChapterId : null,
-      totalBytes: chapters.fold<int>(0, (sum, entry) => sum + entry.byteSize),
-    );
+    });
   }
 
   Future<NovelCacheBatchResult> cacheBatch({
@@ -451,6 +457,7 @@ class NovelOfflineCacheService {
     NovelCacheProgressCallback? onProgress,
     NovelChapterContentValidator? isValidContent,
     NovelCacheCancellationCheck? shouldCancel,
+    int maxConcurrentDownloads = defaultMaxConcurrentDownloads,
   }) async {
     await savePersistentChapterList(novel, chapters);
     final indices =
@@ -459,50 +466,75 @@ class NovelOfflineCacheService {
             .toSet()
             .toList(growable: false)
           ..sort();
-    final failed = <String>[];
+    final failedByOffset = <int, String>{};
     var saved = 0;
     var skipped = 0;
+    var completed = 0;
+    var nextOffset = 0;
     var cancelled = false;
     final validator = isValidContent ?? (content) => content.trim().isNotEmpty;
-    for (var offset = 0; offset < indices.length; offset++) {
-      if (shouldCancel?.call() ?? false) {
-        cancelled = true;
-        break;
-      }
-      final chapter = chapters[indices[offset]];
-      var succeeded = false;
-      var chapterSkipped = false;
-      try {
-        final persistent = await _getPersistentChapterSnapshot(novel, chapter);
-        if (persistent != null && validator(persistent.content)) {
-          if (!persistent.downloaded) {
-            await saveDownloadedChapter(novel, chapter, persistent.content);
-          }
-          saved += 1;
-          skipped += 1;
-          succeeded = true;
-          chapterSkipped = true;
-        } else {
-          final content = await loadContent(chapter);
-          if (validator(content)) {
-            await saveDownloadedChapter(novel, chapter, content);
-            saved += 1;
-            succeeded = true;
-          }
+    final concurrency = maxConcurrentDownloads.clamp(1, 8).toInt();
+
+    Future<void> worker() async {
+      while (true) {
+        if (nextOffset >= indices.length) return;
+        if (shouldCancel?.call() ?? false) {
+          cancelled = true;
+          return;
         }
-      } catch (_) {
-        // The caller receives a per-chapter failure list and may retry later.
+        final offset = nextOffset;
+        nextOffset += 1;
+        final chapter = chapters[indices[offset]];
+        var succeeded = false;
+        var chapterSkipped = false;
+        try {
+          final persistent = await _getPersistentChapterSnapshot(
+            novel,
+            chapter,
+          );
+          if (persistent != null && validator(persistent.content)) {
+            if (!persistent.downloaded) {
+              await saveDownloadedChapter(novel, chapter, persistent.content);
+            }
+            saved += 1;
+            skipped += 1;
+            succeeded = true;
+            chapterSkipped = true;
+          } else {
+            final content = await loadContent(chapter);
+            if (validator(content)) {
+              await saveDownloadedChapter(novel, chapter, content);
+              saved += 1;
+              succeeded = true;
+            }
+          }
+        } catch (_) {
+          // The caller receives a per-chapter failure list and may retry later.
+        }
+        if (!succeeded) failedByOffset[offset] = chapter.id;
+        completed += 1;
+        onProgress?.call(
+          NovelCacheBatchProgress(
+            completed: completed,
+            total: indices.length,
+            chapter: chapter,
+            succeeded: succeeded,
+            skipped: chapterSkipped,
+          ),
+        );
       }
-      if (!succeeded) failed.add(chapter.id);
-      onProgress?.call(
-        NovelCacheBatchProgress(
-          completed: offset + 1,
-          total: indices.length,
-          chapter: chapter,
-          succeeded: succeeded,
-          skipped: chapterSkipped,
-        ),
-      );
+    }
+
+    final workerCount = concurrency < indices.length
+        ? concurrency
+        : indices.length;
+    await Future.wait(
+      List<Future<void>>.generate(workerCount, (_) => worker()),
+    );
+    final failed = <String>[];
+    for (var offset = 0; offset < indices.length; offset++) {
+      final chapterId = failedByOffset[offset];
+      if (chapterId != null) failed.add(chapterId);
     }
     return NovelCacheBatchResult(
       requested: indices.length,

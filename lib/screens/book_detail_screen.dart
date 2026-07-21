@@ -735,8 +735,8 @@ class _BookDetailScreenState extends State<BookDetailScreen>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      isDismissible: false,
-      enableDrag: false,
+      isDismissible: true,
+      enableDrag: true,
       showDragHandle: false,
       builder: (_) => NovelCacheSheet(
         novel: _novel,

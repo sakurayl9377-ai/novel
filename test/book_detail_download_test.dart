@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/chapter.dart';
@@ -141,21 +143,142 @@ void main() {
     expect(find.text('下载完成：1 章'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'full-book download survives closing and restores progress when reopened',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final fixture = _bookFixture(chapterCount: 3);
+      final provider = _ControlledDownloadBookSourceProvider(
+        fixture.novel,
+        fixture.chapters,
+      );
+      addTearDown(() async {
+        if (provider.cacheStarted.isCompleted &&
+            !provider.releaseCache.isCompleted) {
+          provider.releaseCache.complete();
+          await provider.cacheFinished.future;
+          for (var attempt = 0; attempt < 20; attempt++) {
+            if (provider.downloadStateFor(fixture.novel)?.running != true) {
+              break;
+            }
+            await Future<void>.delayed(Duration.zero);
+          }
+        }
+        provider.dispose();
+      });
+
+      await _pumpBookDetails(
+        tester,
+        fixture: fixture,
+        sourceProvider: provider,
+      );
+
+      await tester.tap(find.text('下载整书'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('下载全本'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('开始下载'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(provider.cacheStarted.isCompleted, isTrue);
+      expect(provider.cacheCalls, 1);
+      expect(provider.downloadStateFor(fixture.novel)?.running, isTrue);
+      expect(find.textContaining('正在下载 1/3'), findsOneWidget);
+      expect(find.byTooltip('关闭').hitTestable(), findsOneWidget);
+
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(NovelCacheSheet), findsNothing);
+      expect(provider.downloadStateFor(fixture.novel)?.running, isTrue);
+      expect(provider.lastCancellationCheck?.call(), isFalse);
+      expect(find.text('下载整书').hitTestable(), findsOneWidget);
+
+      await tester.tap(find.text('下载整书').hitTestable());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(NovelCacheSheet), findsOneWidget);
+      expect(find.textContaining('正在下载 1/3'), findsOneWidget);
+      expect(find.text('停止下载'), findsOneWidget);
+      expect(provider.cacheCalls, 1);
+
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      provider.releaseCache.complete();
+      await tester.pump();
+      await tester.pump();
+
+      final completed = provider.downloadStateFor(fixture.novel);
+      expect(provider.cacheFinished.isCompleted, isTrue);
+      expect(completed?.running, isFalse);
+      expect(completed?.result?.complete, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test('provider reuses an in-flight download for the same novel', () async {
+    final fixture = _bookFixture(chapterCount: 3);
+    final provider = _ControlledDownloadBookSourceProvider(
+      fixture.novel,
+      fixture.chapters,
+    );
+    addTearDown(provider.dispose);
+
+    final first = provider.startNovelCacheDownload(
+      fixture.novel,
+      fixture.chapters,
+      range: NovelCacheBatchRange.full,
+    );
+    final second = provider.startNovelCacheDownload(
+      fixture.novel,
+      fixture.chapters,
+      range: NovelCacheBatchRange.full,
+    );
+
+    await provider.cacheStarted.future;
+    expect(provider.pinCalls, 1);
+    expect(provider.cacheCalls, 1);
+    expect(provider.downloadStateFor(fixture.novel)?.running, isTrue);
+
+    provider.releaseCache.complete();
+    final results = await Future.wait([first, second]);
+
+    expect(results, hasLength(2));
+    expect(results.every((result) => result?.complete == true), isTrue);
+    expect(provider.pinCalls, 1);
+    expect(provider.cacheCalls, 1);
+    expect(provider.downloadStateFor(fixture.novel)?.running, isFalse);
+  });
 }
 
 Future<void> _pumpBookDetails(
   WidgetTester tester, {
   double textScale = 1,
+  ({Novel novel, List<Chapter> chapters})? fixture,
+  BookSourceProvider? sourceProvider,
 }) async {
-  final fixture = _bookFixture();
-  final sourceProvider = _DetailBookSourceProvider(
-    fixture.novel,
-    fixture.chapters,
-  );
+  final resolvedFixture = fixture ?? _bookFixture();
+  final resolvedSourceProvider =
+      sourceProvider ??
+      _DetailBookSourceProvider(
+        resolvedFixture.novel,
+        resolvedFixture.chapters,
+      );
   final bookshelfProvider = BookshelfProvider();
   final readingProvider = _DetailReadingProvider();
   final authProvider = InteractionAuthProvider();
-  addTearDown(sourceProvider.dispose);
+  if (sourceProvider == null) addTearDown(resolvedSourceProvider.dispose);
   addTearDown(bookshelfProvider.dispose);
   addTearDown(readingProvider.dispose);
   addTearDown(authProvider.dispose);
@@ -163,7 +286,9 @@ Future<void> _pumpBookDetails(
   await tester.pumpWidget(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider<BookSourceProvider>.value(value: sourceProvider),
+        ChangeNotifierProvider<BookSourceProvider>.value(
+          value: resolvedSourceProvider,
+        ),
         ChangeNotifierProvider<BookshelfProvider>.value(
           value: bookshelfProvider,
         ),
@@ -179,7 +304,7 @@ Future<void> _pumpBookDetails(
           ).copyWith(textScaler: TextScaler.linear(textScale)),
           child: child!,
         ),
-        home: BookDetailScreen(novel: fixture.novel),
+        home: BookDetailScreen(novel: resolvedFixture.novel),
       ),
     ),
   );
@@ -187,7 +312,7 @@ Future<void> _pumpBookDetails(
   await tester.pump(const Duration(milliseconds: 50));
 }
 
-({Novel novel, List<Chapter> chapters}) _bookFixture() {
+({Novel novel, List<Chapter> chapters}) _bookFixture({int chapterCount = 1}) {
   final novel = Novel(
     id: 'download-entry-book',
     title: 'Download entry',
@@ -196,15 +321,17 @@ Future<void> _pumpBookDetails(
   );
   return (
     novel: novel,
-    chapters: <Chapter>[
-      Chapter(
-        id: 'chapter-1',
+    chapters: List<Chapter>.generate(
+      chapterCount,
+      (index) => Chapter(
+        id: 'chapter-${index + 1}',
         novelId: novel.id,
-        title: 'Chapter 1',
-        index: 0,
-        url: 'https://example.com/book/1/1',
+        title: 'Chapter ${index + 1}',
+        index: index,
+        url: 'https://example.com/book/1/${index + 1}',
       ),
-    ],
+      growable: false,
+    ),
   );
 }
 
@@ -256,6 +383,52 @@ class _DetailBookSourceProvider extends BookSourceProvider {
       saved: requested,
       failedChapterIds: const <String>[],
     );
+  }
+}
+
+class _ControlledDownloadBookSourceProvider extends _DetailBookSourceProvider {
+  _ControlledDownloadBookSourceProvider(super.novel, super.chapters);
+
+  final Completer<void> cacheStarted = Completer<void>();
+  final Completer<void> releaseCache = Completer<void>();
+  final Completer<void> cacheFinished = Completer<void>();
+  NovelCacheCancellationCheck? lastCancellationCheck;
+
+  @override
+  Future<NovelCacheBatchResult> cacheChapters(
+    Novel novel,
+    List<Chapter> chapters, {
+    required NovelCacheBatchRange range,
+    int startIndex = 0,
+    NovelCacheProgressCallback? onProgress,
+    NovelCacheCancellationCheck? shouldCancel,
+  }) async {
+    cacheCalls += 1;
+    lastRange = range;
+    lastCancellationCheck = shouldCancel;
+    final requested = range
+        .chapterIndices(chapterCount: chapters.length, startIndex: startIndex)
+        .length;
+    onProgress?.call(
+      NovelCacheBatchProgress(
+        completed: 1,
+        total: requested,
+        chapter: chapters.first,
+        succeeded: true,
+      ),
+    );
+    if (!cacheStarted.isCompleted) cacheStarted.complete();
+
+    await releaseCache.future;
+    final cancelled = shouldCancel?.call() ?? false;
+    final result = NovelCacheBatchResult(
+      requested: requested,
+      saved: cancelled ? 1 : requested,
+      failedChapterIds: const <String>[],
+      cancelled: cancelled,
+    );
+    if (!cacheFinished.isCompleted) cacheFinished.complete();
+    return result;
   }
 }
 

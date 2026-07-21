@@ -35,18 +35,52 @@ class NovelCacheSheet extends StatefulWidget {
 class _NovelCacheSheetState extends State<NovelCacheSheet> {
   late NovelCacheBatchRange _range;
   NovelOfflineStatus? _status;
-  NovelCacheBatchProgress? _progress;
-  NovelCacheBatchResult? _result;
   bool _loadingStatus = true;
-  bool _running = false;
-  bool _cancelRequested = false;
-  String? _error;
+  bool _wasRunning = false;
+  String? _statusError;
 
   @override
   void initState() {
     super.initState();
-    _range = widget.initialRange;
+    final download = widget.provider.downloadStateFor(widget.novel);
+    _range = download?.range ?? widget.initialRange;
+    _wasRunning = download?.running ?? false;
+    widget.provider.addListener(_handleProviderChanged);
     unawaited(_refreshStatus());
+  }
+
+  @override
+  void didUpdateWidget(covariant NovelCacheSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.provider == widget.provider &&
+        oldWidget.novel == widget.novel) {
+      return;
+    }
+    oldWidget.provider.removeListener(_handleProviderChanged);
+    widget.provider.addListener(_handleProviderChanged);
+    final download = widget.provider.downloadStateFor(widget.novel);
+    _range = download?.range ?? widget.initialRange;
+    _wasRunning = download?.running ?? false;
+    _status = null;
+    _loadingStatus = true;
+    _statusError = null;
+    unawaited(_refreshStatus());
+  }
+
+  @override
+  void dispose() {
+    widget.provider.removeListener(_handleProviderChanged);
+    super.dispose();
+  }
+
+  void _handleProviderChanged() {
+    if (!mounted) return;
+    final running =
+        widget.provider.downloadStateFor(widget.novel)?.running ?? false;
+    final finished = _wasRunning && !running;
+    _wasRunning = running;
+    setState(() {});
+    if (finished) unawaited(_refreshStatus());
   }
 
   Future<void> _refreshStatus() async {
@@ -56,18 +90,24 @@ class _NovelCacheSheetState extends State<NovelCacheSheet> {
       setState(() {
         _status = status;
         _loadingStatus = false;
+        _statusError = null;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _loadingStatus = false;
-        _error = '无法读取本地下载状态';
+        _statusError = '无法读取本地下载状态';
       });
     }
   }
 
   Future<void> _start({bool retry = false}) async {
-    if (_running || widget.chapters.isEmpty || widget.novel.isLocal) return;
+    final download = widget.provider.downloadStateFor(widget.novel);
+    if (download?.running == true ||
+        widget.chapters.isEmpty ||
+        widget.novel.isLocal) {
+      return;
+    }
     if (!retry && _range == NovelCacheBatchRange.full) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -92,54 +132,24 @@ class _NovelCacheSheetState extends State<NovelCacheSheet> {
     if (canStart != null && !await canStart(_range)) return;
     if (!mounted) return;
 
-    setState(() {
-      _running = true;
-      _cancelRequested = false;
-      _error = null;
-      _result = null;
-      _progress = null;
-    });
-    try {
-      final currentIndex = widget.currentChapterIndex.clamp(
-        0,
-        widget.chapters.length - 1,
-      );
-      await widget.provider.pinCurrentChapter(
-        widget.novel,
-        widget.chapters[currentIndex],
-      );
-      final result = await widget.provider.cacheChapters(
-        widget.novel,
-        widget.chapters,
-        range: _range,
-        startIndex: currentIndex,
-        shouldCancel: () => _cancelRequested,
-        onProgress: (progress) {
-          if (mounted) setState(() => _progress = progress);
-        },
-      );
-      if (!mounted) return;
-      setState(() => _result = result);
-      await _refreshStatus();
-    } catch (_) {
-      if (mounted) setState(() => _error = '下载失败，请检查网络后继续下载。');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _running = false;
-          _cancelRequested = false;
-        });
-      }
-    }
+    await widget.provider.startNovelCacheDownload(
+      widget.novel,
+      widget.chapters,
+      range: _range,
+      startIndex: widget.currentChapterIndex,
+    );
+    if (mounted) await _refreshStatus();
   }
 
   void _requestCancel() {
-    if (!_running || _cancelRequested) return;
-    setState(() => _cancelRequested = true);
+    widget.provider.cancelNovelCacheDownload(widget.novel);
   }
 
   Future<void> _clearDownloads() async {
-    if (_running || (_status?.downloadedChapterCount ?? 0) == 0) return;
+    if (widget.provider.downloadStateFor(widget.novel)?.running == true ||
+        (_status?.downloadedChapterCount ?? 0) == 0) {
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -160,11 +170,7 @@ class _NovelCacheSheetState extends State<NovelCacheSheet> {
     if (confirmed != true) return;
     await widget.provider.clearDownloadedChapters(widget.novel);
     if (!mounted) return;
-    setState(() {
-      _result = null;
-      _progress = null;
-      _error = null;
-    });
+    setState(() => _statusError = null);
     await _refreshStatus();
   }
 
@@ -183,141 +189,144 @@ class _NovelCacheSheetState extends State<NovelCacheSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final progressValue = _progress == null || _progress!.total <= 0
+    final download = widget.provider.downloadStateFor(widget.novel);
+    final running = download?.running ?? false;
+    final cancelRequested = download?.cancelRequested ?? false;
+    final progress = download?.progress;
+    final result = download?.result;
+    final downloadError = download?.error != null ? '下载失败，请检查网络后继续下载。' : null;
+    final progressValue = progress == null || progress.total <= 0
         ? null
-        : _progress!.completed / _progress!.total;
+        : progress.completed / progress.total;
     final canContinue =
-        _result?.cancelled == true ||
-        (_result?.failedChapterIds.isNotEmpty ?? false) ||
-        _error != null;
-    return PopScope(
-      canPop: !_running,
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '整书下载',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+        result?.cancelled == true ||
+        (result?.failedChapterIds.isNotEmpty ?? false) ||
+        downloadError != null;
+    final selectedRange = running ? download!.range : _range;
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '整书下载',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  IconButton(
-                    tooltip: '关闭',
-                    onPressed: _running ? null : () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              if (widget.novel.isLocal)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 26),
-                  child: Text('本地导入小说已经完整保存在设备中。', textAlign: TextAlign.center),
-                )
-              else ...[
-                if (_loadingStatus)
-                  const LinearProgressIndicator()
-                else
-                  Text(
-                    '已下载 ${_status?.downloadedChapterCount ?? 0}/${widget.chapters.length} 章'
-                    ' · ${_formatBytes(_status?.totalBytes ?? 0)}',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                const SizedBox(height: 16),
-                SegmentedButton<NovelCacheBatchRange>(
-                  segments: NovelCacheBatchRange.values
-                      .map(
-                        (range) => ButtonSegment<NovelCacheBatchRange>(
-                          value: range,
-                          label: Text(_rangeLabel(range)),
-                        ),
-                      )
-                      .toList(growable: false),
-                  selected: {_range},
-                  onSelectionChanged: _running
-                      ? null
-                      : (selection) => setState(() => _range = selection.first),
                 ),
-                const SizedBox(height: 18),
-                if (_running) ...[
-                  LinearProgressIndicator(value: progressValue),
-                  const SizedBox(height: 8),
-                  Text(
-                    _cancelRequested
-                        ? '正在停止，当前章节完成后结束…'
-                        : _progress == null
-                        ? '正在准备下载…'
-                        : '${_progress!.skipped ? '已校验' : '正在下载'} '
-                              '${_progress!.completed}/${_progress!.total} · '
-                              '${_progress!.chapter.title}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 14),
-                ],
-                if (_result != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      _result!.cancelled
-                          ? '已停止，已保留 ${_result!.saved}/${_result!.requested} 章'
-                          : _result!.complete
-                          ? '下载完成：${_result!.saved} 章'
-                          : '已下载 ${_result!.saved}/${_result!.requested} 章，'
-                                '失败 ${_result!.failedChapterIds.length} 章',
-                      style: TextStyle(
-                        color: _result!.complete
-                            ? Colors.green
-                            : theme.colorScheme.error,
+                IconButton(
+                  tooltip: '关闭',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            if (widget.novel.isLocal)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 26),
+                child: Text('本地导入小说已经完整保存在设备中。', textAlign: TextAlign.center),
+              )
+            else ...[
+              if (_loadingStatus)
+                const LinearProgressIndicator()
+              else
+                Text(
+                  '已下载 ${_status?.downloadedChapterCount ?? 0}/${widget.chapters.length} 章'
+                  ' · ${_formatBytes(_status?.totalBytes ?? 0)}',
+                  style: theme.textTheme.bodySmall,
+                ),
+              const SizedBox(height: 16),
+              SegmentedButton<NovelCacheBatchRange>(
+                segments: NovelCacheBatchRange.values
+                    .map(
+                      (range) => ButtonSegment<NovelCacheBatchRange>(
+                        value: range,
+                        label: Text(_rangeLabel(range)),
                       ),
+                    )
+                    .toList(growable: false),
+                selected: {selectedRange},
+                onSelectionChanged: running
+                    ? null
+                    : (selection) => setState(() => _range = selection.first),
+              ),
+              const SizedBox(height: 18),
+              if (running) ...[
+                LinearProgressIndicator(value: progressValue),
+                const SizedBox(height: 8),
+                Text(
+                  cancelRequested
+                      ? '正在停止，等待进行中的章节完成…'
+                      : progress == null
+                      ? '正在准备下载…'
+                      : '${progress.skipped ? '已校验' : '正在下载'} '
+                            '${progress.completed}/${progress.total} · '
+                            '${progress.chapter.title}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 14),
+              ],
+              if (result != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    result.cancelled
+                        ? '已停止，已保留 ${result.saved}/${result.requested} 章'
+                        : result.complete
+                        ? '下载完成：${result.saved} 章'
+                        : '已下载 ${result.saved}/${result.requested} 章，'
+                              '失败 ${result.failedChapterIds.length} 章',
+                    style: TextStyle(
+                      color: result.complete
+                          ? Colors.green
+                          : theme.colorScheme.error,
                     ),
                   ),
-                if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(
-                      _error!,
-                      style: TextStyle(color: theme.colorScheme.error),
-                    ),
+                ),
+              if (downloadError != null || _statusError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    downloadError ?? _statusError!,
+                    style: TextStyle(color: theme.colorScheme.error),
                   ),
-                if (_running)
-                  OutlinedButton.icon(
-                    onPressed: _cancelRequested ? null : _requestCancel,
-                    icon: const Icon(Icons.stop_circle_outlined),
-                    label: Text(_cancelRequested ? '正在停止' : '停止下载'),
-                  )
-                else
-                  FilledButton.icon(
-                    onPressed: () => _start(retry: canContinue),
-                    icon: Icon(
-                      canContinue
-                          ? Icons.refresh_rounded
-                          : Icons.download_rounded,
-                    ),
-                    label: Text(
-                      canContinue ? '继续下载' : '下载${_rangeLabel(_range)}',
-                    ),
+                ),
+              if (running)
+                OutlinedButton.icon(
+                  onPressed: cancelRequested ? null : _requestCancel,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  label: Text(cancelRequested ? '正在停止' : '停止下载'),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: () => _start(retry: canContinue),
+                  icon: Icon(
+                    canContinue
+                        ? Icons.refresh_rounded
+                        : Icons.download_rounded,
                   ),
-                if (!_running &&
-                    (_status?.downloadedChapterCount ?? 0) > 0) ...[
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: _clearDownloads,
-                    child: const Text('删除本书下载'),
+                  label: Text(
+                    canContinue ? '继续下载' : '下载${_rangeLabel(_range)}',
                   ),
-                ],
+                ),
+              if (!running && (_status?.downloadedChapterCount ?? 0) > 0) ...[
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _clearDownloads,
+                  child: const Text('删除本书下载'),
+                ),
               ],
             ],
-          ),
+          ],
         ),
       ),
     );

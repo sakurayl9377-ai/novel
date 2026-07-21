@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -256,6 +257,106 @@ void main() {
   });
 
   test(
+    'batch downloads four chapters concurrently and persists every result',
+    () async {
+      final novel = _novel(sourceId: 'source-a', host: 'a.example');
+      final chapters = List<Chapter>.generate(
+        8,
+        (index) => _chapter(novel, host: 'a.example', index: index),
+      );
+      final gates = <int, Completer<String>>{};
+      final started = <int>[];
+      final progress = <NovelCacheBatchProgress>[];
+      var active = 0;
+      var maxActive = 0;
+
+      final batch = cache.cacheBatch(
+        novel: novel,
+        chapters: chapters,
+        chapterIndices: List<int>.generate(chapters.length, (index) => index),
+        loadContent: (chapter) {
+          final gate = Completer<String>();
+          gates[chapter.index] = gate;
+          started.add(chapter.index);
+          active += 1;
+          if (active > maxActive) maxActive = active;
+          return gate.future.whenComplete(() => active -= 1);
+        },
+        onProgress: progress.add,
+      );
+
+      await _waitFor(() => started.length == 4);
+      expect(started.toSet(), <int>{0, 1, 2, 3});
+      expect(active, 4);
+      expect(maxActive, NovelOfflineCacheService.defaultMaxConcurrentDownloads);
+
+      for (var index = 0; index < 4; index++) {
+        gates[index]!.complete('chapter $index');
+      }
+      await _waitFor(() => started.length == chapters.length);
+      expect(maxActive, 4);
+      for (var index = 4; index < chapters.length; index++) {
+        gates[index]!.complete('chapter $index');
+      }
+
+      final result = await batch;
+      expect(result.complete, isTrue);
+      expect(result.saved, chapters.length);
+      expect(progress.map((item) => item.completed), <int>[
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+      ]);
+      expect((await cache.getStatus(novel)).downloadedChapterCount, 8);
+    },
+  );
+
+  test('parallel cancellation finishes in-flight chapters only', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      8,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+    final gates = <int, Completer<String>>{};
+    final started = <int>[];
+    var cancelRequested = false;
+
+    final batch = cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: List<int>.generate(chapters.length, (index) => index),
+      shouldCancel: () => cancelRequested,
+      loadContent: (chapter) {
+        started.add(chapter.index);
+        final gate = Completer<String>();
+        gates[chapter.index] = gate;
+        return gate.future;
+      },
+    );
+
+    await _waitFor(
+      () =>
+          started.length ==
+          NovelOfflineCacheService.defaultMaxConcurrentDownloads,
+    );
+    cancelRequested = true;
+    for (final chapterIndex in List<int>.of(started)) {
+      gates[chapterIndex]!.complete('chapter $chapterIndex');
+    }
+
+    final result = await batch;
+    expect(result.cancelled, isTrue);
+    expect(result.saved, 4);
+    expect(started, hasLength(4));
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 4);
+  });
+
+  test(
     'catalog refresh safely remaps unique chapters after insertion and URL changes',
     () async {
       final novel = _novel(sourceId: 'source-a', host: 'a.example');
@@ -411,6 +512,7 @@ void main() {
       novel: novel,
       chapters: chapters,
       chapterIndices: const <int>[0, 1, 2],
+      maxConcurrentDownloads: 1,
       shouldCancel: () => cancelRequested,
       loadContent: (chapter) async {
         loaded.add(chapter.index);
@@ -582,6 +684,14 @@ void main() {
       expect(await cache.getPersistentChapterContent(novel, chapter), isNull);
     },
   );
+}
+
+Future<void> _waitFor(bool Function() condition) async {
+  for (var attempt = 0; attempt < 200; attempt++) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('Timed out waiting for asynchronous cache work.');
 }
 
 Novel _novel({required String sourceId, required String host}) => Novel(
