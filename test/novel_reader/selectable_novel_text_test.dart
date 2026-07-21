@@ -4,6 +4,50 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/features/novel_reader/selectable_novel_text.dart';
 
 void main() {
+  testWidgets(
+    'native selection forwards one body tap but not drag or long press',
+    (tester) async {
+      var tapCount = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () => tapCount++,
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: 280,
+                  child: SelectableNovelText(
+                    text: '　　第一句。第二句。',
+                    style: const TextStyle(fontSize: 20),
+                    paragraphSpacing: 0.8,
+                    onTap: () => tapCount++,
+                    onListenFromOffset: _ignoreOffset,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final richText = find.byType(RichText).last;
+      await tester.tap(richText);
+      await tester.pump();
+      expect(tapCount, 1);
+
+      await tester.drag(richText, const Offset(0, -40));
+      await tester.pump();
+      expect(tapCount, 1);
+
+      await tester.longPress(richText);
+      await tester.pumpAndSettle();
+      expect(find.text('从本段听'), findsOneWidget);
+      expect(tapCount, 1);
+    },
+  );
+
   testWidgets('selection toolbar offers listen from paragraph', (tester) async {
     int? selectedOffset;
     await tester.pumpWidget(

@@ -1076,6 +1076,7 @@ class _ReadingScreenState extends State<ReadingScreen>
               height: lineHeight,
             ),
             paragraphSpacing: paragraphSpacing,
+            onTap: _toggleControls,
             onListenFromOffset: (offset) => unawaited(
               _startTtsFromParagraph(chapterIndex, content, offset),
             ),
@@ -1595,6 +1596,7 @@ class _ReadingScreenState extends State<ReadingScreen>
       paragraphSpacing: paragraphSpacing,
       highlightRange: range,
       highlightColor: highlightColor,
+      onTap: _toggleControls,
       onListenFromOffset: (offset) =>
           unawaited(_startTtsFromParagraph(chapterIndex, pageContent, offset)),
     );

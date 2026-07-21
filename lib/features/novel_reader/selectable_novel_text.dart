@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +22,7 @@ class SelectableNovelText extends StatefulWidget {
     this.selectionColor,
     this.textAlign = TextAlign.justify,
     this.richTextKey,
+    this.onTap,
     this.onListenFromOffset,
     this.useNativeSelection = true,
   });
@@ -35,6 +37,7 @@ class SelectableNovelText extends StatefulWidget {
   final Color? selectionColor;
   final TextAlign textAlign;
   final Key? richTextKey;
+  final VoidCallback? onTap;
   final ValueChanged<int>? onListenFromOffset;
   final bool useNativeSelection;
 
@@ -48,6 +51,11 @@ class _SelectableNovelTextState extends State<SelectableNovelText> {
   final GlobalKey _renderKey = GlobalKey();
   ContextMenuController? _passiveMenuController;
   TextRange _passiveSelection = TextRange.empty;
+  int? _tapPointer;
+  Offset? _tapDownPosition;
+  Duration? _tapDownTimeStamp;
+  double _tapSlop = kTouchSlop;
+  bool _tapMoved = false;
   bool _disposing = false;
 
   @override
@@ -87,6 +95,57 @@ class _SelectableNovelTextState extends State<SelectableNovelText> {
   void _clearSelection(SelectableRegionState state) {
     ContextMenuController.removeAny();
     state.clearSelection();
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (widget.onTap == null || (event.buttons & kPrimaryButton) == 0) return;
+    if (_tapPointer != null) {
+      _tapMoved = true;
+      return;
+    }
+    _tapPointer = event.pointer;
+    _tapDownPosition = event.position;
+    _tapDownTimeStamp = event.timeStamp;
+    _tapSlop = computeHitSlop(
+      event.kind,
+      MediaQuery.maybeGestureSettingsOf(context),
+    );
+    _tapMoved = false;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (event.pointer != _tapPointer || _tapMoved) return;
+    final downPosition = _tapDownPosition;
+    if (downPosition == null ||
+        (event.position - downPosition).distance > _tapSlop) {
+      _tapMoved = true;
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    if (event.pointer != _tapPointer) return;
+    final downTimeStamp = _tapDownTimeStamp;
+    final shouldTap =
+        !_tapMoved &&
+        downTimeStamp != null &&
+        event.timeStamp - downTimeStamp < kLongPressTimeout;
+    _resetTapCandidate();
+    if (shouldTap) {
+      ContextMenuController.removeAny();
+      widget.onTap?.call();
+    }
+  }
+
+  void _handlePointerCancel(PointerCancelEvent event) {
+    if (event.pointer == _tapPointer) _resetTapCandidate();
+  }
+
+  void _resetTapCandidate() {
+    _tapPointer = null;
+    _tapDownPosition = null;
+    _tapDownTimeStamp = null;
+    _tapSlop = kTouchSlop;
+    _tapMoved = false;
   }
 
   void _listenFromSelection(SelectableRegionState state) {
@@ -273,6 +332,7 @@ class _SelectableNovelTextState extends State<SelectableNovelText> {
     if (!widget.useNativeSelection) {
       return GestureDetector(
         behavior: HitTestBehavior.translucent,
+        onTap: widget.onTap,
         onLongPressStart: widget.onListenFromOffset == null
             ? null
             : (details) => _showPassiveContextMenu(details.globalPosition),
@@ -292,9 +352,16 @@ class _SelectableNovelTextState extends State<SelectableNovelText> {
       },
       child: SelectionArea(
         contextMenuBuilder: _buildContextMenu,
-        child: SelectionListener(
-          selectionNotifier: _selectionNotifier,
-          child: _buildRichText(selectionColor),
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: _handlePointerDown,
+          onPointerMove: _handlePointerMove,
+          onPointerUp: _handlePointerUp,
+          onPointerCancel: _handlePointerCancel,
+          child: SelectionListener(
+            selectionNotifier: _selectionNotifier,
+            child: _buildRichText(selectionColor),
+          ),
         ),
       ),
     );
