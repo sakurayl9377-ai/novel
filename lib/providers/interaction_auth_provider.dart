@@ -37,6 +37,8 @@ class InteractionAuthProvider extends ChangeNotifier {
   final StorageService _storage = StorageService();
 
   bool _isLoading = false;
+  bool _isDisposed = false;
+  int _sessionLoadGeneration = 0;
   String _token = '';
   InteractionUser? _user;
   List<InteractionAccountSession> _accounts = const [];
@@ -49,35 +51,49 @@ class InteractionAuthProvider extends ChangeNotifier {
   List<InteractionAccountSession> get accounts => _accounts;
 
   Future<void> loadSession() async {
+    final generation = ++_sessionLoadGeneration;
+    bool isCurrent() => !_isDisposed && generation == _sessionLoadGeneration;
     _setLoading(true);
     try {
       final persisted = await _loadPersistedSession();
+      if (!isCurrent()) return;
       _token = persisted.token;
       _user = persisted.user;
       _accounts = persisted.accounts;
+      _restoreCachedAppSession();
       if (_token.isNotEmpty) {
         try {
-          _user = await _authService.me(_token);
+          final refreshedUser = await _authService.me(_token);
+          if (!isCurrent()) return;
+          _user = refreshedUser;
           await _saveSession();
+          if (!isCurrent()) return;
         } on InteractionAuthException catch (error) {
+          if (!isCurrent()) return;
           if (error.statusCode == 401 || error.statusCode == 403) {
             await clearSession();
           }
         } catch (_) {
+          if (!isCurrent()) return;
           // Keep the cached session when startup verification fails offline.
         }
       }
       if (_token.isEmpty && _betaTestAccountEnabled) {
         try {
-          await _acceptAuthResult(await _authService.createBetaTestSession());
+          final result = await _authService.createBetaTestSession();
+          if (!isCurrent()) return;
+          await _acceptAuthResult(result);
+          if (!isCurrent()) return;
         } catch (_) {
+          if (!isCurrent()) return;
           // The beta can still open offline and expose a one-tap retry on the
           // login screen when its local/test backend is not yet reachable.
         }
       }
+      if (!isCurrent()) return;
       _scheduleAppInstallReport();
     } finally {
-      _setLoading(false);
+      if (isCurrent()) _setLoading(false);
     }
   }
 
@@ -208,6 +224,7 @@ class InteractionAuthProvider extends ChangeNotifier {
         .where((item) => item.user.id != account.user.id)
         .toList();
     await _saveAccounts();
+    if (_isDisposed) return;
     if (_user?.id == account.user.id) {
       await clearSession();
     } else {
@@ -266,13 +283,13 @@ class InteractionAuthProvider extends ChangeNotifier {
       await _sessionStorage.delete(_sessionKey);
     }
     await _removeLegacySessionValues();
-    notifyListeners();
+    if (!_isDisposed) notifyListeners();
   }
 
   Future<void> _saveSession() async {
     await _writeSessionEnvelope();
     await _removeLegacySessionValues();
-    notifyListeners();
+    if (!_isDisposed) notifyListeners();
   }
 
   InteractionUser? _readUser(String? raw) {
@@ -420,12 +437,30 @@ class InteractionAuthProvider extends ChangeNotifier {
     await _storage.remove(_accountsKey);
   }
 
+  void _restoreCachedAppSession() {
+    final token = _token;
+    AppTelemetryService.instance.setAuthToken(token);
+    final user = _user;
+    if (token.isEmpty || user == null) {
+      if (ProgressSyncService.instance.activeUserId != null) {
+        ProgressSyncService.instance.clearSession();
+      }
+      return;
+    }
+    ProgressSyncService.instance.restoreCachedSession(
+      token: token,
+      userId: user.id.toString(),
+    );
+  }
+
   void _scheduleAppInstallReport() {
     final token = _token;
     AppTelemetryService.instance.setAuthToken(token);
     final user = _user;
     if (token.isEmpty || user == null) {
-      ProgressSyncService.instance.clearSession();
+      if (ProgressSyncService.instance.activeUserId != null) {
+        ProgressSyncService.instance.clearSession();
+      }
       return;
     }
     ProgressSyncService.instance.bindSession(
@@ -444,9 +479,17 @@ class InteractionAuthProvider extends ChangeNotifier {
   }
 
   void _setLoading(bool value) {
+    if (_isDisposed) return;
     if (_isLoading == value) return;
     _isLoading = value;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    _sessionLoadGeneration += 1;
+    super.dispose();
   }
 }
 

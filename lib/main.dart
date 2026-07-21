@@ -154,21 +154,60 @@ class NovelApp extends StatefulWidget {
 }
 
 class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
+  late final InteractionAuthProvider _interactionAuthProvider;
+  late final ReadingProvider _readingProvider;
+
   @override
   void initState() {
     super.initState();
+    _interactionAuthProvider = InteractionAuthProvider();
+    _readingProvider = ReadingProvider();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadSessionSafely());
+    unawaited(_loadReadingSettingsSafely());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     AppTelemetryService.instance.handleLifecycle(state);
     ProgressSyncService.instance.handleLifecycle(state);
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(_flushReadingSettingsSafely());
+    }
+  }
+
+  Future<void> _loadSessionSafely() async {
+    try {
+      await _interactionAuthProvider.loadSession();
+    } catch (error, stackTrace) {
+      debugPrint('Session restoration failed: $error\n$stackTrace');
+    }
+  }
+
+  Future<void> _loadReadingSettingsSafely() async {
+    try {
+      await _readingProvider.loadSettings();
+    } catch (error, stackTrace) {
+      debugPrint('Reader settings restoration failed: $error\n$stackTrace');
+    }
+  }
+
+  Future<void> _flushReadingSettingsSafely() async {
+    try {
+      await _readingProvider.flushPendingSettings();
+    } catch (error, stackTrace) {
+      debugPrint('Reader settings persistence failed: $error\n$stackTrace');
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _readingProvider.dispose();
+    _interactionAuthProvider.dispose();
     unawaited(AppTelemetryService.instance.flush());
     super.dispose();
   }
@@ -178,13 +217,11 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => BookshelfProvider()),
-        ChangeNotifierProvider(
-          create: (_) => InteractionAuthProvider()..loadSession(),
+        ChangeNotifierProvider<InteractionAuthProvider>.value(
+          value: _interactionAuthProvider,
         ),
         ChangeNotifierProvider(create: (_) => BookSourceProvider()),
-        ChangeNotifierProvider(
-          create: (_) => ReadingProvider()..loadSettings(),
-        ),
+        ChangeNotifierProvider<ReadingProvider>.value(value: _readingProvider),
         ChangeNotifierProxyProvider<InteractionAuthProvider, TtsProvider>(
           create: (_) =>
               TtsProvider(mediaControlService: widget.ttsMediaControlService),

@@ -186,7 +186,7 @@ class _ReadingScreenState extends State<ReadingScreen>
         state != AppLifecycleState.hidden) {
       return;
     }
-    unawaited(_readingProvider.flushPendingSettings());
+    unawaited(_flushReadingSettingsSafely(_readingProvider));
     final ttsProvider = _ttsProvider;
     if (ttsProvider == null ||
         !ttsProvider.hasActiveReadingSession ||
@@ -737,6 +737,14 @@ class _ReadingScreenState extends State<ReadingScreen>
     setState(() => _showTtsPanel = true);
   }
 
+  Future<void> _flushReadingSettingsSafely(ReadingProvider provider) async {
+    try {
+      await provider.flushPendingSettings();
+    } catch (error, stackTrace) {
+      debugPrint('Reader settings persistence failed: $error\n$stackTrace');
+    }
+  }
+
   Future<void> _showReadingSettings() async {
     if (!mounted) return;
 
@@ -756,10 +764,13 @@ class _ReadingScreenState extends State<ReadingScreen>
             readingProvider.previewSettings(settings);
             _syncPagedAutoReadTimer(settings);
           },
+          onChangeEnd: () {
+            unawaited(_flushReadingSettingsSafely(readingProvider));
+          },
         );
       },
     );
-    await readingProvider.flushPendingSettings();
+    await _flushReadingSettingsSafely(readingProvider);
     if (!mounted) return;
     _syncPagedAutoReadTimer(latest);
   }
@@ -1419,7 +1430,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     _chapterLoadGuard.dispose();
     unawaited(_readerPageCommandSubscription?.cancel() ?? Future.value());
     unawaited(ReaderPlatformService.instance.releaseReaderSession());
-    unawaited(_readingProvider.flushPendingSettings());
+    unawaited(_flushReadingSettingsSafely(_readingProvider));
     if (!_isLeaving) {
       final ttsProvider = _ttsProvider;
       final hasOwnedTtsSession =

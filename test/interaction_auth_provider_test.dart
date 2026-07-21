@@ -9,6 +9,7 @@ import 'package:novel_app/providers/interaction_auth_provider.dart';
 import 'package:novel_app/services/app_install_report_service.dart';
 import 'package:novel_app/services/auth_session_storage.dart';
 import 'package:novel_app/services/interaction_auth_service.dart';
+import 'package:novel_app/services/progress_sync_service.dart';
 import 'package:novel_app/services/storage_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -54,6 +55,8 @@ void main() {
   });
 
   setUp(() async {
+    ProgressSyncService.instance.clearSession();
+    addTearDown(ProgressSyncService.instance.clearSession);
     sessionStorage = _MemoryAuthSessionStorage();
     final storage = StorageService();
     await storage.remove('interaction_auth_token');
@@ -62,6 +65,65 @@ void main() {
       'interaction_auth_accounts',
       jsonEncode([account.toJson()]),
     );
+  });
+
+  test(
+    'cached session binds the progress owner before remote verification',
+    () async {
+      sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+        'version': 2,
+        'token': account.token,
+        'user': account.user.toJson(),
+        'accounts': [account.toJson()],
+      });
+      final authService = _BlockingMeInteractionAuthService();
+      final provider = InteractionAuthProvider(
+        authService: authService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      addTearDown(provider.dispose);
+
+      final load = provider.loadSession();
+      await authService.meStarted.future;
+
+      try {
+        expect(
+          ProgressSyncService.instance.activeOwnerUserId,
+          account.user.id.toString(),
+        );
+      } finally {
+        authService.complete(account.user);
+        await load;
+      }
+    },
+  );
+
+  test('disposed session load cannot replace a newer progress owner', () async {
+    sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+      'version': 2,
+      'token': account.token,
+      'user': account.user.toJson(),
+      'accounts': [account.toJson()],
+    });
+    final authService = _BlockingMeInteractionAuthService();
+    final provider = InteractionAuthProvider(
+      authService: authService,
+      appInstallReportService: _NoopAppInstallReportService(),
+      sessionStorage: sessionStorage,
+    );
+
+    final load = provider.loadSession();
+    await authService.meStarted.future;
+    provider.dispose();
+    ProgressSyncService.instance.restoreCachedSession(
+      token: 'new-token',
+      userId: '99',
+    );
+    authService.complete(account.user);
+    await load;
+
+    expect(ProgressSyncService.instance.activeOwnerUserId, '99');
   });
 
   test('migrates legacy plaintext accounts into secure storage', () async {
@@ -374,6 +436,19 @@ class _FailingInteractionAuthService extends InteractionAuthService {
 
   @override
   Future<InteractionUser> me(String token) => Future.error(failure);
+}
+
+class _BlockingMeInteractionAuthService extends InteractionAuthService {
+  final Completer<void> meStarted = Completer<void>();
+  final Completer<InteractionUser> _result = Completer<InteractionUser>();
+
+  @override
+  Future<InteractionUser> me(String token) {
+    meStarted.complete();
+    return _result.future;
+  }
+
+  void complete(InteractionUser user) => _result.complete(user);
 }
 
 class _BlockingLogoutInteractionAuthService extends InteractionAuthService {

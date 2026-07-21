@@ -88,6 +88,7 @@ class ReadingSettings {
   };
 
   static bool needsLayoutPresetMigration(Map<String, dynamic> json) {
+    if (!containsReaderSettings(json)) return false;
     final schemaVersion = (json['schemaVersion'] as num?)?.toInt() ?? 1;
     final layoutPresetVersion =
         (json['layoutPresetVersion'] as num?)?.toInt() ?? 1;
@@ -229,6 +230,7 @@ class ReadingSettings {
   }
 
   static bool _matchesUntouchedLegacyLayout(Map<String, dynamic> json) {
+    if (!_containsCompleteLegacyLayout(json)) return false;
     final storedFont = json['fontFamily']?.toString().trim() ?? systemFont;
     final nightMode = json['nightMode'] as bool? ?? false;
     return _sameNumber(json['fontSize'], _legacyFontSize) &&
@@ -242,6 +244,7 @@ class ReadingSettings {
   }
 
   static bool _matchesUntouchedPreviousLayout(Map<String, dynamic> json) {
+    if (!_containsCompleteLegacyLayout(json)) return false;
     final storedFont = json['fontFamily']?.toString().trim() ?? systemFont;
     final nightMode = json['nightMode'] as bool? ?? false;
     return _sameNumber(json['fontSize'], 23.0) &&
@@ -255,7 +258,32 @@ class ReadingSettings {
   }
 
   static bool _sameNumber(Object? value, double expected) {
-    final actual = value is num ? value.toDouble() : expected;
+    if (value is! num) return false;
+    final actual = value.toDouble();
     return (actual - expected).abs() < 0.0001;
+  }
+
+  static bool containsReaderSettings(Map<String, dynamic> json) {
+    return json.containsKey('fontSize') ||
+        json.containsKey('fontFamily') ||
+        json.containsKey('backgroundColor') ||
+        json.containsKey('pageTurnMode') ||
+        json.containsKey('lineHeight') ||
+        json.containsKey('paragraphSpacing') ||
+        json.containsKey('horizontalPadding') ||
+        json.containsKey('singleHandMode') ||
+        json.containsKey('volumeKeyTurnPage') ||
+        json.containsKey('keepScreenOn') ||
+        json.containsKey('autoReadSpeed');
+  }
+
+  static bool _containsCompleteLegacyLayout(Map<String, dynamic> json) {
+    return json.containsKey('fontSize') &&
+        json.containsKey('fontFamily') &&
+        json.containsKey('backgroundColor') &&
+        json.containsKey('nightMode') &&
+        json.containsKey('lineHeight') &&
+        json.containsKey('paragraphSpacing') &&
+        json.containsKey('horizontalPadding');
   }
 }

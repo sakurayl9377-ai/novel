@@ -277,23 +277,51 @@ class ProgressDatabase {
     required Map<String, dynamic> metadata,
     required String deviceId,
     required int clientUpdatedAtMs,
+    bool ensureNewerTimestamp = false,
   }) async {
     await init();
-    await _upsert(
-      _db,
-      ContentProgressRecord(
-        identity: identity,
-        contentKey: _resolveContentKey(identity, contentKey),
-        subItemId: ContentIdentity.normalizeSubItemId(subItemId),
-        payload: payload,
-        metadata: metadata,
-        deviceId: deviceId,
-        clientUpdatedAtMs: clientUpdatedAtMs,
-        deleted: false,
-        dirty: identity.syncEligible,
-        ownerUserId: ownerUserId,
-      ),
-    );
+    final resolvedContentKey = _resolveContentKey(identity, contentKey);
+
+    Future<void> save(DatabaseExecutor executor) async {
+      var effectiveUpdatedAtMs = clientUpdatedAtMs;
+      if (ensureNewerTimestamp) {
+        final rows = await executor.query(
+          'content_progress',
+          columns: const ['client_updated_at_ms'],
+          where: 'owner_user_id = ? AND content_key = ?',
+          whereArgs: [ownerUserId, resolvedContentKey],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          final existingUpdatedAtMs =
+              (rows.first['client_updated_at_ms'] as num).toInt();
+          if (effectiveUpdatedAtMs <= existingUpdatedAtMs) {
+            effectiveUpdatedAtMs = existingUpdatedAtMs + 1;
+          }
+        }
+      }
+      await _upsert(
+        executor,
+        ContentProgressRecord(
+          identity: identity,
+          contentKey: resolvedContentKey,
+          subItemId: ContentIdentity.normalizeSubItemId(subItemId),
+          payload: payload,
+          metadata: metadata,
+          deviceId: deviceId,
+          clientUpdatedAtMs: effectiveUpdatedAtMs,
+          deleted: false,
+          dirty: identity.syncEligible,
+          ownerUserId: ownerUserId,
+        ),
+      );
+    }
+
+    if (ensureNewerTimestamp) {
+      await _db.transaction(save);
+    } else {
+      await save(_db);
+    }
   }
 
   Future<ContentProgressRecord?> get(

@@ -40,8 +40,10 @@ class ReaderSettingsRepository {
   final SharedPreferences _preferences;
   final Future<String> Function() _deviceIdProvider;
   final DateTime Function() _now;
+  Future<void> _saveChain = Future<void>.value();
 
   Future<Map<String, dynamic>?> load({required String ownerUserId}) async {
+    await _saveChain;
     final record = await _database.getByContentKey(
       contentKey,
       ownerUserId: ownerUserId,
@@ -67,6 +69,27 @@ class ReaderSettingsRepository {
     Map<String, dynamic> settings, {
     required String ownerUserId,
     int? updatedAtMs,
+  }) {
+    final snapshot = Map<String, dynamic>.from(settings);
+    final clientUpdatedAtMs = updatedAtMs ?? _now().millisecondsSinceEpoch;
+    final operation = _saveChain.then(
+      (_) => _saveSnapshot(
+        snapshot,
+        ownerUserId: ownerUserId,
+        clientUpdatedAtMs: clientUpdatedAtMs,
+      ),
+    );
+    _saveChain = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> _saveSnapshot(
+    Map<String, dynamic> settings, {
+    required String ownerUserId,
+    required int clientUpdatedAtMs,
   }) async {
     final payload = Map<String, dynamic>.from(settings);
     final brightness = payload.remove('brightness');
@@ -91,7 +114,8 @@ class ReaderSettingsRepository {
       payload: payload,
       metadata: const {'namespace': 'reader_settings', 'version': 1},
       deviceId: await _deviceIdProvider(),
-      clientUpdatedAtMs: updatedAtMs ?? _now().millisecondsSinceEpoch,
+      clientUpdatedAtMs: clientUpdatedAtMs,
+      ensureNewerTimestamp: true,
     );
   }
 

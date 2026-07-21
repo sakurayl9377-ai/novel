@@ -215,6 +215,16 @@ class ProgressSyncService {
   String get activeOwnerUserId =>
       _activeUserId.isEmpty ? ProgressOwner.guest : _activeUserId;
 
+  /// Restores the locally cached owner before network auth verification.
+  /// Guest adoption and remote sync remain deferred until [bindSession].
+  void restoreCachedSession({required String token, required String userId}) {
+    final ownerChanged = _activeUserId != userId;
+    _sessionGeneration += 1;
+    _activeToken = token;
+    _activeUserId = userId;
+    if (ownerChanged) revision.value += 1;
+  }
+
   void bindSession({required String token, required String userId}) {
     final ownerChanged = _activeUserId != userId;
     _sessionGeneration += 1;

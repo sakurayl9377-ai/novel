@@ -9,10 +9,12 @@ class ReadingSettingsPanel extends StatefulWidget {
     super.key,
     required this.settings,
     required this.onPreviewChanged,
+    required this.onChangeEnd,
   });
 
   final ReadingSettings settings;
   final ValueChanged<ReadingSettings> onPreviewChanged;
+  final VoidCallback onChangeEnd;
 
   @override
   State<ReadingSettingsPanel> createState() => _ReadingSettingsPanelState();
@@ -111,6 +113,9 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                                 : (value) => _update(
                                     _settings.copyWith(brightness: value),
                                   ),
+                            onChangeEnd: _settings.useSystemBrightness
+                                ? null
+                                : (_) => widget.onChangeEnd(),
                           ),
                         ),
                         Text(
@@ -161,6 +166,7 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                       label: '${_settings.fontSize.round()}',
                       onChanged: (value) =>
                           _update(_settings.copyWith(fontSize: value)),
+                      onChangeEnd: widget.onChangeEnd,
                     ),
                     const SizedBox(height: 14),
                     _SectionTitle('字体', color: secondaryText),
@@ -195,6 +201,7 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                       label: '行距 ${_settings.lineHeight.toStringAsFixed(1)}',
                       onChanged: (value) =>
                           _update(_settings.copyWith(lineHeight: value)),
+                      onChangeEnd: widget.onChangeEnd,
                     ),
                     _ValueSlider(
                       value: _settings.paragraphSpacing,
@@ -205,6 +212,7 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                           '段距 ${_settings.paragraphSpacing.toStringAsFixed(1)}',
                       onChanged: (value) =>
                           _update(_settings.copyWith(paragraphSpacing: value)),
+                      onChangeEnd: widget.onChangeEnd,
                     ),
                     _ValueSlider(
                       value: _settings.horizontalPadding,
@@ -214,6 +222,7 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                       label: '页边距 ${_settings.horizontalPadding.round()}',
                       onChanged: (value) =>
                           _update(_settings.copyWith(horizontalPadding: value)),
+                      onChangeEnd: widget.onChangeEnd,
                     ),
                     const SizedBox(height: 18),
                     _SectionTitle('阅读背景', color: secondaryText),
@@ -305,6 +314,7 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                       label: '${_settings.autoReadSpeed.toStringAsFixed(1)}×',
                       onChanged: (value) =>
                           _update(_settings.copyWith(autoReadSpeed: value)),
+                      onChangeEnd: widget.onChangeEnd,
                     ),
                   ],
                 ),
@@ -347,6 +357,7 @@ class _ValueSlider extends StatelessWidget {
     required this.divisions,
     required this.label,
     required this.onChanged,
+    required this.onChangeEnd,
     this.leading,
     this.trailing,
   });
@@ -357,6 +368,7 @@ class _ValueSlider extends StatelessWidget {
   final int divisions;
   final String label;
   final ValueChanged<double> onChanged;
+  final VoidCallback onChangeEnd;
   final Widget? leading;
   final Widget? trailing;
 
@@ -373,6 +385,7 @@ class _ValueSlider extends StatelessWidget {
             divisions: divisions,
             label: label,
             onChanged: onChanged,
+            onChangeEnd: (_) => onChangeEnd(),
           ),
         ),
         if (trailing != null) ...[const SizedBox(width: 6), trailing!],

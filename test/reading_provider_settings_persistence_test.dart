@@ -76,6 +76,64 @@ void main() {
   });
 
   test(
+    'an immediate flush persists a font preview before provider rebuild',
+    () async {
+      final persistedByOwner = <String, Map<String, dynamic>>{};
+      final revision = _RevisionSignal();
+      const owner = 'user-a';
+      final first = ReadingProvider(
+        settingsSaveDebounce: const Duration(hours: 1),
+        ownerUserIdProvider: () => owner,
+        syncRevision: revision,
+        settingsLoader: (savedOwner) async => persistedByOwner[savedOwner],
+        settingsSaver: (settings, savedOwner) async {
+          persistedByOwner[savedOwner] = Map<String, dynamic>.from(settings);
+        },
+      );
+
+      first.previewSettings(first.settings.copyWith(fontSize: 31));
+      await first.flushPendingSettings();
+      first.dispose();
+
+      final rebuilt = ReadingProvider(
+        ownerUserIdProvider: () => owner,
+        syncRevision: revision,
+        settingsLoader: (savedOwner) async => persistedByOwner[savedOwner],
+        settingsSaver: (_, _) async {},
+      );
+      addTearDown(rebuilt.dispose);
+      await rebuilt.loadSettings();
+
+      expect(rebuilt.settings.fontSize, 31);
+    },
+  );
+
+  test(
+    'partial settings data does not trigger a layout migration write',
+    () async {
+      final writes = <Map<String, dynamic>>[];
+      final provider = ReadingProvider(
+        ownerUserIdProvider: () => 'user-a',
+        syncRevision: _RevisionSignal(),
+        settingsLoader: (_) async => <String, dynamic>{
+          'brightness': 0.4,
+          'useSystemBrightness': false,
+        },
+        settingsSaver: (settings, _) async {
+          writes.add(Map<String, dynamic>.from(settings));
+        },
+      );
+      addTearDown(provider.dispose);
+      await provider.loadSettings();
+
+      expect(writes, isEmpty);
+      expect(provider.settings.fontSize, ReadingSettings.defaultFontSize);
+      expect(provider.settings.brightness, 0.4);
+      expect(provider.settings.useSystemBrightness, isFalse);
+    },
+  );
+
+  test(
     'settings writes are serialized and finish with the latest value',
     () async {
       final firstStarted = Completer<void>();
@@ -123,6 +181,31 @@ void main() {
       expect(completed.last, 31);
     },
   );
+
+  test('a failed settings flush keeps the latest snapshot for retry', () async {
+    var attempts = 0;
+    final completed = <double>[];
+    final provider = ReadingProvider(
+      settingsSaveDebounce: const Duration(hours: 1),
+      ownerUserIdProvider: () => 'user-a',
+      syncRevision: _RevisionSignal(),
+      settingsLoader: (_) async => null,
+      settingsSaver: (settings, _) async {
+        attempts += 1;
+        if (attempts == 1) throw StateError('storage unavailable');
+        completed.add((settings['fontSize'] as num).toDouble());
+      },
+    );
+    addTearDown(provider.dispose);
+
+    provider.previewSettings(provider.settings.copyWith(fontSize: 30));
+    await expectLater(provider.flushPendingSettings(), throwsStateError);
+
+    await provider.flushPendingSettings();
+
+    expect(attempts, 2);
+    expect(completed, [30]);
+  });
 
   test('preview captures the owner before a later account switch', () async {
     var owner = 'user-a';

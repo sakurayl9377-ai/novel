@@ -69,13 +69,21 @@ class ReadingProvider extends ChangeNotifier {
     final saved = await _loadSettingsForOwner(owner);
     if (!_isSettingsReadCurrent(owner, revision, mutationGeneration)) return;
     if (saved != null) {
-      final loaded = ReadingSettings.fromJson(saved);
+      final hasReaderSettings = ReadingSettings.containsReaderSettings(saved);
+      final loaded = hasReaderSettings
+          ? ReadingSettings.fromJson(saved)
+          : _applyDevicePreferences(_settings, saved);
       _settings = loaded;
       _settingsMutationGeneration += 1;
       notifyListeners();
-      if (ReadingSettings.needsLayoutPresetMigration(saved)) {
+      if (hasReaderSettings &&
+          ReadingSettings.needsLayoutPresetMigration(saved)) {
         await _enqueueSettingsWrite(
-          _PendingSettingsWrite(owner, loaded.toJson()),
+          _PendingSettingsWrite(
+            owner,
+            loaded.toJson(),
+            _settingsMutationGeneration,
+          ),
         );
       }
     }
@@ -98,13 +106,25 @@ class ReadingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> flushPendingSettings() {
+  Future<void> flushPendingSettings() async {
     _settingsSaveTimer?.cancel();
     _settingsSaveTimer = null;
     final pending = _pendingSettingsWrite;
     _pendingSettingsWrite = null;
-    if (pending == null) return _settingsWriteChain;
-    return _enqueueSettingsWrite(pending);
+    if (pending == null) {
+      await _settingsWriteChain;
+      return;
+    }
+    try {
+      await _enqueueSettingsWrite(pending);
+    } catch (error, stackTrace) {
+      if (!_isDisposed &&
+          pending.mutationGeneration == _settingsMutationGeneration &&
+          _pendingSettingsWrite == null) {
+        _pendingSettingsWrite = pending;
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 
   Future<void> updateFontSize(double size) async {
@@ -157,8 +177,11 @@ class ReadingProvider extends ChangeNotifier {
 
   Future<ReadingProgress?> loadProgress(Novel novel) async {
     final progressData = await _storage.getNovelReadingProgress(novel);
+    final loadedProgress = progressData == null
+        ? null
+        : ReadingProgress.fromJson(progressData);
+    if (_isDisposed) return loadedProgress;
     if (progressData != null) {
-      final loadedProgress = ReadingProgress.fromJson(progressData);
       _currentProgress = loadedProgress;
       notifyListeners();
       return loadedProgress;
@@ -201,7 +224,11 @@ class ReadingProvider extends ChangeNotifier {
 
   void _handleRemoteRevision() {
     if (_isDisposed) return;
-    unawaited(_reloadSyncedReaderState());
+    unawaited(
+      _reloadSyncedReaderState().catchError((Object error, StackTrace stack) {
+        debugPrint('Reader state refresh failed: $error\n$stack');
+      }),
+    );
   }
 
   Future<void> _reloadSyncedReaderState() async {
@@ -221,9 +248,12 @@ class ReadingProvider extends ChangeNotifier {
         ? null
         : await _storage.getNovelReadingProgress(novel);
     if (!_isSettingsReadCurrent(owner, revision, mutationGeneration)) return;
+    final defaultSettings = ReadingSettings();
     _settings = savedSettings == null
-        ? ReadingSettings()
-        : ReadingSettings.fromJson(savedSettings);
+        ? defaultSettings
+        : ReadingSettings.containsReaderSettings(savedSettings)
+        ? ReadingSettings.fromJson(savedSettings)
+        : _applyDevicePreferences(defaultSettings, savedSettings);
     _settingsMutationGeneration += 1;
     _currentProgress = progressData == null
         ? null
@@ -261,6 +291,7 @@ class ReadingProvider extends ChangeNotifier {
     _pendingSettingsWrite = _PendingSettingsWrite(
       _ownerUserIdProvider(),
       settings.toJson(),
+      _settingsMutationGeneration,
     );
     _settingsSaveTimer?.cancel();
     _settingsSaveTimer = Timer(_debounceDuration, () {
@@ -280,6 +311,20 @@ class ReadingProvider extends ChangeNotifier {
     return operation;
   }
 
+  ReadingSettings _applyDevicePreferences(
+    ReadingSettings base,
+    Map<String, dynamic> payload,
+  ) {
+    final brightness = payload['brightness'];
+    final useSystemBrightness = payload['useSystemBrightness'];
+    return ReadingSettings.fromJson({
+      ...base.toJson(),
+      if (brightness is num) 'brightness': brightness.toDouble(),
+      if (useSystemBrightness is bool)
+        'useSystemBrightness': useSystemBrightness,
+    });
+  }
+
   @override
   void dispose() {
     _settingsSaveTimer?.cancel();
@@ -292,6 +337,7 @@ class ReadingProvider extends ChangeNotifier {
           _PendingSettingsWrite(
             pending.ownerUserId,
             Map<String, dynamic>.from(pending.settings),
+            pending.mutationGeneration,
           ),
         ).catchError((Object _, StackTrace _) {}),
       );
@@ -303,8 +349,13 @@ class ReadingProvider extends ChangeNotifier {
 }
 
 class _PendingSettingsWrite {
-  const _PendingSettingsWrite(this.ownerUserId, this.settings);
+  const _PendingSettingsWrite(
+    this.ownerUserId,
+    this.settings,
+    this.mutationGeneration,
+  );
 
   final String ownerUserId;
   final Map<String, dynamic> settings;
+  final int mutationGeneration;
 }

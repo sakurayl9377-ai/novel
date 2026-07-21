@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -24,6 +25,34 @@ void main() {
   });
 
   tearDown(() => database.close());
+
+  test(
+    'device brightness alone does not create account reader settings',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        ReaderSettingsRepository.brightnessPreferencesKey: 0.4,
+        ReaderSettingsRepository.systemBrightnessPreferencesKey: false,
+      });
+      final preferences = await SharedPreferences.getInstance();
+      final repository = ReaderSettingsRepository(
+        database: database,
+        preferences: preferences,
+        deviceIdProvider: () async => 'device-a',
+      );
+
+      final loaded = await repository.load(ownerUserId: ProgressOwner.guest);
+      expect(loaded?['brightness'], 0.4);
+      expect(loaded?['useSystemBrightness'], isFalse);
+      expect(loaded?.containsKey('fontSize'), isFalse);
+      expect(
+        await database.getByContentKey(
+          ReaderSettingsRepository.contentKey,
+          ownerUserId: ProgressOwner.guest,
+        ),
+        isNull,
+      );
+    },
+  );
 
   test('explicit content keys support owner-scoped prefix CRUD', () async {
     const identity = ContentIdentity(
@@ -128,10 +157,9 @@ void main() {
         (await repository.load(ownerUserId: 'user-a'))?['fontFamily'],
         'legacy-serif',
       );
-      expect(
-        (await repository.load(ownerUserId: 'user-b'))?.containsKey('fontSize'),
-        isFalse,
-      );
+      final userBInitial = await repository.load(ownerUserId: 'user-b');
+      expect(userBInitial?.containsKey('fontSize'), isFalse);
+      expect(userBInitial?['brightness'], 0.65);
 
       await repository.save(
         const {
@@ -164,6 +192,124 @@ void main() {
       );
     },
   );
+
+  test(
+    'local reader settings advance past a future stored timestamp',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      const identity = ContentIdentity(
+        contentType: ContentType.novel,
+        sourceKey: 'reader_settings',
+        itemId: 'v1',
+      );
+      await database.applyRemote(
+        const ContentProgressRecord(
+          identity: identity,
+          contentKey: ReaderSettingsRepository.contentKey,
+          subItemId: 'settings',
+          payload: {'fontSize': 23.0},
+          metadata: {'namespace': 'reader_settings', 'version': 1},
+          deviceId: 'remote-device',
+          clientUpdatedAtMs: 5000,
+          deleted: false,
+          dirty: false,
+        ),
+        userId: 'user-a',
+      );
+      final repository = ReaderSettingsRepository(
+        database: database,
+        preferences: preferences,
+        deviceIdProvider: () async => 'local-device',
+        now: () => DateTime.fromMillisecondsSinceEpoch(1000),
+      );
+
+      await repository.save(const {'fontSize': 31.0}, ownerUserId: 'user-a');
+
+      final stored = await database.getByContentKey(
+        ReaderSettingsRepository.contentKey,
+        ownerUserId: 'user-a',
+      );
+      expect(stored?.payload['fontSize'], 31.0);
+      expect(stored?.clientUpdatedAtMs, 5001);
+      expect(stored?.dirty, isTrue);
+    },
+  );
+
+  test(
+    'reader settings saves retain the newest invocation during delays',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      final firstDeviceId = Completer<String>();
+      final firstDeviceIdRequested = Completer<void>();
+      var deviceIdCalls = 0;
+      final repository = ReaderSettingsRepository(
+        database: database,
+        preferences: preferences,
+        deviceIdProvider: () {
+          deviceIdCalls += 1;
+          if (deviceIdCalls == 1) {
+            firstDeviceIdRequested.complete();
+            return firstDeviceId.future;
+          }
+          return Future<String>.value('device-a');
+        },
+        now: () => DateTime.fromMillisecondsSinceEpoch(1000),
+      );
+
+      final olderSave = repository.save(
+        const {'fontSize': 21.0},
+        ownerUserId: 'user-a',
+        updatedAtMs: 1000,
+      );
+      await firstDeviceIdRequested.future;
+      final newerSave = repository.save(
+        const {'fontSize': 31.0},
+        ownerUserId: 'user-a',
+        updatedAtMs: 2000,
+      );
+      expect(deviceIdCalls, 1);
+      firstDeviceId.complete('device-a');
+      await Future.wait([olderSave, newerSave]);
+
+      final stored = await database.getByContentKey(
+        ReaderSettingsRepository.contentKey,
+        ownerUserId: 'user-a',
+      );
+      expect(stored?.payload['fontSize'], 31.0);
+      expect(stored?.clientUpdatedAtMs, 2000);
+    },
+  );
+
+  test('a failed reader settings save does not block a later save', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    var shouldFail = true;
+    final repository = ReaderSettingsRepository(
+      database: database,
+      preferences: preferences,
+      deviceIdProvider: () {
+        if (shouldFail) {
+          shouldFail = false;
+          return Future<String>.error(StateError('device id unavailable'));
+        }
+        return Future<String>.value('device-a');
+      },
+    );
+
+    await expectLater(
+      repository.save(const {'fontSize': 21.0}, ownerUserId: 'user-a'),
+      throwsStateError,
+    );
+    await repository.save(const {'fontSize': 31.0}, ownerUserId: 'user-a');
+
+    final stored = await database.getByContentKey(
+      ReaderSettingsRepository.contentKey,
+      ownerUserId: 'user-a',
+    );
+    expect(stored?.payload['fontSize'], 31.0);
+  });
 
   test(
     'novel bookmarks use stable namespaces and local books stay clean',
