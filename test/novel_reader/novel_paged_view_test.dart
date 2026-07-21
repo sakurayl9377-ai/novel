@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/features/novel_reader/novel_paged_view.dart';
 import 'package:novel_app/features/reader_core/reader_modes.dart';
+import 'package:novel_app/utils/reading_text_range.dart';
 
 void main() {
   final content = List.generate(
@@ -15,6 +16,8 @@ void main() {
     required int initialOffset,
     TextRange activeRange = TextRange.empty,
     void Function(int page, int offset)? onChanged,
+    ValueChanged<int>? onListenFromOffset,
+    VoidCallback? onToggleControls,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -35,7 +38,8 @@ void main() {
             onPositionSettled: (_, _) {},
             onNeedNextChapter: () async {},
             onNeedPreviousChapter: () async {},
-            onToggleControls: () {},
+            onToggleControls: onToggleControls ?? () {},
+            onListenFromOffset: onListenFromOffset,
           ),
         ),
       ),
@@ -83,6 +87,7 @@ void main() {
         mode: NovelPageMode.simulation,
         controller: controller,
         initialOffset: content.length ~/ 3,
+        onListenFromOffset: (_) {},
       ),
     );
     await tester.pumpAndSettle();
@@ -118,6 +123,44 @@ void main() {
     expect(find.byType(RichText).evaluate().length, lessThan(8));
   });
 
+  testWidgets(
+    'paged paragraph menu preserves taps and reports paragraph start',
+    (tester) async {
+      final controller = NovelPagedViewController();
+      var toggleCount = 0;
+      int? listenOffset;
+      await tester.pumpWidget(
+        app(
+          mode: NovelPageMode.horizontalSlide,
+          controller: controller,
+          initialOffset: 0,
+          onToggleControls: () => toggleCount++,
+          onListenFromOffset: (offset) => listenOffset = offset,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pageView = find.byType(PageView);
+      await tester.tapAt(tester.getCenter(pageView));
+      await tester.pump();
+      expect(toggleCount, 1);
+
+      final richText = find.byType(RichText).hitTestable().first;
+      await tester.longPressAt(tester.getCenter(richText));
+      await tester.pumpAndSettle();
+      expect(find.text('从本段听'), findsOneWidget);
+
+      await tester.tap(find.text('从本段听'));
+      await tester.pumpAndSettle();
+      expect(listenOffset, isNotNull);
+      expect(content[listenOffset!], '这');
+      expect(
+        readingParagraphStartForOffset(content, listenOffset!),
+        listenOffset,
+      );
+    },
+  );
+
   testWidgets('TTS active paragraph follows to its paginated page', (
     tester,
   ) async {
@@ -144,6 +187,34 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.currentPage, greaterThan(0));
+  });
+
+  testWidgets('updated initial offset relocates the existing paged view', (
+    tester,
+  ) async {
+    final controller = NovelPagedViewController();
+    await tester.pumpWidget(
+      app(
+        mode: NovelPageMode.horizontalSlide,
+        controller: controller,
+        initialOffset: 0,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(controller.currentPage, 0);
+
+    final target = content.length * 3 ~/ 4;
+    await tester.pumpWidget(
+      app(
+        mode: NovelPageMode.horizontalSlide,
+        controller: controller,
+        initialOffset: target,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.currentPage, greaterThan(0));
+    expect(controller.currentCharPosition, lessThanOrEqualTo(target));
   });
 
   testWidgets('switching page effects never shares one PageController', (

@@ -11,10 +11,12 @@ import '../models/reading_progress.dart';
 import '../providers/bookshelf_provider.dart';
 import '../providers/book_source_provider.dart';
 import '../providers/reading_provider.dart';
+import '../services/novel_offline_cache_service.dart';
 import '../utils/auth_gate.dart';
 import '../widgets/book_cover_widget.dart';
 import '../widgets/chapter_list_widget.dart';
 import '../widgets/comment_preview_panel.dart';
+import '../widgets/novel_cache_sheet.dart';
 import 'comment_thread_screen.dart';
 import 'reading_screen.dart';
 
@@ -64,10 +66,14 @@ class _BookDetailScreenState extends State<BookDetailScreen>
     final readingProvider = context.read<ReadingProvider>();
     try {
       final progressFuture = readingProvider.loadProgress(_novel);
-      final detailFuture = _novel.isLocal
-          ? Future<Novel>.value(_novel)
-          : sourceProvider.getBookDetail(_novel);
-      final detailedNovel = await detailFuture;
+      var detailedNovel = _novel;
+      if (!_novel.isLocal) {
+        try {
+          detailedNovel = await sourceProvider.getBookDetail(_novel);
+        } catch (_) {
+          // Cached chapters remain usable when the detail endpoint is offline.
+        }
+      }
       final chaptersFuture = sourceProvider.getChapterList(detailedNovel);
       final storedProgress = await progressFuture;
       final savedProgress = resolveNovelEntryProgress([
@@ -712,6 +718,50 @@ class _BookDetailScreenState extends State<BookDetailScreen>
     );
   }
 
+  Future<void> _showFullBookDownload() async {
+    if (_chapters.isEmpty && !_isLoadingChapters) await _loadChapters();
+    if (!mounted) return;
+    if (_chapters.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('章节目录还没有加载成功，请稍后重试')));
+      return;
+    }
+    final provider = context.read<BookSourceProvider>();
+    final currentIndex =
+        (_readingProgress?.chapterIndex ?? _novel.currentChapterIndex)
+            .clamp(0, _chapters.length - 1)
+            .toInt();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
+      showDragHandle: false,
+      builder: (_) => NovelCacheSheet(
+        novel: _novel,
+        chapters: _chapters,
+        currentChapterIndex: currentIndex,
+        provider: provider,
+        initialRange: NovelCacheBatchRange.full,
+        canStart: (range) {
+          final requiresLogin = range
+              .chapterIndices(
+                chapterCount: _chapters.length,
+                startIndex: currentIndex,
+              )
+              .any((index) => index >= _guestChapterLimit);
+          return ensureLoggedInForContent(
+            context,
+            allowed: !requiresLogin,
+            title: '登录后下载整书',
+            message: '登录后可下载试看范围之外的章节。',
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildBottomBar() {
     final isOnShelf = context.watch<BookshelfProvider>().isOnShelf(_novel.id);
     final hasProgress =
@@ -720,7 +770,59 @@ class _BookDetailScreenState extends State<BookDetailScreen>
             _readingProgress!.charPosition > 0);
     final isBusy = _isLoadingChapters || _isOpeningReading;
     final actionLabel = isBusy ? '加载目录中' : (hasProgress ? '继续阅读' : '开始阅读');
+    return BookDetailBottomBar(
+      isOnShelf: isOnShelf,
+      isBusy: isBusy,
+      canDownload: !_novel.isLocal,
+      actionLabel: actionLabel,
+      onDownload: _showFullBookDownload,
+      onToggleShelf: _toggleBookshelf,
+      onOpenReading: _openReading,
+    );
+  }
 
+  void _toggleBookshelf() async {
+    if (context.read<BookshelfProvider>().isOnShelf(_novel.id)) {
+      await context.read<BookshelfProvider>().removeFromBookshelf(_novel.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已移出书架')));
+    } else {
+      await context.read<BookshelfProvider>().addToBookshelf(_novel);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已加入书架')));
+    }
+  }
+}
+
+@visibleForTesting
+class BookDetailBottomBar extends StatelessWidget {
+  const BookDetailBottomBar({
+    super.key,
+    required this.isOnShelf,
+    required this.isBusy,
+    required this.canDownload,
+    required this.actionLabel,
+    required this.onDownload,
+    required this.onToggleShelf,
+    required this.onOpenReading,
+  });
+
+  final bool isOnShelf;
+  final bool isBusy;
+  final bool canDownload;
+  final String actionLabel;
+  final VoidCallback onDownload;
+  final VoidCallback onToggleShelf;
+  final VoidCallback onOpenReading;
+
+  @override
+  Widget build(BuildContext context) {
+    final compactForLargeText =
+        MediaQuery.textScalerOf(context).scale(1) >= 1.5;
     return Container(
       padding: EdgeInsets.only(
         left: 16,
@@ -743,54 +845,104 @@ class _BookDetailScreenState extends State<BookDetailScreen>
         child: Row(
           children: [
             SizedBox(
-              width: 112,
-              height: 46,
-              child: TextButton.icon(
-                onPressed: _toggleBookshelf,
-                icon: Icon(
-                  isOnShelf ? Icons.bookmark_rounded : Icons.bookmark_border,
-                  size: 19,
-                ),
-                label: Text(isOnShelf ? '已在书架' : '加入书架'),
-              ),
+              width: compactForLargeText ? 48 : 82,
+              height: 48,
+              child: compactForLargeText
+                  ? IconButton(
+                      tooltip: '下载整书',
+                      onPressed: isBusy || !canDownload ? null : onDownload,
+                      icon: const Icon(Icons.download_for_offline_outlined),
+                    )
+                  : TextButton.icon(
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: isBusy || !canDownload ? null : onDownload,
+                      icon: const Icon(
+                        Icons.download_for_offline_outlined,
+                        size: 18,
+                      ),
+                      label: const Text(
+                        '下载整书',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11),
+                      ),
+                    ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 4),
+            SizedBox(
+              width: compactForLargeText ? 48 : 82,
+              height: 48,
+              child: compactForLargeText
+                  ? IconButton(
+                      tooltip: isOnShelf ? '移出书架' : '加入书架',
+                      onPressed: onToggleShelf,
+                      icon: Icon(
+                        isOnShelf
+                            ? Icons.bookmark_rounded
+                            : Icons.bookmark_border,
+                      ),
+                    )
+                  : TextButton.icon(
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: onToggleShelf,
+                      icon: Icon(
+                        isOnShelf
+                            ? Icons.bookmark_rounded
+                            : Icons.bookmark_border,
+                        size: 18,
+                      ),
+                      label: Text(
+                        isOnShelf ? '已在书架' : '加入书架',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+            ),
+            const SizedBox(width: 8),
             Expanded(
               child: SizedBox(
-                height: 46,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppTokens.brand,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  onPressed: isBusy ? null : _openReading,
-                  icon: const Icon(Icons.menu_book, size: 20),
-                  label: Text(actionLabel),
-                ),
+                height: 48,
+                child: compactForLargeText
+                    ? FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppTokens.brand,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        onPressed: isBusy ? null : onOpenReading,
+                        child: Text(
+                          actionLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                        ),
+                      )
+                    : FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppTokens.brand,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        onPressed: isBusy ? null : onOpenReading,
+                        icon: const Icon(Icons.menu_book, size: 20),
+                        label: Text(actionLabel),
+                      ),
               ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  void _toggleBookshelf() async {
-    if (context.read<BookshelfProvider>().isOnShelf(_novel.id)) {
-      await context.read<BookshelfProvider>().removeFromBookshelf(_novel.id);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已移出书架')));
-    } else {
-      await context.read<BookshelfProvider>().addToBookshelf(_novel);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已加入书架')));
-    }
   }
 }
 

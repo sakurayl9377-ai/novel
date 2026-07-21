@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import '../reader_core/reader_modes.dart';
 import 'novel_pagination.dart';
 import 'novel_reader_backdrop.dart';
-import 'novel_text_layout.dart';
+import 'selectable_novel_text.dart';
 
 typedef NovelPagePositionCallback =
     void Function(int pageIndex, int charPosition);
@@ -44,6 +44,7 @@ class NovelPagedView extends StatefulWidget {
     required this.onNeedNextChapter,
     required this.onNeedPreviousChapter,
     required this.onToggleControls,
+    this.onListenFromOffset,
     this.controller,
     this.activeTextRange = TextRange.empty,
     this.singleHandMode = false,
@@ -62,6 +63,7 @@ class NovelPagedView extends StatefulWidget {
   final Future<void> Function() onNeedNextChapter;
   final Future<void> Function() onNeedPreviousChapter;
   final VoidCallback onToggleControls;
+  final ValueChanged<int>? onListenFromOffset;
   final NovelPagedViewController? controller;
   final TextRange activeTextRange;
   final bool singleHandMode;
@@ -114,6 +116,14 @@ class _NovelPagedViewState extends State<NovelPagedView> {
     }
     if (oldWidget.mode != widget.mode) {
       _resetPageEffect();
+    }
+    if (oldWidget.initialTextOffset != widget.initialTextOffset) {
+      final requestedOffset = widget.initialTextOffset;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.initialTextOffset == requestedOffset) {
+          _followInitialTextOffset(requestedOffset);
+        }
+      });
     }
     if (widget.activeTextRange.isValid &&
         widget.activeTextRange.start != _lastFollowedHighlightOffset &&
@@ -230,6 +240,18 @@ class _NovelPagedViewState extends State<NovelPagedView> {
     );
   }
 
+  void _followInitialTextOffset(int offset) {
+    final pagination = _pagination;
+    final controller = _pageController;
+    if (pagination == null || controller == null || !controller.hasClients) {
+      return;
+    }
+    final target = pagination.pageForOffset(offset);
+    if (target == _currentPage) return;
+    _resetPageEffect();
+    controller.jumpToPage(target);
+  }
+
   bool _onScrollNotification(ScrollNotification notification) {
     if (notification.depth != 0) return false;
     if (notification is ScrollStartNotification &&
@@ -320,9 +342,11 @@ class _NovelPagedViewState extends State<NovelPagedView> {
                 constraints.maxHeight <= 0) {
               return;
             }
-            _curlTouchYFraction = (details.localPosition.dy /
-                    constraints.maxHeight)
-                .clamp(0.12, 0.92);
+            _curlTouchYFraction =
+                (details.localPosition.dy / constraints.maxHeight).clamp(
+                  0.12,
+                  0.92,
+                );
           },
           onTapUp: (details) => _handleTap(details, constraints.maxWidth),
           child: Stack(
@@ -419,22 +443,18 @@ class _NovelPagedViewState extends State<NovelPagedView> {
         widget.horizontalPadding,
         30,
       ),
-      child: RichText(
-        textScaler: TextScaler.noScaling,
-        textAlign: TextAlign.justify,
-        text: NovelTextLayout.buildSpan(
-          text: text,
-          globalStartOffset: page.startOffset,
-          previousCodeUnit: page.startOffset > 0
-              ? widget.content.codeUnitAt(page.startOffset - 1)
-              : null,
-          style: widget.textStyle,
-          paragraphSpacing: widget.paragraphSpacing,
-          highlightRange: highlight,
-          highlightColor: highlightColor,
-        ),
-        softWrap: true,
-        overflow: TextOverflow.clip,
+      child: SelectableNovelText(
+        text: text,
+        globalStartOffset: page.startOffset,
+        previousCodeUnit: page.startOffset > 0
+            ? widget.content.codeUnitAt(page.startOffset - 1)
+            : null,
+        style: widget.textStyle,
+        paragraphSpacing: widget.paragraphSpacing,
+        highlightRange: highlight,
+        highlightColor: highlightColor,
+        onListenFromOffset: widget.onListenFromOffset,
+        useNativeSelection: false,
       ),
     );
     return RepaintBoundary(
@@ -552,7 +572,9 @@ class _PaperCurlFrontClipper extends CustomClipper<Path> {
     final bow =
         math.min(20.0, size.width * 0.05) * math.sin(math.pi * progress);
     final tilt =
-        (touchYFraction - 0.5) * size.width * 0.42 *
+        (touchYFraction - 0.5) *
+        size.width *
+        0.42 *
         math.sin(math.pi * progress);
     final topFoldX = (foldX - tilt).clamp(0.0, size.width);
     final bottomFoldX = (foldX + tilt).clamp(0.0, size.width);

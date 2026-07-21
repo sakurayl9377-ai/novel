@@ -9,6 +9,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 
 import '../models/tts_settings.dart';
 import 'iflytek_tts_service.dart';
+import 'tts_audio_session.dart';
 
 class TtsService {
   static const int _systemMaxChunkLength = 3500;
@@ -17,11 +18,13 @@ class TtsService {
   late final FlutterTts _flutterTts;
   final AudioPlayer _audioPlayer = AudioPlayer();
   final IflytekTtsService _iflytekTts = IflytekTtsService();
+  final TtsAudioSessionPort _audioSession;
   TtsSettings settings = const TtsSettings();
   String authToken = '';
   VoidCallback? onStart;
   VoidCallback? onComplete;
   VoidCallback? onError;
+  VoidCallback? onInterrupted;
   void Function(String message)? onErrorMessage;
   void Function(int startOffset, int endOffset, String word)? onProgress;
   bool _isInitialized = false;
@@ -40,6 +43,7 @@ class TtsService {
   StreamSubscription<PlayerState>? _playerStateSubscription;
   StreamSubscription<Duration>? _playerPositionSubscription;
   StreamSubscription<Duration>? _playerDurationSubscription;
+  StreamSubscription<TtsAudioInterruptionEvent>? _audioInterruptionSubscription;
   String _lastErrorMessage = '';
   Duration _currentAudioDuration = Duration.zero;
   Future<_IflytekPrefetchResult>? _prefetchedIflytekAudio;
@@ -48,6 +52,11 @@ class TtsService {
   _SystemUtterancePhase _systemUtterancePhase = _SystemUtterancePhase.idle;
   int _systemUtteranceToken = 0;
   int _systemUtteranceChunkIndex = -1;
+  bool _currentSystemUtteranceStartedNatively = false;
+  bool _handlingAudioInterruption = false;
+  final List<DateTime> _expectedNativeInterruptionDeadlines = <DateTime>[];
+  int _armedIntentionalSystemUtteranceToken = 0;
+  int _armedIntentionalSystemUtteranceChunkIndex = -1;
 
   bool get isSpeaking => _isSpeaking;
   bool get isPaused => _isPaused;
@@ -61,9 +70,13 @@ class TtsService {
 
   bool _lastErrorIsRecoverable = false;
 
-  TtsService() {
+  TtsService({TtsAudioSessionPort? audioSession})
+    : _audioSession = audioSession ?? SystemTtsAudioSession() {
     _flutterTts = FlutterTts();
     _init();
+    _audioInterruptionSubscription = _audioSession.events.listen((event) {
+      if (event.begin) unawaited(_handleAudioInterruption());
+    });
     _playerStateSubscription = _audioPlayer.onPlayerStateChanged.listen((
       state,
     ) {
@@ -99,10 +112,25 @@ class TtsService {
       await trySet(() => _flutterTts.setVolume(_volume));
       await trySet(() => _flutterTts.setPitch(_pitch));
       await trySet(() => _flutterTts.awaitSpeakCompletion(false));
+      await trySet(
+        () => _audioPlayer.setAudioContext(
+          AudioContext(
+            android: const AudioContextAndroid(
+              contentType: AndroidContentType.speech,
+              usageType: AndroidUsageType.media,
+              audioFocus: AndroidAudioFocus.none,
+            ),
+          ),
+        ),
+      );
 
-      _flutterTts.setStartHandler(_handleSystemStart);
+      _flutterTts.setStartHandler(_handleNativeSystemStart);
 
       _flutterTts.setCompletionHandler(_handleSystemComplete);
+
+      _flutterTts.setPauseHandler(_handleUnexpectedSystemInterruption);
+
+      _flutterTts.setCancelHandler(_handleUnexpectedSystemInterruption);
 
       _flutterTts.setProgressHandler((
         String text,
@@ -110,13 +138,14 @@ class TtsService {
         int endOffset,
         String word,
       ) {
-        if (!_hasCurrentSystemUtterance ||
-            _systemUtterancePhase == _SystemUtterancePhase.submitting) {
-          return;
-        }
+        if (!_hasCurrentSystemUtterance) return;
 
         final chunk = _chunks[_chunkIndex];
         if (text != chunk.text) return;
+        _confirmCurrentSystemUtteranceStartedNatively();
+        if (_systemUtterancePhase == _SystemUtterancePhase.submitting) {
+          return;
+        }
         if (_systemUtterancePhase == _SystemUtterancePhase.queued) {
           _handleSystemStart();
         }
@@ -133,14 +162,14 @@ class TtsService {
 
       _flutterTts.setErrorHandler((msg) {
         if (!_hasCurrentSystemUtterance) return;
+        final token = _speakToken;
         _invalidateSystemUtterance();
         _chunks = const [];
         _isSpeaking = false;
         _isPaused = false;
         _lastErrorMessage = '系统语音朗读中断，请重新开始朗读';
         _lastErrorIsRecoverable = false;
-        onErrorMessage?.call(_lastErrorMessage);
-        onError?.call();
+        unawaited(_finishSystemError(token));
       });
 
       _isInitialized = true;
@@ -151,6 +180,7 @@ class TtsService {
 
   Future<bool> speak(String text) async {
     if (_isStarting) return false;
+    _prepareIntentionalSystemStop();
     final token = ++_speakToken;
     _isStarting = true;
     _lastErrorMessage = '';
@@ -163,6 +193,7 @@ class TtsService {
       if (!_isInitialized || token != _speakToken) return false;
 
       _isStopping = true;
+      _prepareIntentionalSystemStop();
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
@@ -194,10 +225,27 @@ class TtsService {
           onErrorMessage?.call(_lastErrorMessage);
           return false;
         }
-        return _speakIflytekChunk(token);
       }
-      await _applySelectedSystemVoice();
-      return _speakSystemChunk(token);
+
+      if (!await _activateAudioSession()) {
+        _lastErrorMessage = '其他应用正在占用音频，请稍后点击继续';
+        _lastErrorIsRecoverable = true;
+        onErrorMessage?.call(_lastErrorMessage);
+        return false;
+      }
+      if (token != _speakToken) {
+        await _deactivateAudioSession();
+        return false;
+      }
+
+      final started = settings.useIflytek
+          ? await _speakIflytekChunk(token)
+          : await (() async {
+              await _applySelectedSystemVoice();
+              return _speakSystemChunk(token);
+            })();
+      if (!started) await _deactivateAudioSession();
+      return started;
     } catch (e) {
       if (token == _speakToken) {
         final failure = _friendlyTtsFailure(e);
@@ -205,6 +253,7 @@ class TtsService {
         _lastErrorIsRecoverable = failure.recoverable;
         onErrorMessage?.call(_lastErrorMessage);
       }
+      await _deactivateAudioSession();
       return false;
     } finally {
       if (token == _speakToken) _isStopping = false;
@@ -213,9 +262,11 @@ class TtsService {
   }
 
   Future<bool> stop() async {
+    _prepareIntentionalSystemStop();
     final token = ++_speakToken;
     try {
       _isStopping = true;
+      _prepareIntentionalSystemStop();
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
@@ -228,16 +279,23 @@ class TtsService {
     } catch (e) {
       return false;
     } finally {
+      await _deactivateAudioSession();
       if (token == _speakToken) _isStopping = false;
     }
   }
 
   Future<bool> pause() async {
+    if (_isPaused) return true;
+    if (!_isSpeaking && !_isStarting) return false;
     try {
+      _isStopping = true;
+      _prepareIntentionalSystemStop();
       if (settings.useIflytek) {
         await _audioPlayer.pause();
         if (_audioPlayer.state != PlayerState.paused) return false;
+        _isSpeaking = false;
         _isPaused = true;
+        await _deactivateAudioSession();
         return true;
       }
 
@@ -246,7 +304,6 @@ class TtsService {
       // the native utterance instead and keep _currentPos so resume() can
       // restart from the last progress callback.
       if (Platform.isAndroid) {
-        _isStopping = true;
         _invalidateSystemUtterance();
         await _flutterTts.stop().timeout(
           const Duration(seconds: 2),
@@ -254,13 +311,16 @@ class TtsService {
         );
         _isSpeaking = false;
         _isPaused = true;
+        await _deactivateAudioSession();
         return true;
       }
       final result = await _flutterTts.pause().timeout(
         const Duration(seconds: 2),
         onTimeout: () => null,
       );
+      _isSpeaking = result != 1;
       _isPaused = result == 1;
+      if (_isPaused) await _deactivateAudioSession();
       return _isPaused;
     } catch (e) {
       return false;
@@ -270,26 +330,45 @@ class TtsService {
   }
 
   Future<bool> resume() async {
+    _prepareIntentionalSystemStop();
     final token = ++_speakToken;
     try {
+      if (!await _activateAudioSession()) return false;
+      if (token != _speakToken) {
+        await _deactivateAudioSession();
+        return false;
+      }
       if (settings.useIflytek) {
         await _audioPlayer.resume();
-        if (token != _speakToken) return false;
+        if (token != _speakToken) {
+          await _deactivateAudioSession();
+          return false;
+        }
         _isPaused = false;
         _isSpeaking = true;
         return true;
       }
-      if (_currentText.isEmpty) return false;
+      if (_currentText.isEmpty) {
+        await _deactivateAudioSession();
+        return false;
+      }
 
       _isStopping = true;
+      _prepareIntentionalSystemStop();
       _chunks = const [];
       _clearIflytekPrefetch();
       _chunkIndex = 0;
       await _stopNative();
-      if (token != _speakToken) return false;
+      if (token != _speakToken) {
+        await _deactivateAudioSession();
+        return false;
+      }
       _isStopping = false;
       await Future<void>.delayed(const Duration(milliseconds: 80));
-      if (token != _speakToken) return false;
+      if (token != _speakToken) {
+        await _deactivateAudioSession();
+        return false;
+      }
 
       final resumeOffset = _currentPos.clamp(0, _currentText.length).toInt();
       final resumeText = _currentText.substring(resumeOffset);
@@ -300,8 +379,11 @@ class TtsService {
       );
       _chunkIndex = 0;
       _isPaused = false;
-      return await _speakSystemChunk(token);
+      final resumed = await _speakSystemChunk(token);
+      if (!resumed) await _deactivateAudioSession();
+      return resumed;
     } catch (e) {
+      await _deactivateAudioSession();
       return false;
     } finally {
       if (token == _speakToken) _isStopping = false;
@@ -333,7 +415,152 @@ class TtsService {
         .replaceAll(RegExp(r'[\u200B-\u200D\uFEFF]'), ' ');
   }
 
+  Future<bool> _activateAudioSession() async {
+    try {
+      await _audioSession.configureForSpeech();
+      return await _audioSession.activate();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _deactivateAudioSession() async {
+    try {
+      await _audioSession.deactivate();
+    } catch (_) {}
+  }
+
+  Future<void> _handleAudioInterruption() async {
+    if (_handlingAudioInterruption ||
+        _isStopping ||
+        _isPaused ||
+        (!_isSpeaking && !_isStarting)) {
+      return;
+    }
+    _handlingAudioInterruption = true;
+    try {
+      final interrupted = _isStarting && !_isSpeaking
+          ? await _interruptPendingStart()
+          : await pause();
+      if (!interrupted) return;
+      onInterrupted?.call();
+    } finally {
+      _handlingAudioInterruption = false;
+    }
+  }
+
+  void _handleUnexpectedSystemInterruption() {
+    if ((_isStopping ||
+            !_hasCurrentSystemUtterance ||
+            !_currentSystemUtteranceStartedNatively) &&
+        _consumeExpectedNativeInterruptionCallback()) {
+      return;
+    }
+    if (_handlingAudioInterruption ||
+        _isStopping ||
+        _isPaused ||
+        (!_isSpeaking && !_isStarting) ||
+        !_hasCurrentSystemUtterance) {
+      return;
+    }
+
+    _handlingAudioInterruption = true;
+    if (_isStarting && !_isSpeaking) {
+      unawaited(_finishPendingSystemInterruption());
+      return;
+    }
+    _invalidateSystemUtterance();
+    _isSpeaking = false;
+    _isPaused = true;
+    unawaited(_finishUnexpectedSystemInterruption());
+  }
+
+  Future<void> _finishPendingSystemInterruption() async {
+    try {
+      if (await _interruptPendingStart(armExpectedNativeCallback: false)) {
+        onInterrupted?.call();
+      }
+    } finally {
+      _handlingAudioInterruption = false;
+    }
+  }
+
+  Future<bool> _interruptPendingStart({
+    bool armExpectedNativeCallback = true,
+  }) async {
+    if (!_isStarting || _isSpeaking) return false;
+    if (armExpectedNativeCallback) _prepareIntentionalSystemStop();
+    final token = ++_speakToken;
+    _isStopping = true;
+    _chunks = const [];
+    _clearIflytekPrefetch();
+    _chunkIndex = 0;
+    _invalidateSystemUtterance();
+    try {
+      try {
+        await _audioPlayer.stop();
+      } catch (_) {}
+      try {
+        await _flutterTts.stop().timeout(
+          const Duration(milliseconds: 800),
+          onTimeout: () => null,
+        );
+      } catch (_) {}
+      if (token != _speakToken) return false;
+      _isStarting = false;
+      _isSpeaking = false;
+      _isPaused = true;
+      _lastErrorMessage = '朗读已被其他音频暂停，点击继续可恢复';
+      _lastErrorIsRecoverable = true;
+      await _deactivateAudioSession();
+      return token == _speakToken;
+    } finally {
+      if (token == _speakToken) _isStopping = false;
+    }
+  }
+
+  Future<void> _finishUnexpectedSystemInterruption() async {
+    try {
+      await _deactivateAudioSession();
+      onInterrupted?.call();
+    } finally {
+      _handlingAudioInterruption = false;
+    }
+  }
+
+  void _pruneExpectedNativeInterruptionCallbacks(DateTime now) {
+    _expectedNativeInterruptionDeadlines.removeWhere(
+      (deadline) => !now.isBefore(deadline),
+    );
+  }
+
+  bool _consumeExpectedNativeInterruptionCallback() {
+    final now = DateTime.now();
+    _pruneExpectedNativeInterruptionCallbacks(now);
+    if (_expectedNativeInterruptionDeadlines.isEmpty) return false;
+    _expectedNativeInterruptionDeadlines.removeAt(0);
+    return true;
+  }
+
+  void _prepareIntentionalSystemStop() {
+    if (!_hasCurrentSystemUtterance) return;
+    final token = _systemUtteranceToken;
+    final chunkIndex = _systemUtteranceChunkIndex;
+    if (_armedIntentionalSystemUtteranceToken == token &&
+        _armedIntentionalSystemUtteranceChunkIndex == chunkIndex) {
+      return;
+    }
+    _armedIntentionalSystemUtteranceToken = token;
+    _armedIntentionalSystemUtteranceChunkIndex = chunkIndex;
+    final now = DateTime.now();
+    _pruneExpectedNativeInterruptionCallbacks(now);
+    _expectedNativeInterruptionDeadlines.add(
+      now.add(const Duration(seconds: 2)),
+    );
+  }
+
   Future<void> _stopNative() async {
+    _prepareIntentionalSystemStop();
     _invalidateSystemUtterance();
     await _audioPlayer.stop();
     await _flutterTts.stop().timeout(
@@ -358,10 +585,11 @@ class TtsService {
     final chunkIndex = _chunkIndex;
     _systemUtteranceToken = token;
     _systemUtteranceChunkIndex = chunkIndex;
+    _currentSystemUtteranceStartedNatively = false;
     _systemUtterancePhase = _SystemUtterancePhase.submitting;
 
     final result = await _flutterTts
-        .speak(chunk.text)
+        .speak(chunk.text, focus: false)
         .timeout(const Duration(seconds: 3), onTimeout: () => null);
     if (token != _speakToken ||
         chunkIndex != _chunkIndex ||
@@ -375,9 +603,9 @@ class TtsService {
     if (_isSpeaking) {
       _systemUtterancePhase = _SystemUtterancePhase.queued;
       // Some Android engines emit onStart before the MethodChannel call
-      // returns, while others omit range callbacks entirely. Treat native
-      // acceptance as the single start edge; a later platform start is then
-      // harmlessly ignored by the phase guard.
+      // returns, while others omit range callbacks entirely. Treat method
+      // acceptance as the single public start edge, while retaining the
+      // separate native-start flag as the cancel-generation fence.
       _handleSystemStart();
       _currentPos = chunk.offset;
       _emitChunkProgress(chunk);
@@ -407,6 +635,25 @@ class TtsService {
     onStart?.call();
   }
 
+  void _handleNativeSystemStart() {
+    if (_isStopping || !_hasCurrentSystemUtterance) return;
+    _confirmCurrentSystemUtteranceStartedNatively();
+    if (_systemUtterancePhase == _SystemUtterancePhase.queued) {
+      _handleSystemStart();
+    }
+  }
+
+  void _confirmCurrentSystemUtteranceStartedNatively() {
+    if (_currentSystemUtteranceStartedNatively) return;
+    _currentSystemUtteranceStartedNatively = true;
+    // Android delivers the old utterance's onStop before the replacement's
+    // onStart/onRangeStart through the same progress listener. flutter_tts
+    // drops the utterance IDs, so only native start/progress is a safe fence;
+    // a successful speak() result alone is not evidence that old callbacks
+    // have drained.
+    _expectedNativeInterruptionDeadlines.clear();
+  }
+
   void _handleSystemComplete() {
     if (_isStopping ||
         !_hasCurrentSystemUtterance ||
@@ -424,13 +671,27 @@ class TtsService {
     _chunks = const [];
     _isSpeaking = false;
     _isPaused = false;
+    unawaited(_finishSystemPlayback(token));
+  }
+
+  Future<void> _finishSystemPlayback(int token) async {
+    await _deactivateAudioSession();
+    if (token != _speakToken || _isSpeaking || _isPaused) return;
     onComplete?.call();
+  }
+
+  Future<void> _finishSystemError(int token) async {
+    await _deactivateAudioSession();
+    if (token != _speakToken || _isSpeaking || _isPaused) return;
+    onErrorMessage?.call(_lastErrorMessage);
+    onError?.call();
   }
 
   void _invalidateSystemUtterance() {
     _systemUtterancePhase = _SystemUtterancePhase.idle;
     _systemUtteranceToken = 0;
     _systemUtteranceChunkIndex = -1;
+    _currentSystemUtteranceStartedNatively = false;
   }
 
   Future<void> _prepareSystemTts() async {
@@ -534,8 +795,12 @@ class TtsService {
         token,
         _chunkIndex,
       );
+      if (token != _speakToken || _isStopping || _isPaused) return false;
       await _audioPlayer.play(DeviceFileSource(audioFile.path));
-      if (token != _speakToken) return false;
+      if (token != _speakToken || _isStopping || _isPaused) {
+        await _audioPlayer.stop();
+        return false;
+      }
       _isSpeaking = true;
       _isPaused = false;
       _lastErrorMessage = '';
@@ -641,6 +906,8 @@ class TtsService {
     }
     _isSpeaking = false;
     _isPaused = false;
+    await _deactivateAudioSession();
+    if (token != _speakToken) return;
     onComplete?.call();
   }
 
@@ -796,6 +1063,7 @@ class TtsService {
   }
 
   Future<void> dispose() async {
+    _prepareIntentionalSystemStop();
     _speakToken++;
     _isStopping = true;
     _invalidateSystemUtterance();
@@ -808,7 +1076,11 @@ class TtsService {
         subscription.cancel(),
       if (_playerDurationSubscription case final subscription?)
         subscription.cancel(),
+      if (_audioInterruptionSubscription case final subscription?)
+        subscription.cancel(),
     ]);
+    await _deactivateAudioSession();
+    await _audioSession.dispose();
     await _audioPlayer.dispose();
     await _flutterTts.stop();
     _isSpeaking = false;

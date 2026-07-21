@@ -27,6 +27,7 @@ import '../utils/auth_gate.dart';
 import '../utils/reading_text_range.dart';
 import '../widgets/reading_settings_panel.dart';
 import '../widgets/continuous_chapter_view.dart';
+import '../widgets/novel_cache_sheet.dart';
 
 class ReadingScreen extends StatefulWidget {
   static const routeName = '/novel/reading';
@@ -88,7 +89,9 @@ class _ReadingScreenState extends State<ReadingScreen>
   int? _pausedTtsPageIndex;
   int? _pausedTtsCharPosition;
   bool _ttsProviderBound = false;
-  bool _syncingTtsSession = false;
+  bool _ttsSessionSyncScheduled = false;
+  bool _lastObservedTtsPaused = false;
+  bool _syncPausedTtsPosition = false;
   bool _readerPlatformBound = false;
   bool _isAutoReading = false;
   int _continuousReaderSession = 0;
@@ -174,17 +177,28 @@ class _ReadingScreenState extends State<ReadingScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _handleTtsProviderChanged();
+      return;
+    }
     if (state != AppLifecycleState.inactive &&
         state != AppLifecycleState.paused &&
         state != AppLifecycleState.hidden) {
       return;
     }
-    // Persist the exact visible anchor whenever Android backgrounds the app.
-    // Relying only on scroll-end callbacks loses the intra-chapter position
-    // when the process is reclaimed before the reader route is popped.
-    unawaited(_saveVisibleProgressNow());
+    unawaited(_readingProvider.flushPendingSettings());
     final ttsProvider = _ttsProvider;
-    if (ttsProvider == null) return;
+    if (ttsProvider == null ||
+        !ttsProvider.hasActiveReadingSession ||
+        !ttsProvider.isOwnedBy(_ttsOwnerKey)) {
+      // Persist the exact visible anchor whenever Android backgrounds the app.
+      unawaited(_saveVisibleProgressNow());
+      return;
+    }
+    // A background TTS session can be several chapters ahead of the last
+    // rendered frame. Persist its own chapter snapshot, never a page chapter
+    // combined with a TTS offset from another chapter.
+    unawaited(ttsProvider.checkpointActiveReadingProgress());
     final ttsActive =
         ttsProvider.isSpeaking ||
         ttsProvider.isPaused ||
@@ -230,44 +244,45 @@ class _ReadingScreenState extends State<ReadingScreen>
   void _handleTtsProviderChanged() {
     final ttsProvider = _ttsProvider;
     if (!mounted || ttsProvider == null) return;
-    final ownsSession =
+    final ownedPausedSession =
         ttsProvider.hasActiveReadingSession &&
-        ttsProvider.isOwnedBy(_ttsOwnerKey);
-    if (!ownsSession) {
-      if (_showTtsPanel && !_syncingTtsSession) {
-        _syncingTtsSession = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _syncingTtsSession = false;
-          if (mounted && _showTtsPanel) {
-            setState(() => _showTtsPanel = false);
-          }
-        });
-      }
-      return;
+        ttsProvider.isOwnedBy(_ttsOwnerKey) &&
+        ttsProvider.isPaused;
+    if (ownedPausedSession && !_lastObservedTtsPaused) {
+      _syncPausedTtsPosition = true;
     }
-
-    final targetIndex = ttsProvider.activeChapterIndex;
-    final targetContent = ttsProvider.activeChapterContent;
-    if (_syncingTtsSession ||
-        targetIndex < 0 ||
-        targetIndex >= _chapters.length ||
-        targetContent.isEmpty ||
-        targetIndex == _currentChapterIndex) {
-      return;
-    }
-
-    _syncingTtsSession = true;
+    _lastObservedTtsPaused = ownedPausedSession;
+    if (_ttsSessionSyncScheduled) return;
+    _ttsSessionSyncScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _syncingTtsSession = false;
-      if (!mounted ||
-          !ttsProvider.hasActiveReadingSession ||
-          !ttsProvider.isOwnedBy(_ttsOwnerKey) ||
-          ttsProvider.activeChapterIndex != targetIndex) {
+      _ttsSessionSyncScheduled = false;
+      final syncPausedPosition = _syncPausedTtsPosition;
+      _syncPausedTtsPosition = false;
+      if (!mounted) return;
+      final latest = _ttsProvider;
+      if (latest == null ||
+          !latest.hasActiveReadingSession ||
+          !latest.isOwnedBy(_ttsOwnerKey)) {
+        if (_showTtsPanel) setState(() => _showTtsPanel = false);
         return;
       }
-      final position = ttsProvider.currentStartOffset
+
+      final targetIndex = latest.activeChapterIndex;
+      final targetContent = latest.activeChapterContent;
+      if (targetIndex < 0 ||
+          targetIndex >= _chapters.length ||
+          targetContent.isEmpty) {
+        return;
+      }
+      final position = latest.currentStartOffset
           .clamp(0, targetContent.length)
           .toInt();
+      final chapterChanged =
+          targetIndex != _currentChapterIndex || targetContent != _content;
+      if (!chapterChanged &&
+          (!syncPausedPosition || position == _lastCharPosition)) {
+        return;
+      }
       setState(() {
         _currentChapterIndex = targetIndex;
         _content = targetContent;
@@ -276,11 +291,15 @@ class _ReadingScreenState extends State<ReadingScreen>
         _lastScrollPosition = position / targetContent.length;
         _currentPageIndex = _pageIndexForCharPosition(targetContent, position);
         _continuousReaderSession++;
-        _showControls = false;
-        _showTtsPanel = true;
-        _clearPausedTtsAnchor();
+        if (chapterChanged) {
+          _showControls = false;
+          _showTtsPanel = true;
+          _clearPausedTtsAnchor();
+        }
       });
-      _readingProvider.setCurrentChapter(_chapters[targetIndex]);
+      if (chapterChanged) {
+        _readingProvider.setCurrentChapter(_chapters[targetIndex]);
+      }
       _publishReadingProgress();
     });
   }
@@ -487,6 +506,8 @@ class _ReadingScreenState extends State<ReadingScreen>
   int _currentProgressPosition([TtsProvider? ttsProvider]) {
     final tts = ttsProvider ?? context.read<TtsProvider>();
     if (tts.isOwnedBy(_ttsOwnerKey) &&
+        tts.activeChapterIndex == _currentChapterIndex &&
+        tts.activeChapterContent == _content &&
         (tts.isSpeaking || tts.isPaused || tts.isStarting) &&
         tts.currentStartOffset >= 0) {
       return tts.currentStartOffset.clamp(0, _content.length).toInt();
@@ -506,6 +527,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     final tts = ttsProvider ?? _ttsProvider;
     if (tts != null &&
         tts.isOwnedBy(_ttsOwnerKey) &&
+        tts.activeChapterIndex == _currentChapterIndex &&
+        tts.activeChapterContent == _content &&
         (tts.isSpeaking || tts.isPaused || tts.isStarting) &&
         tts.currentStartOffset >= 0) {
       return tts.currentStartOffset.clamp(0, _content.length).toInt();
@@ -736,8 +759,8 @@ class _ReadingScreenState extends State<ReadingScreen>
         );
       },
     );
+    await readingProvider.flushPendingSettings();
     if (!mounted) return;
-    await readingProvider.saveSettings(latest);
     _syncPagedAutoReadTimer(latest);
   }
 
@@ -1031,6 +1054,7 @@ class _ReadingScreenState extends State<ReadingScreen>
     final isActiveChapter = chapterIndex == _currentChapterIndex;
     final text = isActiveChapter
         ? _buildReaderText(
+            chapterIndex: chapterIndex,
             pageContent: content,
             pageStartOffset: 0,
             fontSize: fontSize,
@@ -1042,21 +1066,18 @@ class _ReadingScreenState extends State<ReadingScreen>
             ttsProvider: ttsProvider,
             key: textKey,
           )
-        : RichText(
-            key: textKey,
-            textScaler: TextScaler.noScaling,
-            textAlign: TextAlign.justify,
-            softWrap: true,
-            overflow: TextOverflow.clip,
-            text: NovelTextLayout.buildSpan(
-              text: content,
-              style: TextStyle(
-                fontSize: fontSize,
-                fontFamily: fontFamily,
-                color: color,
-                height: lineHeight,
-              ),
-              paragraphSpacing: paragraphSpacing,
+        : SelectableNovelText(
+            text: content,
+            richTextKey: textKey,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontFamily: fontFamily,
+              color: color,
+              height: lineHeight,
+            ),
+            paragraphSpacing: paragraphSpacing,
+            onListenFromOffset: (offset) => unawaited(
+              _startTtsFromParagraph(chapterIndex, content, offset),
             ),
           );
 
@@ -1187,6 +1208,43 @@ class _ReadingScreenState extends State<ReadingScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _activateTtsChapter(int chapterIndex, String content, int charPosition) {
+    final safePosition = charPosition.clamp(0, content.length).toInt();
+    if (chapterIndex == _currentChapterIndex && content == _content) return;
+    setState(() {
+      _currentChapterIndex = chapterIndex;
+      _content = content;
+      _restoreCharPosition = safePosition;
+      _lastCharPosition = safePosition;
+      _lastScrollPosition = content.isEmpty ? 0 : safePosition / content.length;
+      _currentPageIndex = _pageIndexForCharPosition(content, safePosition);
+      _continuousReaderSession++;
+    });
+    _readingProvider.setCurrentChapter(_chapters[chapterIndex]);
+    _publishReadingProgress();
+  }
+
+  Future<void> _startTtsFromParagraph(
+    int chapterIndex,
+    String content,
+    int selectedOffset,
+  ) async {
+    if (chapterIndex < 0 ||
+        chapterIndex >= _chapters.length ||
+        content.trim().isEmpty) {
+      return;
+    }
+    final canOpen = await _ensureChapterUnlocked(chapterIndex, showError: true);
+    if (!mounted || !canOpen) return;
+    if (chapterIndex != _currentChapterIndex || content != _content) {
+      await _saveVisibleProgressNow();
+      if (!mounted) return;
+      _activateTtsChapter(chapterIndex, content, selectedOffset);
+    }
+    final start = readingParagraphStartForOffset(content, selectedOffset);
+    await _startTts(startPosition: start);
+  }
+
   Future<bool> _startTts({int? startPosition}) async {
     if (_content.isEmpty) return false;
 
@@ -1194,8 +1252,29 @@ class _ReadingScreenState extends State<ReadingScreen>
       _stopAutoReading();
       final ttsProvider = context.read<TtsProvider>();
       final messenger = ScaffoldMessenger.of(context);
-      final startOffset =
-          startPosition ?? (_lastCharPosition > 0 ? _lastCharPosition : 0);
+      var startOffset = startPosition;
+      if (startOffset == null) {
+        final pageMode = _readingProvider.settings.pageMode;
+        if (pageMode == NovelPageMode.verticalScroll) {
+          final leading = _continuousViewController
+              .captureLeadingVisibleAnchor();
+          if (leading != null &&
+              leading.chapterIndex >= 0 &&
+              leading.chapterIndex < _chapters.length &&
+              leading.content.isNotEmpty) {
+            _activateTtsChapter(
+              leading.chapterIndex,
+              leading.content,
+              leading.charPosition,
+            );
+            startOffset = leading.charPosition;
+          }
+        } else {
+          startOffset = _pagedViewController.currentCharPosition;
+        }
+        startOffset ??= _lastCharPosition > 0 ? _lastCharPosition : 0;
+        startOffset = readingParagraphStartForOffset(_content, startOffset);
+      }
       final speechStartOffset = _cleanSpeechStartOffset(startOffset);
       final novel = widget.novel;
       final chapters = List<Chapter>.of(_chapters);
@@ -1281,10 +1360,15 @@ class _ReadingScreenState extends State<ReadingScreen>
   Future<void> _resumeTtsFromCurrentPosition() async {
     final ttsProvider = context.read<TtsProvider>();
     final currentPageStart = _lastCharPosition;
+    final hasManualPauseAnchor =
+        _pausedTtsChapterIndex != null &&
+        _pausedTtsPageIndex != null &&
+        _pausedTtsCharPosition != null;
     final movedWhilePaused =
-        _pausedTtsChapterIndex != _currentChapterIndex ||
-        _pausedTtsPageIndex != _currentPageIndex ||
-        _pausedTtsCharPosition != _lastCharPosition;
+        hasManualPauseAnchor &&
+        (_pausedTtsChapterIndex != _currentChapterIndex ||
+            _pausedTtsPageIndex != _currentPageIndex ||
+            _pausedTtsCharPosition != _lastCharPosition);
     final currentVisiblePosition = movedWhilePaused
         ? (_pausedTtsCharPosition != _lastCharPosition
               ? _lastCharPosition
@@ -1299,9 +1383,22 @@ class _ReadingScreenState extends State<ReadingScreen>
     }
 
     _clearPausedTtsAnchor();
-    final resumed = await ttsProvider.resumeSpeaking();
+    final resumed = await ttsProvider.playReadingSession();
     if (resumed) {
       await _showTtsMediaControls(playing: true);
+      return;
+    }
+
+    if (ttsProvider.hasActiveReadingSession) {
+      await _showTtsMediaControls(playing: false);
+      if (mounted) {
+        final message = ttsProvider.lastErrorMessage.isNotEmpty
+            ? ttsProvider.lastErrorMessage
+            : '暂时无法继续朗读，请稍后重试';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+      }
       return;
     }
 
@@ -1321,23 +1418,23 @@ class _ReadingScreenState extends State<ReadingScreen>
     _chapterLoadGuard.dispose();
     unawaited(_readerPageCommandSubscription?.cancel() ?? Future.value());
     unawaited(ReaderPlatformService.instance.releaseReaderSession());
+    unawaited(_readingProvider.flushPendingSettings());
     if (!_isLeaving) {
       final ttsProvider = _ttsProvider;
-      final finalCharPosition =
+      final hasOwnedTtsSession =
           ttsProvider != null &&
-              ttsProvider.isOwnedBy(_ttsOwnerKey) &&
-              (ttsProvider.isSpeaking ||
-                  ttsProvider.isPaused ||
-                  ttsProvider.isStarting) &&
-              ttsProvider.currentStartOffset >= 0
-          ? ttsProvider.currentStartOffset.clamp(0, _content.length).toInt()
-          : _captureVisibleProgressPosition(ttsProvider);
-      // _saveProgressNow publishes to the live ValueNotifiers synchronously,
-      // then finishes through the provider references captured above. This
-      // must be started before the notifiers are disposed.
-      unawaited(
-        _saveProgressNow(charPosition: finalCharPosition).catchError((_) {}),
-      );
+          ttsProvider.hasActiveReadingSession &&
+          ttsProvider.isOwnedBy(_ttsOwnerKey) &&
+          ttsProvider.activeChapterIndex >= 0;
+      if (hasOwnedTtsSession) {
+        unawaited(ttsProvider.checkpointActiveReadingProgress());
+      } else {
+        final finalCharPosition = _captureVisibleProgressPosition(ttsProvider);
+        // Start the final write before the live progress notifiers are disposed.
+        unawaited(
+          _saveProgressNow(charPosition: finalCharPosition).catchError((_) {}),
+        );
+      }
     }
     _novelChapterProgress.dispose();
     _novelBookProgress.dispose();
@@ -1430,19 +1527,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   int _cleanSpeechStartOffset(int offset) {
-    var start = offset.clamp(0, _content.length);
-    while (start < _content.length) {
-      final char = _content[start];
-      final code = char.codeUnitAt(0);
-      final isInvisible =
-          code <= 0x20 ||
-          code == 0x7F ||
-          code == 0xFEFF ||
-          (code >= 0x200B && code <= 0x200D);
-      if (!isInvisible) break;
-      start++;
-    }
-    return start;
+    return skipReadingTextEdgeWhitespace(_content, offset);
   }
 
   static String _formatChapterContent(String content) {
@@ -1465,8 +1550,10 @@ class _ReadingScreenState extends State<ReadingScreen>
         ttsProvider.hasActiveReadingSession &&
         ttsProvider.isOwnedBy(_ttsOwnerKey);
     _isLeaving = true;
-    await _saveVisibleProgressNow(ttsProvider, true);
-    if (!keepReadingSession) {
+    if (keepReadingSession) {
+      await ttsProvider.checkpointActiveReadingProgress();
+    } else {
+      await _saveVisibleProgressNow(ttsProvider, true);
       await ttsProvider.stopSpeaking();
     }
     if (!mounted) return;
@@ -1474,6 +1561,7 @@ class _ReadingScreenState extends State<ReadingScreen>
   }
 
   Widget _buildReaderText({
+    required int chapterIndex,
     required String pageContent,
     required int pageStartOffset,
     required double fontSize,
@@ -1499,20 +1587,16 @@ class _ReadingScreenState extends State<ReadingScreen>
         ? AppTheme.primaryColor.withValues(alpha: 0.35)
         : AppTheme.primaryColor.withValues(alpha: 0.18);
 
-    return RichText(
-      key: key,
-      textScaler: TextScaler.noScaling,
-      textAlign: TextAlign.justify,
-      softWrap: true,
-      overflow: TextOverflow.clip,
-      text: NovelTextLayout.buildSpan(
-        text: pageContent,
-        globalStartOffset: pageStartOffset,
-        style: baseStyle,
-        paragraphSpacing: paragraphSpacing,
-        highlightRange: range,
-        highlightColor: highlightColor,
-      ),
+    return SelectableNovelText(
+      text: pageContent,
+      globalStartOffset: pageStartOffset,
+      richTextKey: key,
+      style: baseStyle,
+      paragraphSpacing: paragraphSpacing,
+      highlightRange: range,
+      highlightColor: highlightColor,
+      onListenFromOffset: (offset) =>
+          unawaited(_startTtsFromParagraph(chapterIndex, pageContent, offset)),
     );
   }
 
@@ -1638,6 +1722,9 @@ class _ReadingScreenState extends State<ReadingScreen>
             onNeedNextChapter: _goToNextChapter,
             onNeedPreviousChapter: _goToPrevChapter,
             onToggleControls: _toggleControls,
+            onListenFromOffset: (offset) => unawaited(
+              _startTtsFromParagraph(_currentChapterIndex, _content, offset),
+            ),
           );
 
     return PopScope(
@@ -2160,6 +2247,8 @@ class _ReadingScreenState extends State<ReadingScreen>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
       backgroundColor: isNight ? AppTheme.nightCard : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
@@ -3303,7 +3392,7 @@ class _NovelSearchSheetState extends State<_NovelSearchSheet> {
   }
 }
 
-class _NovelCacheSheet extends StatefulWidget {
+class _NovelCacheSheet extends StatelessWidget {
   const _NovelCacheSheet({
     required this.novel,
     required this.chapters,
@@ -3323,245 +3412,27 @@ class _NovelCacheSheet extends StatefulWidget {
   final Future<bool> Function(NovelCacheBatchRange range) canStart;
 
   @override
-  State<_NovelCacheSheet> createState() => _NovelCacheSheetState();
-}
-
-class _NovelCacheSheetState extends State<_NovelCacheSheet> {
-  late NovelCacheBatchRange _range;
-  NovelOfflineStatus? _status;
-  NovelCacheBatchProgress? _progress;
-  NovelCacheBatchResult? _result;
-  bool _loadingStatus = true;
-  bool _running = false;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _range = widget.initialRange;
-    unawaited(_refreshStatus());
-  }
-
-  Future<void> _refreshStatus() async {
-    final status = await widget.provider.getOfflineStatus(widget.novel);
-    if (!mounted) return;
-    setState(() {
-      _status = status;
-      _loadingStatus = false;
-    });
-  }
-
-  Future<void> _start() async {
-    if (_running || widget.chapters.isEmpty || widget.novel.isLocal) return;
-    if (_range == NovelCacheBatchRange.full) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('缓存全本？'),
-          content: Text('将缓存 ${widget.chapters.length} 章到持久目录，不受临时缓存清理影响。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('开始缓存'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-    }
-    if (!await widget.canStart(_range) || !mounted) return;
-
-    setState(() {
-      _running = true;
-      _error = null;
-      _result = null;
-      _progress = null;
-    });
-    try {
-      final currentIndex = widget.currentChapterIndex.clamp(
-        0,
-        widget.chapters.length - 1,
-      );
-      await widget.provider.pinCurrentChapter(
-        widget.novel,
-        widget.chapters[currentIndex],
-      );
-      final result = await widget.provider.cacheChapters(
-        widget.novel,
-        widget.chapters,
-        range: _range,
-        startIndex: currentIndex,
-        onProgress: (progress) {
-          if (mounted) setState(() => _progress = progress);
-        },
-      );
-      if (!mounted) return;
-      setState(() => _result = result);
-      await _refreshStatus();
-    } catch (error) {
-      if (mounted) {
-        setState(() => _error = '缓存失败，请检查网络后重试。');
-      }
-    } finally {
-      if (mounted) setState(() => _running = false);
-    }
-  }
-
-  Future<void> _clearDownloads() async {
-    if (_running || (_status?.downloadedChapterCount ?? 0) == 0) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('清除已下载章节？'),
-        content: const Text('当前阅读章节仍会作为固定章节保留。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('清除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    await widget.provider.clearDownloadedChapters(widget.novel);
-    await _refreshStatus();
-  }
-
-  String _rangeLabel(NovelCacheBatchRange range) => switch (range) {
-    NovelCacheBatchRange.next20 => '后 20 章',
-    NovelCacheBatchRange.next50 => '后 50 章',
-    NovelCacheBatchRange.full => '全本',
-  };
-
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final textColor = widget.isNight ? Colors.white : AppTheme.textPrimary;
-    final secondary = widget.isNight ? Colors.white70 : AppTheme.textSecondary;
-    final progressValue = _progress == null || _progress!.total <= 0
-        ? null
-        : _progress!.completed / _progress!.total;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '批量缓存',
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: _running ? null : () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
+    final theme = Theme.of(context);
+    final sheetTheme = isNight
+        ? theme.copyWith(
+            brightness: Brightness.dark,
+            colorScheme: theme.colorScheme.copyWith(
+              brightness: Brightness.dark,
+              surface: AppTheme.nightCard,
+              onSurface: Colors.white,
             ),
-            if (widget.novel.isLocal)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 26),
-                child: Text(
-                  '本地导入小说已完整保存在设备中，无需再次缓存。',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: secondary),
-                ),
-              )
-            else ...[
-              if (_loadingStatus)
-                const LinearProgressIndicator()
-              else
-                Text(
-                  '已下载 ${_status?.downloadedChapterCount ?? 0}/${widget.chapters.length} 章'
-                  ' · ${_formatBytes(_status?.totalBytes ?? 0)}',
-                  style: TextStyle(color: secondary),
-                ),
-              const SizedBox(height: 16),
-              SegmentedButton<NovelCacheBatchRange>(
-                segments: NovelCacheBatchRange.values
-                    .map(
-                      (range) => ButtonSegment<NovelCacheBatchRange>(
-                        value: range,
-                        label: Text(_rangeLabel(range)),
-                      ),
-                    )
-                    .toList(growable: false),
-                selected: {_range},
-                onSelectionChanged: _running
-                    ? null
-                    : (selection) => setState(() => _range = selection.first),
-              ),
-              const SizedBox(height: 18),
-              if (_running) ...[
-                LinearProgressIndicator(value: progressValue),
-                const SizedBox(height: 8),
-                Text(
-                  _progress == null
-                      ? '正在固定当前章节…'
-                      : '正在缓存 ${_progress!.completed}/${_progress!.total} · ${_progress!.chapter.title}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: secondary, fontSize: 12),
-                ),
-                const SizedBox(height: 14),
-              ],
-              if (_result != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    _result!.complete
-                        ? '缓存完成：${_result!.saved} 章'
-                        : '已缓存 ${_result!.saved}/${_result!.requested} 章，失败 ${_result!.failedChapterIds.length} 章',
-                    style: TextStyle(
-                      color: _result!.complete ? Colors.green : Colors.orange,
-                    ),
-                  ),
-                ),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                ),
-              FilledButton.icon(
-                onPressed: _running ? null : _start,
-                icon: const Icon(Icons.download_rounded),
-                label: Text('缓存${_rangeLabel(_range)}'),
-              ),
-              if ((_status?.downloadedChapterCount ?? 0) > 0) ...[
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: _running ? null : _clearDownloads,
-                  child: const Text('清除本书已下载章节'),
-                ),
-              ],
-            ],
-          ],
-        ),
+          )
+        : theme;
+    return Theme(
+      data: sheetTheme,
+      child: NovelCacheSheet(
+        novel: novel,
+        chapters: chapters,
+        currentChapterIndex: currentChapterIndex,
+        provider: provider,
+        initialRange: initialRange,
+        canStart: canStart,
       ),
     );
   }

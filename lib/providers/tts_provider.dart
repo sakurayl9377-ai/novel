@@ -58,6 +58,9 @@ class TtsProvider extends ChangeNotifier {
       unawaited(_mediaControlService.stop());
       notifyListeners();
     };
+    _ttsService.onInterrupted = () {
+      unawaited(_handleServiceInterruption());
+    };
     _ttsService.onProgress = (startOffset, endOffset, word) {
       _currentStartOffset = _textStartOffset + startOffset;
       _currentEndOffset = _textStartOffset + endOffset;
@@ -100,6 +103,7 @@ class TtsProvider extends ChangeNotifier {
   Timer? _sleepTimer;
   DateTime? _sleepTimerEndsAt;
   bool _handlingServiceComplete = false;
+  bool _handlingServiceInterruption = false;
   String _speechOwnerKey = '';
   _TtsReadingSession? _readingSession;
   bool _changingReadingChapter = false;
@@ -620,6 +624,33 @@ class TtsProvider extends ChangeNotifier {
     return true;
   }
 
+  Future<void> _handleServiceInterruption() async {
+    if (_handlingServiceInterruption || _isPaused) return;
+    final readingSession = _readingSession;
+    if (readingSession == null || (!_isSpeaking && !_isStarting)) return;
+
+    _handlingServiceInterruption = true;
+    _isStarting = false;
+    _isSpeaking = false;
+    _isPaused = true;
+    _speechOwnerKey = readingSession.ownerKey;
+    _restartReadingOnPlay = true;
+    notifyListeners();
+    try {
+      await checkpointActiveReadingProgress();
+      await _setWakelockEnabled(false);
+      await _mediaControlService.setPlaying(false);
+    } finally {
+      _handlingServiceInterruption = false;
+    }
+  }
+
+  Future<void> checkpointActiveReadingProgress() async {
+    final readingSession = _readingSession;
+    if (readingSession == null) return;
+    await _persistReadingProgress(readingSession);
+  }
+
   Future<void> _persistReadingProgress(
     _TtsReadingSession session, {
     int? position,
@@ -659,6 +690,7 @@ class TtsProvider extends ChangeNotifier {
     if (!resumed) return false;
     _isSpeaking = true;
     _isPaused = false;
+    _restartReadingOnPlay = false;
     await _setWakelockEnabled(true);
     await _mediaControlService.setPlaying(true);
     notifyListeners();

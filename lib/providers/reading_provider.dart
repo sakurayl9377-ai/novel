@@ -8,12 +8,36 @@ import '../models/chapter.dart';
 import '../services/storage_service.dart';
 import '../services/progress_sync_service.dart';
 
+typedef ReadingSettingsLoader =
+    Future<Map<String, dynamic>?> Function(String ownerUserId);
+typedef ReadingSettingsSaver =
+    Future<void> Function(Map<String, dynamic> settings, String ownerUserId);
+
 class ReadingProvider extends ChangeNotifier {
-  ReadingProvider() {
-    ProgressSyncService.instance.revision.addListener(_handleRemoteRevision);
+  ReadingProvider({
+    StorageService? storage,
+    Duration settingsSaveDebounce = const Duration(milliseconds: 250),
+    ReadingSettingsLoader? settingsLoader,
+    ReadingSettingsSaver? settingsSaver,
+    String Function()? ownerUserIdProvider,
+    ValueListenable<int>? syncRevision,
+  }) : _storage = storage ?? StorageService(),
+       _debounceDuration = settingsSaveDebounce,
+       _loadSettingsOverride = settingsLoader,
+       _saveSettingsOverride = settingsSaver {
+    _ownerUserIdProvider =
+        ownerUserIdProvider ??
+        () => ProgressSyncService.instance.activeOwnerUserId;
+    _syncRevision = syncRevision ?? ProgressSyncService.instance.revision;
+    _syncRevision.addListener(_handleRemoteRevision);
   }
 
-  final StorageService _storage = StorageService();
+  final StorageService _storage;
+  final Duration _debounceDuration;
+  final ReadingSettingsLoader? _loadSettingsOverride;
+  final ReadingSettingsSaver? _saveSettingsOverride;
+  late final String Function() _ownerUserIdProvider;
+  late final ValueListenable<int> _syncRevision;
 
   ReadingSettings _settings = ReadingSettings();
   ReadingProgress? _currentProgress;
@@ -23,6 +47,11 @@ class ReadingProvider extends ChangeNotifier {
   String _currentContent = '';
   bool _isLoadingContent = false;
   bool _showSettings = false;
+  Timer? _settingsSaveTimer;
+  _PendingSettingsWrite? _pendingSettingsWrite;
+  Future<void> _settingsWriteChain = Future<void>.value();
+  int _settingsMutationGeneration = 0;
+  bool _isDisposed = false;
 
   ReadingSettings get settings => _settings;
   ReadingProgress? get currentProgress => _currentProgress;
@@ -34,28 +63,48 @@ class ReadingProvider extends ChangeNotifier {
   bool get showSettings => _showSettings;
 
   Future<void> loadSettings() async {
-    final saved = await _storage.getReadingSettings();
+    final owner = _ownerUserIdProvider();
+    final revision = _syncRevision.value;
+    final mutationGeneration = _settingsMutationGeneration;
+    final saved = await _loadSettingsForOwner(owner);
+    if (!_isSettingsReadCurrent(owner, revision, mutationGeneration)) return;
     if (saved != null) {
-      _settings = ReadingSettings.fromJson(saved);
-      if (ReadingSettings.needsLayoutPresetMigration(saved)) {
-        await _storage.saveReadingSettings(_settings.toJson());
-      }
+      final loaded = ReadingSettings.fromJson(saved);
+      _settings = loaded;
+      _settingsMutationGeneration += 1;
       notifyListeners();
+      if (ReadingSettings.needsLayoutPresetMigration(saved)) {
+        await _enqueueSettingsWrite(
+          _PendingSettingsWrite(owner, loaded.toJson()),
+        );
+      }
     }
   }
 
   Future<void> saveSettings(ReadingSettings newSettings) async {
     _settings = newSettings;
-    await _storage.saveReadingSettings(_settings.toJson());
+    _settingsMutationGeneration += 1;
+    _scheduleSettingsSave(newSettings);
+    notifyListeners();
+    await flushPendingSettings();
+  }
+
+  /// Applies settings immediately and persists the last preview after a short
+  /// quiet period so a backgrounded settings sheet cannot lose its changes.
+  void previewSettings(ReadingSettings newSettings) {
+    _settings = newSettings;
+    _settingsMutationGeneration += 1;
+    _scheduleSettingsSave(newSettings);
     notifyListeners();
   }
 
-  /// Applies settings to the live reader without generating a database write
-  /// for every slider tick. The settings sheet persists the final snapshot
-  /// when it closes.
-  void previewSettings(ReadingSettings newSettings) {
-    _settings = newSettings;
-    notifyListeners();
+  Future<void> flushPendingSettings() {
+    _settingsSaveTimer?.cancel();
+    _settingsSaveTimer = null;
+    final pending = _pendingSettingsWrite;
+    _pendingSettingsWrite = null;
+    if (pending == null) return _settingsWriteChain;
+    return _enqueueSettingsWrite(pending);
   }
 
   Future<void> updateFontSize(double size) async {
@@ -151,29 +200,111 @@ class ReadingProvider extends ChangeNotifier {
   }
 
   void _handleRemoteRevision() {
+    if (_isDisposed) return;
     unawaited(_reloadSyncedReaderState());
   }
 
   Future<void> _reloadSyncedReaderState() async {
-    final owner = ProgressSyncService.instance.activeOwnerUserId;
-    final savedSettings = await _storage.getReadingSettings();
+    final owner = _ownerUserIdProvider();
+    final revision = _syncRevision.value;
+    final mutationGeneration = _settingsMutationGeneration;
+    try {
+      await flushPendingSettings();
+    } catch (_) {
+      // Preserve the in-memory settings when their local write did not finish.
+      return;
+    }
+    if (!_isSettingsReadCurrent(owner, revision, mutationGeneration)) return;
+    final savedSettings = await _loadSettingsForOwner(owner);
     final novel = _currentNovel;
     final progressData = novel == null
         ? null
         : await _storage.getNovelReadingProgress(novel);
-    if (owner != ProgressSyncService.instance.activeOwnerUserId) return;
+    if (!_isSettingsReadCurrent(owner, revision, mutationGeneration)) return;
     _settings = savedSettings == null
         ? ReadingSettings()
         : ReadingSettings.fromJson(savedSettings);
+    _settingsMutationGeneration += 1;
     _currentProgress = progressData == null
         ? null
         : ReadingProgress.fromJson(progressData);
     notifyListeners();
   }
 
+  Future<Map<String, dynamic>?> _loadSettingsForOwner(String ownerUserId) {
+    final loader = _loadSettingsOverride;
+    if (loader != null) return loader(ownerUserId);
+    return _storage.getReadingSettings(ownerUserId: ownerUserId);
+  }
+
+  Future<void> _saveSettingsForOwner(
+    Map<String, dynamic> settings,
+    String ownerUserId,
+  ) {
+    final saver = _saveSettingsOverride;
+    if (saver != null) return saver(settings, ownerUserId);
+    return _storage.saveReadingSettings(settings, ownerUserId: ownerUserId);
+  }
+
+  bool _isSettingsReadCurrent(
+    String ownerUserId,
+    int revision,
+    int mutationGeneration,
+  ) {
+    return !_isDisposed &&
+        ownerUserId == _ownerUserIdProvider() &&
+        revision == _syncRevision.value &&
+        mutationGeneration == _settingsMutationGeneration;
+  }
+
+  void _scheduleSettingsSave(ReadingSettings settings) {
+    _pendingSettingsWrite = _PendingSettingsWrite(
+      _ownerUserIdProvider(),
+      settings.toJson(),
+    );
+    _settingsSaveTimer?.cancel();
+    _settingsSaveTimer = Timer(_debounceDuration, () {
+      _settingsSaveTimer = null;
+      unawaited(flushPendingSettings().catchError((Object _, StackTrace _) {}));
+    });
+  }
+
+  Future<void> _enqueueSettingsWrite(_PendingSettingsWrite pending) {
+    final operation = _settingsWriteChain.then(
+      (_) => _saveSettingsForOwner(pending.settings, pending.ownerUserId),
+    );
+    _settingsWriteChain = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
   @override
   void dispose() {
-    ProgressSyncService.instance.revision.removeListener(_handleRemoteRevision);
+    _settingsSaveTimer?.cancel();
+    _settingsSaveTimer = null;
+    final pending = _pendingSettingsWrite;
+    _pendingSettingsWrite = null;
+    if (pending != null) {
+      unawaited(
+        _enqueueSettingsWrite(
+          _PendingSettingsWrite(
+            pending.ownerUserId,
+            Map<String, dynamic>.from(pending.settings),
+          ),
+        ).catchError((Object _, StackTrace _) {}),
+      );
+    }
+    _isDisposed = true;
+    _syncRevision.removeListener(_handleRemoteRevision);
     super.dispose();
   }
+}
+
+class _PendingSettingsWrite {
+  const _PendingSettingsWrite(this.ownerUserId, this.settings);
+
+  final String ownerUserId;
+  final Map<String, dynamic> settings;
 }

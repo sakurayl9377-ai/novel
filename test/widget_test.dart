@@ -15,8 +15,25 @@ void main() {
 
   testWidgets('App smoke test', (WidgetTester tester) async {
     TestWidgetsFlutterBinding.ensureInitialized();
+    const flutterTtsChannel = MethodChannel('flutter_tts');
+    const audioPlayerChannel = MethodChannel('xyz.luan/audioplayers');
+    const audioPlayerGlobalChannel = MethodChannel(
+      'xyz.luan/audioplayers.global',
+    );
     final testDir = Directory.systemTemp.createTempSync('novel_app_test_');
-    addTearDown(() {
+    addTearDown(() async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        flutterTtsChannel,
+        null,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        audioPlayerChannel,
+        null,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        audioPlayerGlobalChannel,
+        null,
+      );
       if (testDir.existsSync()) {
         testDir.deleteSync(recursive: true);
       }
@@ -31,8 +48,16 @@ void main() {
       },
     );
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('flutter_tts'),
+      flutterTtsChannel,
       (call) async => 1,
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      audioPlayerChannel,
+      (call) async => null,
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      audioPlayerGlobalChannel,
+      (call) async => null,
     );
     SharedPreferences.setMockInitialValues({});
     await tester.runAsync(() => StorageService().init());

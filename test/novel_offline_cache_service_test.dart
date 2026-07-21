@@ -229,6 +229,335 @@ void main() {
     },
   );
 
+  test('batch persists the complete catalog before downloading', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      3,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+
+    await cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: const <int>[0],
+      loadContent: (chapter) async => 'chapter ${chapter.index}',
+    );
+
+    final restored = await cache.getPersistentChapterList(novel);
+    expect(
+      restored.map((chapter) => chapter.id),
+      chapters.map((item) => item.id),
+    );
+    expect(restored.map((chapter) => chapter.index), <int>[0, 1, 2]);
+    expect(
+      restored.map((chapter) => chapter.url),
+      chapters.map((item) => item.url),
+    );
+  });
+
+  test(
+    'catalog refresh safely remaps unique chapters after insertion and URL changes',
+    () async {
+      final novel = _novel(sourceId: 'source-a', host: 'a.example');
+      final original = <Chapter>[
+        Chapter(
+          id: '${novel.id}_ch0',
+          novelId: novel.id,
+          title: 'Alpha',
+          index: 0,
+          url: 'https://a.example/book/1/1.html',
+        ),
+        Chapter(
+          id: '${novel.id}_ch1',
+          novelId: novel.id,
+          title: 'Beta',
+          index: 1,
+          url: 'https://a.example/book/1/2.html',
+        ),
+      ];
+      await cache.savePersistentChapterList(novel, original);
+      await cache.saveDownloadedChapter(novel, original[0], 'alpha body');
+      await cache.saveDownloadedChapter(novel, original[1], 'beta body');
+
+      final refreshed = <Chapter>[
+        Chapter(
+          id: '${novel.id}_ch0',
+          novelId: novel.id,
+          title: 'Inserted',
+          index: 0,
+          url: 'https://mirror.example/book/1/1.html',
+        ),
+        Chapter(
+          id: '${novel.id}_ch1',
+          novelId: novel.id,
+          title: 'Alpha',
+          index: 1,
+          url: 'https://mirror.example/book/1/2.html',
+        ),
+        Chapter(
+          id: '${novel.id}_ch2',
+          novelId: novel.id,
+          title: 'Beta',
+          index: 2,
+          url: 'https://mirror.example/book/1/3.html',
+        ),
+      ];
+
+      expect(
+        await cache.refreshPersistentChapterList(novel, refreshed),
+        isTrue,
+      );
+      expect(
+        (await cache.getPersistentChapterList(
+          novel,
+        )).map((chapter) => (chapter.id, chapter.title, chapter.url)),
+        refreshed.map((chapter) => (chapter.id, chapter.title, chapter.url)),
+      );
+      expect(
+        await cache.getPersistentChapterContent(novel, refreshed[0]),
+        isNull,
+      );
+      expect(
+        await cache.getPersistentChapterContent(novel, refreshed[1]),
+        'alpha body',
+      );
+      expect(
+        await cache.getPersistentChapterContent(novel, refreshed[2]),
+        'beta body',
+      );
+
+      await cache.saveDownloadedChapter(novel, refreshed[0], 'inserted body');
+      expect(
+        await cache.getPersistentChapterContent(novel, refreshed[0]),
+        'inserted body',
+      );
+      expect(
+        await cache.getPersistentChapterContent(novel, refreshed[1]),
+        'alpha body',
+      );
+      expect((await cache.getStatus(novel)).downloadedChapterCount, 3);
+    },
+  );
+
+  test('catalog refresh rejects ambiguous duplicate-title remapping', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final original = <Chapter>[
+      Chapter(
+        id: '${novel.id}_ch0',
+        novelId: novel.id,
+        title: 'Interlude',
+        index: 0,
+        url: 'https://a.example/book/1/1.html',
+      ),
+      Chapter(
+        id: '${novel.id}_ch1',
+        novelId: novel.id,
+        title: 'Interlude',
+        index: 1,
+        url: 'https://a.example/book/1/2.html',
+      ),
+    ];
+    await cache.savePersistentChapterList(novel, original);
+    await cache.saveDownloadedChapter(novel, original[0], 'first interlude');
+    await cache.saveDownloadedChapter(novel, original[1], 'second interlude');
+
+    final refreshed = <Chapter>[
+      Chapter(
+        id: '${novel.id}_ch0',
+        novelId: novel.id,
+        title: 'Interlude',
+        index: 0,
+        url: 'https://mirror.example/book/1/1.html',
+      ),
+      Chapter(
+        id: '${novel.id}_ch1',
+        novelId: novel.id,
+        title: 'Interlude',
+        index: 1,
+        url: 'https://mirror.example/book/1/2.html',
+      ),
+      Chapter(
+        id: '${novel.id}_ch2',
+        novelId: novel.id,
+        title: 'Interlude',
+        index: 2,
+        url: 'https://mirror.example/book/1/3.html',
+      ),
+    ];
+
+    await cache.refreshPersistentChapterList(novel, refreshed);
+
+    expect(
+      await cache.getPersistentChapterContent(novel, refreshed[0]),
+      isNull,
+    );
+    expect(
+      await cache.getPersistentChapterContent(novel, refreshed[1]),
+      isNull,
+    );
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 0);
+  });
+
+  test('batch cancellation stops at the next chapter boundary', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      3,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+    final loaded = <int>[];
+    var cancelRequested = false;
+
+    final result = await cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: const <int>[0, 1, 2],
+      shouldCancel: () => cancelRequested,
+      loadContent: (chapter) async {
+        loaded.add(chapter.index);
+        cancelRequested = true;
+        return 'chapter ${chapter.index}';
+      },
+    );
+
+    expect(result.cancelled, isTrue);
+    expect(result.saved, 1);
+    expect(result.skipped, 0);
+    expect(loaded, <int>[0]);
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 1);
+  });
+
+  test('retry skips intact chapters and downloads only missing ones', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      2,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+    final firstLoads = <int>[];
+    final first = await cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: const <int>[0, 1],
+      loadContent: (chapter) async {
+        firstLoads.add(chapter.index);
+        return chapter.index == 0 ? 'chapter 0' : '';
+      },
+    );
+    expect(first.failedChapterIds, <String>[chapters[1].id]);
+
+    final retryLoads = <int>[];
+    final retry = await cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: const <int>[0, 1],
+      loadContent: (chapter) async {
+        retryLoads.add(chapter.index);
+        return 'chapter ${chapter.index}';
+      },
+    );
+
+    expect(firstLoads, <int>[0, 1]);
+    expect(retryLoads, <int>[1]);
+    expect(retry.saved, 2);
+    expect(retry.skipped, 1);
+    expect(retry.complete, isTrue);
+  });
+
+  test('batch promotes a pinned chapter to a durable download', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      2,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+    await cache.pinChapter(novel, chapters[0], 'pinned chapter 0');
+    final loaded = <int>[];
+
+    final result = await cache.cacheBatch(
+      novel: novel,
+      chapters: chapters,
+      chapterIndices: const <int>[0, 1],
+      loadContent: (chapter) async {
+        loaded.add(chapter.index);
+        return 'chapter ${chapter.index}';
+      },
+    );
+
+    expect(result.complete, isTrue);
+    expect(result.skipped, 1);
+    expect(loaded, <int>[1]);
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 2);
+
+    await cache.pinChapter(novel, chapters[1], 'chapter 1');
+    expect(
+      await cache.getPersistentChapterContent(novel, chapters[0]),
+      'pinned chapter 0',
+    );
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 2);
+  });
+
+  test(
+    'manifest restores a valid backup when the primary is corrupt',
+    () async {
+      final novel = _novel(sourceId: 'source-a', host: 'a.example');
+      final chapter = _chapter(novel, host: 'a.example');
+      await cache.saveDownloadedChapter(novel, chapter, 'recoverable content');
+
+      final manifest = _manifestFile(root, novel);
+      final backup = File('${manifest.path}.bak');
+      await manifest.copy(backup.path);
+      await manifest.writeAsString('{broken json', flush: true);
+
+      expect(
+        await cache.getPersistentChapterContent(novel, chapter),
+        'recoverable content',
+      );
+      expect(await manifest.exists(), isTrue);
+      expect(jsonDecode(await manifest.readAsString()), isA<Map>());
+    },
+  );
+
+  test('manifest restores a completed temporary file after a crash', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapter = _chapter(novel, host: 'a.example');
+    await cache.saveDownloadedChapter(novel, chapter, 'temporary recovery');
+
+    final manifest = _manifestFile(root, novel);
+    final temporary = File('${manifest.path}.9999999999999999.tmp');
+    await manifest.copy(temporary.path);
+    await manifest.delete();
+
+    expect((await cache.getStatus(novel)).downloadedChapterCount, 1);
+    expect(await manifest.exists(), isTrue);
+    expect(await temporary.exists(), isFalse);
+  });
+
+  test('status excludes missing or corrupted persistent files', () async {
+    final novel = _novel(sourceId: 'source-a', host: 'a.example');
+    final chapters = List<Chapter>.generate(
+      2,
+      (index) => _chapter(novel, host: 'a.example', index: index),
+    );
+    await cache.saveDownloadedChapter(novel, chapters[0], 'first');
+    await cache.saveDownloadedChapter(novel, chapters[1], 'second');
+
+    final manifestFile = _manifestFile(root, novel);
+    final manifest =
+        jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+    final entries = manifest['chapters'] as Map<String, dynamic>;
+    final firstEntry = entries[chapters[0].id] as Map<String, dynamic>;
+    final secondEntry = entries[chapters[1].id] as Map<String, dynamic>;
+    await File(
+      '${manifestFile.parent.path}${Platform.pathSeparator}${firstEntry['fileName']}',
+    ).delete();
+    await File(
+      '${manifestFile.parent.path}${Platform.pathSeparator}${secondEntry['fileName']}',
+    ).writeAsString('tampered');
+
+    final status = await cache.getStatus(novel);
+    expect(status.downloadedChapterCount, 0);
+    expect(status.retainedChapterCount, 0);
+    expect(status.totalBytes, 0);
+  });
+
   test(
     'digest mismatch prevents serving a corrupted persistent chapter',
     () async {
@@ -278,3 +607,11 @@ String _legacyContentPath(Directory root, String novelId, String chapterId) =>
     'content_${_hash('$novelId::$chapterId')}.txt';
 
 String _hash(String value) => sha256.convert(utf8.encode(value)).toString();
+
+File _manifestFile(Directory root, Novel novel) {
+  final contentKey = ContentIdentity.novel(novel).contentKey;
+  return File(
+    '${root.path}${Platform.pathSeparator}novel_offline_v1'
+    '${Platform.pathSeparator}$contentKey${Platform.pathSeparator}manifest.json',
+  );
+}

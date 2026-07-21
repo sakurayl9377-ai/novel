@@ -28,7 +28,8 @@ class BookSourceProvider extends ChangeNotifier {
     required List<BookSource> sources,
     required String selectedSourceId,
     required BookSourceService sourceService,
-  }) : _storage = StorageService(),
+    StorageService? storage,
+  }) : _storage = storage ?? StorageService(),
        // Public test seam keeps the private field out of the named API.
        // ignore: prefer_initializing_formals
        _sourceService = sourceService,
@@ -231,15 +232,26 @@ class BookSourceProvider extends ChangeNotifier {
       }
     }
 
-    final chapters = await _fetchChapterList(novel);
-    if (chapters.isNotEmpty) {
-      _putChapterCache(cacheKey, chapters);
-      await _storage.saveNovelChapterList(
-        novel,
-        chapters.map((c) => c.toJson()).toList(),
-      );
+    try {
+      final chapters = await _fetchChapterList(novel);
+      if (chapters.isNotEmpty) {
+        await _storage.saveNovelChapterList(
+          novel,
+          chapters.map((c) => c.toJson()).toList(),
+        );
+        await _storage.refreshPersistentNovelChapterList(novel, chapters);
+        _putChapterCache(cacheKey, chapters);
+        return chapters;
+      }
+    } catch (_) {
+      // A user-requested download remains readable without source access.
     }
-    return chapters;
+    final persistent = await _storage.getPersistentNovelChapterList(novel);
+    if (persistent.isNotEmpty && !_cacheLooksWrong(persistent)) {
+      _putChapterCache(cacheKey, persistent);
+      return persistent;
+    }
+    return const <Chapter>[];
   }
 
   List<Chapter> buildProvisionalChapterList(
@@ -299,6 +311,7 @@ class BookSourceProvider extends ChangeNotifier {
     try {
       final chapters = await _fetchChapterList(novel, forceRefresh: true);
       if (chapters.isEmpty || _cacheLooksWrong(chapters)) return;
+      await _storage.refreshPersistentNovelChapterList(novel, chapters);
       final previous = _chapterCache[cacheKey];
       if (_sameChapterList(previous, chapters)) return;
       _putChapterCache(cacheKey, chapters);
@@ -391,6 +404,7 @@ class BookSourceProvider extends ChangeNotifier {
     required NovelCacheBatchRange range,
     int startIndex = 0,
     NovelCacheProgressCallback? onProgress,
+    NovelCacheCancellationCheck? shouldCancel,
   }) {
     final indices = range.chapterIndices(
       chapterCount: chapters.length,
@@ -402,6 +416,8 @@ class BookSourceProvider extends ChangeNotifier {
       chapterIndices: indices,
       loadContent: (chapter) => getChapterContent(novel, chapter),
       onProgress: onProgress,
+      isValidContent: (content) => !_isFailedContent(content),
+      shouldCancel: shouldCancel,
     );
   }
 

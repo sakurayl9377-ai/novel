@@ -249,20 +249,29 @@ class StorageService {
 
   // ============ 阅读设置 ============
 
-  Future<Map<String, dynamic>?> getReadingSettings() async {
+  Future<Map<String, dynamic>?> getReadingSettings({
+    String? ownerUserId,
+  }) async {
+    final resolvedOwnerUserId =
+        ownerUserId ?? ProgressSyncService.instance.activeOwnerUserId;
     await init();
-    return _readerSettingsRepository.load(
-      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
-    );
+    return _readerSettingsRepository.load(ownerUserId: resolvedOwnerUserId);
   }
 
-  Future<void> saveReadingSettings(Map<String, dynamic> settings) async {
+  Future<void> saveReadingSettings(
+    Map<String, dynamic> settings, {
+    String? ownerUserId,
+  }) async {
+    final resolvedOwnerUserId =
+        ownerUserId ?? ProgressSyncService.instance.activeOwnerUserId;
     await init();
     await _readerSettingsRepository.save(
       settings,
-      ownerUserId: ProgressSyncService.instance.activeOwnerUserId,
+      ownerUserId: resolvedOwnerUserId,
     );
-    ProgressSyncService.instance.notifyLocalMutation();
+    if (resolvedOwnerUserId == ProgressSyncService.instance.activeOwnerUserId) {
+      ProgressSyncService.instance.notifyLocalMutation();
+    }
   }
 
   Future<List<NovelBookmark>> getNovelBookmarks(Novel novel) async {
@@ -681,6 +690,30 @@ class StorageService {
     return _novelOfflineCacheService.getTemporaryChapterList(novel);
   }
 
+  Future<void> savePersistentNovelChapterList(
+    Novel novel,
+    List<Chapter> chapters,
+  ) async {
+    await init();
+    await _novelOfflineCacheService.savePersistentChapterList(novel, chapters);
+  }
+
+  Future<List<Chapter>> getPersistentNovelChapterList(Novel novel) async {
+    await init();
+    return _novelOfflineCacheService.getPersistentChapterList(novel);
+  }
+
+  Future<bool> refreshPersistentNovelChapterList(
+    Novel novel,
+    List<Chapter> chapters,
+  ) async {
+    await init();
+    return _novelOfflineCacheService.refreshPersistentChapterList(
+      novel,
+      chapters,
+    );
+  }
+
   Future<void> saveTemporaryNovelChapterContent(
     Novel novel,
     Chapter chapter,
@@ -793,6 +826,8 @@ class StorageService {
     required Iterable<int> chapterIndices,
     required NovelChapterContentLoader loadContent,
     NovelCacheProgressCallback? onProgress,
+    NovelChapterContentValidator? isValidContent,
+    NovelCacheCancellationCheck? shouldCancel,
   }) async {
     await init();
     return _novelOfflineCacheService.cacheBatch(
@@ -801,6 +836,8 @@ class StorageService {
       chapterIndices: chapterIndices,
       loadContent: loadContent,
       onProgress: onProgress,
+      isValidContent: isValidContent,
+      shouldCancel: shouldCancel,
     );
   }
 

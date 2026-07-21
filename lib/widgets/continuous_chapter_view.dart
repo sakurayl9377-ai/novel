@@ -31,6 +31,9 @@ class ContinuousChapterViewController {
   ({int chapterIndex, String content, int charPosition})?
   captureRenderedAnchor() => _state?._captureActualAnchor();
 
+  ({int chapterIndex, String content, int charPosition})?
+  captureLeadingVisibleAnchor() => _state?._captureLeadingVisibleAnchor();
+
   void _attach(_ContinuousChapterViewState state) => _state = state;
 
   void _detach(_ContinuousChapterViewState state) {
@@ -141,15 +144,17 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
     return _captureActualAnchor();
   }
 
-  ({int chapterIndex, String content, int charPosition})?
-  _captureActualAnchor() {
+  ({int chapterIndex, String content, int charPosition})? _captureActualAnchor({
+    double? viewportAnchor,
+  }) {
     if (!_scrollController.hasClients) return null;
-    final chapterIndex = _anchoredChapterIndex();
+    final anchor =
+        viewportAnchor ??
+        _scrollController.position.viewportDimension * _readingAnchorFraction;
+    final chapterIndex = _chapterIndexAtViewportAnchor(anchor);
     if (chapterIndex == null) return null;
     final content = _contents[chapterIndex];
     if (content == null || content.isEmpty) return null;
-    final anchor =
-        _scrollController.position.viewportDimension * _readingAnchorFraction;
     final top = _sectionTopFor(chapterIndex);
     final height = _sectionHeightFor(chapterIndex);
     final charPosition =
@@ -164,6 +169,44 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
             : (_lastReportedCharPosition ?? 0));
     return (
       chapterIndex: chapterIndex,
+      content: content,
+      charPosition: charPosition.clamp(0, content.length).toInt(),
+    );
+  }
+
+  ({int chapterIndex, String content, int charPosition})?
+  _captureLeadingVisibleAnchor() {
+    if (!_scrollController.hasClients) return null;
+    const anchor = 1.0;
+    final viewport = _viewportKey.currentContext?.findRenderObject();
+    if (viewport is! RenderBox || !viewport.hasSize) {
+      return _captureActualAnchor(viewportAnchor: anchor);
+    }
+
+    int? leadingIndex;
+    var leadingTop = double.infinity;
+    for (final chapterIndex in _loadedIndexes) {
+      final content = _contents[chapterIndex];
+      final paragraph = _textRenderFor(chapterIndex);
+      if (content == null || content.isEmpty || paragraph == null) continue;
+
+      final top = paragraph.localToGlobal(Offset.zero, ancestor: viewport).dy;
+      final bottom = top + paragraph.size.height;
+      if (bottom <= anchor || top >= viewport.size.height) continue;
+      if (top < leadingTop) {
+        leadingTop = top;
+        leadingIndex = chapterIndex;
+      }
+    }
+
+    if (leadingIndex == null) {
+      return _captureActualAnchor(viewportAnchor: anchor);
+    }
+    final content = _contents[leadingIndex]!;
+    final charPosition =
+        _textOffsetAtViewportAnchor(leadingIndex, content, anchor) ?? 0;
+    return (
+      chapterIndex: leadingIndex,
       content: content,
       charPosition: charPosition.clamp(0, content.length).toInt(),
     );
@@ -747,10 +790,15 @@ class _ContinuousChapterViewState extends State<ContinuousChapterView> {
   }
 
   int? _anchoredChapterIndex() {
+    if (!_scrollController.hasClients) return null;
+    return _chapterIndexAtViewportAnchor(
+      _scrollController.position.viewportDimension * _readingAnchorFraction,
+    );
+  }
+
+  int? _chapterIndexAtViewportAnchor(double anchor) {
     final viewport = _viewportKey.currentContext?.findRenderObject();
     if (viewport is! RenderBox || !_scrollController.hasClients) return null;
-    final anchor =
-        _scrollController.position.viewportDimension * _readingAnchorFraction;
     int? closestIndex;
     var closestDistance = double.infinity;
 

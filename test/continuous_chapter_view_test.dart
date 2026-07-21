@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/chapter.dart';
+import 'package:novel_app/utils/reading_text_range.dart';
 import 'package:novel_app/widgets/continuous_chapter_view.dart';
 
 void main() {
@@ -451,13 +452,96 @@ void main() {
       final viewport = tester.getRect(find.byType(ContinuousChapterView));
       final anchor = controller.captureAnchor();
       final renderedAnchor = controller.captureRenderedAnchor();
+      final leadingAnchor = controller.captureLeadingVisibleAnchor();
 
       expect(anchor, isNotNull);
       expect(anchor!.chapterIndex, 0);
       expect(anchor.charPosition, closeTo(initialOffset, 24));
       expect(renderedAnchor, isNotNull);
       expect(renderedAnchor!.charPosition, closeTo(initialOffset, 24));
+      expect(leadingAnchor, isNotNull);
+      expect(
+        leadingAnchor!.charPosition,
+        lessThan(renderedAnchor.charPosition),
+      );
       expect(caretY, closeTo(viewport.top + viewport.height * 0.38, 1));
+    },
+  );
+
+  testWidgets(
+    'leading anchor skips a chapter whose body is above its trailing padding',
+    (tester) async {
+      const firstContent = '　　上一章最后一段。';
+      const secondContent = '　　下一章第一句。第二句。';
+      final controller = ContinuousChapterViewController();
+      final textKeys = <int, Key>{};
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              height: 260,
+              child: ContinuousChapterView(
+                controller: controller,
+                chapters: [chapter(0), chapter(1)],
+                initialChapterIndex: 0,
+                initialContent: firstContent,
+                initialTextOffset: 0,
+                loadChapterContent: (index) async =>
+                    index == 1 ? secondContent : '',
+                sectionBuilder: (chapter, index, body, textKey) {
+                  textKeys[index] = textKey;
+                  return SizedBox(
+                    key: ValueKey('leading-section-$index'),
+                    height: 180,
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Text(body, key: textKey),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(textKeys.keys, containsAll(<int>[0, 1]));
+      final viewport = tester.getRect(find.byType(ContinuousChapterView));
+      final firstBody = find.byKey(textKeys[0]!);
+      final scrollable = tester.state<ScrollableState>(find.byType(Scrollable));
+      final target =
+          (scrollable.position.pixels +
+                  tester.getRect(firstBody).bottom -
+                  viewport.top +
+                  2)
+              .clamp(
+                scrollable.position.minScrollExtent,
+                scrollable.position.maxScrollExtent,
+              )
+              .toDouble();
+      scrollable.position.jumpTo(target);
+      await tester.pump();
+
+      final anchorY = viewport.top + 1;
+      expect(tester.getRect(firstBody).bottom, lessThanOrEqualTo(anchorY));
+      expect(
+        tester.getRect(find.byKey(const ValueKey('leading-section-0'))).bottom,
+        greaterThan(anchorY),
+      );
+      final secondBodyRect = tester.getRect(find.byKey(textKeys[1]!));
+      expect(secondBodyRect.top, greaterThan(anchorY));
+      expect(secondBodyRect.top, lessThan(viewport.bottom));
+
+      final leading = controller.captureLeadingVisibleAnchor();
+      expect(leading, isNotNull);
+      expect(leading!.chapterIndex, 1);
+      expect(leading.charPosition, 0);
+      expect(
+        readingParagraphStartForOffset(leading.content, leading.charPosition),
+        secondContent.indexOf('下'),
+      );
     },
   );
 

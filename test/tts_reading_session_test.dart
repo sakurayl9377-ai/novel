@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novel_app/models/chapter.dart';
@@ -5,6 +7,7 @@ import 'package:novel_app/models/novel.dart';
 import 'package:novel_app/models/reading_progress.dart';
 import 'package:novel_app/models/tts_settings.dart';
 import 'package:novel_app/providers/tts_provider.dart';
+import 'package:novel_app/services/tts_audio_session.dart';
 import 'package:novel_app/services/tts_service.dart';
 
 void main() {
@@ -31,6 +34,66 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(audioGlobalChannel, null);
   });
+
+  test(
+    'focus loss while native speak is pending checkpoints without late start',
+    () async {
+      final nativeSpeakStarted = Completer<void>();
+      final nativeSpeakResult = Completer<dynamic>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(flutterTtsChannel, (call) async {
+            if (call.method != 'speak') return 1;
+            if (!nativeSpeakStarted.isCompleted) nativeSpeakStarted.complete();
+            return nativeSpeakResult.future;
+          });
+
+      final audioSession = _InterruptibleAudioSession();
+      final service = TtsService(audioSession: audioSession);
+      final provider = _NoStorageTtsProvider(ttsService: service);
+      addTearDown(provider.dispose);
+      final novel = Novel(
+        id: 'tts-start-interruption',
+        title: 'start interruption',
+      );
+      final chapter = Chapter(
+        id: 'start-interruption-chapter',
+        novelId: novel.id,
+        title: 'chapter',
+        index: 0,
+        content: '0123456789',
+      );
+      final savedProgress = <ReadingProgress>[];
+
+      final start = provider.startReadingSession(
+        novel: novel,
+        chapters: [chapter],
+        chapterIndex: 0,
+        content: chapter.content,
+        startOffset: 4,
+        loadChapterContent: (chapter) async => chapter.content,
+        saveProgress: (progress) async => savedProgress.add(progress),
+        canOpenChapter: (_) => true,
+      );
+      await nativeSpeakStarted.future;
+
+      audioSession.emit(
+        const TtsAudioInterruptionEvent(
+          begin: true,
+          kind: TtsAudioInterruptionKind.focusPause,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      nativeSpeakResult.complete(1);
+
+      expect(await start, isFalse);
+      await _waitUntil(() => provider.isPaused && savedProgress.isNotEmpty);
+      expect(provider.hasActiveReadingSession, isTrue);
+      expect(provider.isSpeaking, isFalse);
+      expect(provider.currentStartOffset, 4);
+      expect(savedProgress, hasLength(1));
+      expect(savedProgress.single.charPosition, 4);
+    },
+  );
 
   test(
     'reading session keeps chapter context while switching in background',
@@ -341,6 +404,105 @@ void main() {
       expect(service.spokenTexts, ['0123456789', '456789']);
     },
   );
+
+  test(
+    'unexpected audio interruption checkpoints the active TTS chapter',
+    () async {
+      final service = _RecordingTtsService();
+      final provider = _NoStorageTtsProvider(ttsService: service);
+      addTearDown(provider.dispose);
+      final novel = Novel(id: 'tts-audio-interruption', title: '音频中断进度');
+      final chapters = List<Chapter>.generate(
+        106,
+        (index) => Chapter(
+          id: 'interrupt-chapter-$index',
+          novelId: novel.id,
+          title: '第${index + 1}章',
+          index: index,
+          content: 'chapter-$index-0123456789',
+        ),
+      );
+      final savedProgress = <ReadingProgress>[];
+
+      expect(
+        await provider.startReadingSession(
+          novel: novel,
+          chapters: chapters,
+          chapterIndex: 100,
+          content: chapters[100].content,
+          startOffset: 0,
+          loadChapterContent: (chapter) async => chapter.content,
+          saveProgress: (progress) async => savedProgress.add(progress),
+          canOpenChapter: (_) => true,
+        ),
+        isTrue,
+      );
+      for (var index = 101; index <= 105; index++) {
+        expect(await provider.skipReadingChapter(1), isTrue);
+      }
+      service.onProgress?.call(7, 8, '5');
+      savedProgress.clear();
+
+      service.emitInterrupted();
+      await _waitUntil(() => provider.isPaused && savedProgress.isNotEmpty);
+
+      expect(provider.hasActiveReadingSession, isTrue);
+      expect(provider.activeChapterIndex, 105);
+      expect(provider.isSpeaking, isFalse);
+      expect(savedProgress, hasLength(1));
+      expect(savedProgress.single.chapterIndex, 105);
+      expect(savedProgress.single.charPosition, 7);
+    },
+  );
+
+  test(
+    'duplicate interruption signals checkpoint an active session once',
+    () async {
+      final service = _RecordingTtsService();
+      final provider = _NoStorageTtsProvider(ttsService: service);
+      addTearDown(provider.dispose);
+      final novel = Novel(id: 'tts-duplicate-interruption', title: '重复中断');
+      final chapter = Chapter(
+        id: 'duplicate-interruption-chapter',
+        novelId: novel.id,
+        title: '第一章',
+        index: 0,
+        content: '0123456789',
+      );
+      final savedProgress = <ReadingProgress>[];
+
+      expect(
+        await provider.startReadingSession(
+          novel: novel,
+          chapters: [chapter],
+          chapterIndex: 0,
+          content: chapter.content,
+          startOffset: 0,
+          loadChapterContent: (chapter) async => chapter.content,
+          saveProgress: (progress) async => savedProgress.add(progress),
+          canOpenChapter: (_) => true,
+        ),
+        isTrue,
+      );
+      service.onProgress?.call(4, 5, '4');
+
+      service
+        ..emitInterrupted()
+        ..emitInterrupted();
+      await _waitUntil(() => provider.isPaused && savedProgress.isNotEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(savedProgress, hasLength(1));
+      expect(savedProgress.single.charPosition, 4);
+    },
+  );
+}
+
+Future<void> _waitUntil(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100 && !condition(); attempt++) {
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  expect(condition(), isTrue);
 }
 
 class _NoStorageTtsProvider extends TtsProvider {
@@ -355,6 +517,28 @@ class _NoStorageTtsProvider extends TtsProvider {
   Future<void> persistTtsSettings(TtsSettings settings) async {
     persistedSettings.add(settings);
   }
+}
+
+class _InterruptibleAudioSession implements TtsAudioSessionPort {
+  final StreamController<TtsAudioInterruptionEvent> _events =
+      StreamController<TtsAudioInterruptionEvent>.broadcast(sync: true);
+
+  @override
+  Stream<TtsAudioInterruptionEvent> get events => _events.stream;
+
+  void emit(TtsAudioInterruptionEvent event) => _events.add(event);
+
+  @override
+  Future<void> configureForSpeech() async {}
+
+  @override
+  Future<bool> activate() async => true;
+
+  @override
+  Future<void> deactivate() async {}
+
+  @override
+  Future<void> dispose() => _events.close();
 }
 
 class _RecordingTtsService extends TtsService {
@@ -391,6 +575,10 @@ class _RecordingTtsService extends TtsService {
     _error = message;
     _recoverable = true;
     onError?.call();
+  }
+
+  void emitInterrupted() {
+    onInterrupted?.call();
   }
 
   @override

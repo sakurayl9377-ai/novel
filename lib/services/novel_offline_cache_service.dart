@@ -82,12 +82,14 @@ class NovelCacheBatchProgress {
     required this.total,
     required this.chapter,
     required this.succeeded,
+    this.skipped = false,
   });
 
   final int completed;
   final int total;
   final Chapter chapter;
   final bool succeeded;
+  final bool skipped;
 }
 
 class NovelCacheBatchResult {
@@ -95,19 +97,25 @@ class NovelCacheBatchResult {
     required this.requested,
     required this.saved,
     required this.failedChapterIds,
+    this.skipped = 0,
+    this.cancelled = false,
   });
 
   final int requested;
   final int saved;
   final List<String> failedChapterIds;
+  final int skipped;
+  final bool cancelled;
 
-  bool get complete => failedChapterIds.isEmpty && saved == requested;
+  bool get complete =>
+      !cancelled && failedChapterIds.isEmpty && saved == requested;
 }
 
 typedef NovelChapterContentLoader = Future<String> Function(Chapter chapter);
 typedef NovelCacheProgressCallback =
     void Function(NovelCacheBatchProgress progress);
 typedef NovelChapterContentValidator = bool Function(String content);
+typedef NovelCacheCancellationCheck = bool Function();
 
 /// Owns source-aware novel caches.
 ///
@@ -240,6 +248,15 @@ class NovelOfflineCacheService {
     Novel novel,
     Chapter chapter,
   ) async {
+    final snapshot = await _getPersistentChapterSnapshot(novel, chapter);
+    return snapshot?.content;
+  }
+
+  Future<({String content, bool downloaded})?> _getPersistentChapterSnapshot(
+    Novel novel,
+    Chapter chapter,
+  ) async {
+    if (chapter.novelId != novel.id) return null;
     final identity = ContentIdentity.novel(novel);
     final manifest = await _readManifest(identity);
     final entry = manifest?.chapters[chapter.id];
@@ -252,7 +269,56 @@ class NovelOfflineCacheService {
     final content = await _readNonEmptyText(file);
     if (content == null) return null;
     if (_hash(content) != entry.digest) return null;
-    return content;
+    return (content: content, downloaded: entry.downloaded);
+  }
+
+  Future<void> savePersistentChapterList(Novel novel, List<Chapter> chapters) {
+    return _mutateManifest(novel, (manifest, bookDirectory) async {
+      await _synchronizePersistentCatalog(
+        manifest,
+        bookDirectory,
+        novel,
+        chapters,
+      );
+    });
+  }
+
+  /// Refreshes metadata only when the user already owns persistent data for
+  /// this book. Ordinary online browsing must not create durable manifests.
+  Future<bool> refreshPersistentChapterList(
+    Novel novel,
+    List<Chapter> chapters,
+  ) {
+    final identity = ContentIdentity.novel(novel);
+    return _synchronized(identity.contentKey, () async {
+      final manifest = await _readManifest(identity);
+      if (manifest == null) return false;
+      final directory = _persistentBookDirectory(identity);
+      await _synchronizePersistentCatalog(manifest, directory, novel, chapters);
+      manifest.updatedAtMs = DateTime.now().millisecondsSinceEpoch;
+      await directory.create(recursive: true);
+      await _writeTextAtomically(
+        _manifestFile(identity),
+        jsonEncode(manifest.toJson()),
+        keepRecoveryBackup: true,
+      );
+      return true;
+    });
+  }
+
+  Future<List<Chapter>> getPersistentChapterList(Novel novel) async {
+    final identity = ContentIdentity.novel(novel);
+    final manifest = await _readManifest(identity);
+    if (manifest == null) return const <Chapter>[];
+    final entries = manifest.catalog.isNotEmpty
+        ? List<_NovelOfflineCatalogEntry>.of(manifest.catalog)
+        : manifest.chapters.values
+              .map(_NovelOfflineCatalogEntry.fromManifestEntry)
+              .toList(growable: false);
+    entries.sort((left, right) => left.index.compareTo(right.index));
+    return List<Chapter>.unmodifiable(
+      entries.map((entry) => entry.toChapter(novel.id)),
+    );
   }
 
   Future<void> saveDownloadedChapter(
@@ -333,6 +399,7 @@ class NovelOfflineCacheService {
           manifest.chapters.remove(entry.chapterId);
         }
       }
+      manifest.catalog.clear();
     });
   }
 
@@ -347,26 +414,31 @@ class NovelOfflineCacheService {
         totalBytes: 0,
       );
     }
-    final chapters =
-        manifest.chapters.values
-            .map(
-              (entry) => NovelOfflineChapterStatus(
-                chapterId: entry.chapterId,
-                chapterIndex: entry.chapterIndex,
-                title: entry.title,
-                downloaded: entry.downloaded,
-                pinned: manifest.pinnedChapterId == entry.chapterId,
-                byteSize: entry.byteSize,
-              ),
-            )
-            .toList(growable: false)
-          ..sort(
-            (left, right) => left.chapterIndex.compareTo(right.chapterIndex),
-          );
+    final bookDirectory = _persistentBookDirectory(identity);
+    final chapters = <NovelOfflineChapterStatus>[];
+    var pinnedChapterIsValid = false;
+    for (final entry in manifest.chapters.values) {
+      if (!await _isPersistentEntryValid(bookDirectory, entry)) continue;
+      final pinned = manifest.pinnedChapterId == entry.chapterId;
+      if (pinned) pinnedChapterIsValid = true;
+      chapters.add(
+        NovelOfflineChapterStatus(
+          chapterId: entry.chapterId,
+          chapterIndex: entry.chapterIndex,
+          title: entry.title,
+          downloaded: entry.downloaded,
+          pinned: pinned,
+          byteSize: entry.byteSize,
+        ),
+      );
+    }
+    chapters.sort(
+      (left, right) => left.chapterIndex.compareTo(right.chapterIndex),
+    );
     return NovelOfflineStatus(
       contentKey: identity.contentKey,
       chapters: List<NovelOfflineChapterStatus>.unmodifiable(chapters),
-      pinnedChapterId: manifest.pinnedChapterId,
+      pinnedChapterId: pinnedChapterIsValid ? manifest.pinnedChapterId : null,
       totalBytes: chapters.fold<int>(0, (sum, entry) => sum + entry.byteSize),
     );
   }
@@ -377,7 +449,10 @@ class NovelOfflineCacheService {
     required Iterable<int> chapterIndices,
     required NovelChapterContentLoader loadContent,
     NovelCacheProgressCallback? onProgress,
+    NovelChapterContentValidator? isValidContent,
+    NovelCacheCancellationCheck? shouldCancel,
   }) async {
+    await savePersistentChapterList(novel, chapters);
     final indices =
         chapterIndices
             .where((index) => index >= 0 && index < chapters.length)
@@ -386,15 +461,34 @@ class NovelOfflineCacheService {
           ..sort();
     final failed = <String>[];
     var saved = 0;
+    var skipped = 0;
+    var cancelled = false;
+    final validator = isValidContent ?? (content) => content.trim().isNotEmpty;
     for (var offset = 0; offset < indices.length; offset++) {
+      if (shouldCancel?.call() ?? false) {
+        cancelled = true;
+        break;
+      }
       final chapter = chapters[indices[offset]];
       var succeeded = false;
+      var chapterSkipped = false;
       try {
-        final content = await loadContent(chapter);
-        if (content.trim().isNotEmpty) {
-          await saveDownloadedChapter(novel, chapter, content);
+        final persistent = await _getPersistentChapterSnapshot(novel, chapter);
+        if (persistent != null && validator(persistent.content)) {
+          if (!persistent.downloaded) {
+            await saveDownloadedChapter(novel, chapter, persistent.content);
+          }
           saved += 1;
+          skipped += 1;
           succeeded = true;
+          chapterSkipped = true;
+        } else {
+          final content = await loadContent(chapter);
+          if (validator(content)) {
+            await saveDownloadedChapter(novel, chapter, content);
+            saved += 1;
+            succeeded = true;
+          }
         }
       } catch (_) {
         // The caller receives a per-chapter failure list and may retry later.
@@ -406,6 +500,7 @@ class NovelOfflineCacheService {
           total: indices.length,
           chapter: chapter,
           succeeded: succeeded,
+          skipped: chapterSkipped,
         ),
       );
     }
@@ -413,6 +508,8 @@ class NovelOfflineCacheService {
       requested: indices.length,
       saved: saved,
       failedChapterIds: List<String>.unmodifiable(failed),
+      skipped: skipped,
+      cancelled: cancelled,
     );
   }
 
@@ -425,7 +522,14 @@ class NovelOfflineCacheService {
   }) async {
     if (content.trim().isEmpty) return;
     await bookDirectory.create(recursive: true);
-    final fileName = 'chapter_${_hash(chapter.id)}.txt';
+    final existing = manifest.chapters[chapter.id];
+    var fileName = existing?.fileName ?? 'chapter_${_hash(chapter.id)}.txt';
+    final fileNameOwnedByAnotherChapter = manifest.chapters.values.any(
+      (entry) => entry.chapterId != chapter.id && entry.fileName == fileName,
+    );
+    if (fileNameOwnedByAnotherChapter) {
+      fileName = 'chapter_${_hash('${chapter.id}\u0000${_hash(content)}')}.txt';
+    }
     final file = File(
       '${bookDirectory.path}${Platform.pathSeparator}$fileName',
     );
@@ -459,9 +563,10 @@ class NovelOfflineCacheService {
           _NovelOfflineManifest.empty(identity: identity, novel: novel);
       await mutation(manifest, directory);
       manifest.updatedAtMs = DateTime.now().millisecondsSinceEpoch;
-      if (manifest.chapters.isEmpty && manifest.pinnedChapterId == null) {
-        final manifestFile = _manifestFile(identity);
-        if (await manifestFile.exists()) await manifestFile.delete();
+      if (manifest.chapters.isEmpty &&
+          manifest.pinnedChapterId == null &&
+          manifest.catalog.isEmpty) {
+        await _deleteManifestArtifacts(identity);
         if (await directory.exists() && await directory.list().isEmpty) {
           await directory.delete();
         }
@@ -471,12 +576,40 @@ class NovelOfflineCacheService {
       await _writeTextAtomically(
         _manifestFile(identity),
         jsonEncode(manifest.toJson()),
+        keepRecoveryBackup: true,
       );
     });
   }
 
   Future<_NovelOfflineManifest?> _readManifest(ContentIdentity identity) async {
     final file = _manifestFile(identity);
+    final primary = await _decodeManifestFile(file, identity);
+    if (primary != null) return primary;
+
+    final candidates = <File>[_manifestBackupFile(identity)];
+    if (await file.parent.exists()) {
+      final temporary = <File>[];
+      await for (final entity in file.parent.list(followLinks: false)) {
+        if (entity is File && _isManifestTemporary(entity, file)) {
+          temporary.add(entity);
+        }
+      }
+      temporary.sort((left, right) => right.path.compareTo(left.path));
+      candidates.addAll(temporary);
+    }
+    for (final candidate in candidates) {
+      final recovered = await _decodeManifestFile(candidate, identity);
+      if (recovered == null) continue;
+      await _restoreManifestCandidate(candidate, file);
+      return recovered;
+    }
+    return null;
+  }
+
+  Future<_NovelOfflineManifest?> _decodeManifestFile(
+    File file,
+    ContentIdentity identity,
+  ) async {
     if (!await file.exists()) return null;
     try {
       final decoded = jsonDecode(await file.readAsString());
@@ -493,6 +626,32 @@ class NovelOfflineCacheService {
       return manifest;
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<void> _restoreManifestCandidate(File candidate, File target) async {
+    try {
+      if (await target.exists()) await target.delete();
+      await candidate.rename(target.path);
+    } catch (_) {
+      try {
+        await candidate.copy(target.path);
+      } catch (_) {
+        // The validated fallback remains available for the next read attempt.
+      }
+    }
+  }
+
+  Future<void> _deleteManifestArtifacts(ContentIdentity identity) async {
+    final manifest = _manifestFile(identity);
+    for (final file in <File>[manifest, _manifestBackupFile(identity)]) {
+      if (await file.exists()) await file.delete();
+    }
+    if (!await manifest.parent.exists()) return;
+    await for (final entity in manifest.parent.list(followLinks: false)) {
+      if (entity is File && _isManifestTemporary(entity, manifest)) {
+        await entity.delete();
+      }
     }
   }
 
@@ -549,12 +708,127 @@ class NovelOfflineCacheService {
     if (entry.chapterId != chapter.id || entry.chapterIndex != chapter.index) {
       return false;
     }
+    if (_normalizedChapterTitle(entry.title) !=
+        _normalizedChapterTitle(chapter.title)) {
+      return false;
+    }
     if (entry.url.isNotEmpty &&
         chapter.url.isNotEmpty &&
         entry.url != chapter.url) {
       return false;
     }
     return true;
+  }
+
+  Future<void> _synchronizePersistentCatalog(
+    _NovelOfflineManifest manifest,
+    Directory bookDirectory,
+    Novel novel,
+    List<Chapter> chapters,
+  ) async {
+    final seenIds = <String>{};
+    final nextCatalog =
+        chapters
+            .where(
+              (chapter) =>
+                  chapter.novelId == novel.id &&
+                  chapter.id.trim().isNotEmpty &&
+                  seenIds.add(chapter.id),
+            )
+            .map(_NovelOfflineCatalogEntry.fromChapter)
+            .toList(growable: false)
+          ..sort((left, right) => left.index.compareTo(right.index));
+    if (_sameCatalog(manifest.catalog, nextCatalog)) return;
+
+    final previousCatalog = manifest.catalog.isNotEmpty
+        ? List<_NovelOfflineCatalogEntry>.of(manifest.catalog)
+        : manifest.chapters.values
+              .map(_NovelOfflineCatalogEntry.fromManifestEntry)
+              .toList(growable: false);
+    final previousTitleCounts = _chapterTitleCounts(previousCatalog);
+    final nextTitleCounts = _chapterTitleCounts(nextCatalog);
+    final entriesByTitle = <String, List<_NovelOfflineManifestEntry>>{};
+    for (final entry in manifest.chapters.values) {
+      final title = _normalizedChapterTitle(entry.title);
+      if (title.isEmpty) continue;
+      entriesByTitle.putIfAbsent(title, () => []).add(entry);
+    }
+
+    final remapped = <String, _NovelOfflineManifestEntry>{};
+    final remappedOriginalIds = <String>{};
+    final newIdByOriginalId = <String, String>{};
+    for (final chapter in nextCatalog) {
+      final title = _normalizedChapterTitle(chapter.title);
+      final candidates = entriesByTitle[title] ?? const [];
+      if (title.isEmpty ||
+          previousTitleCounts[title] != 1 ||
+          nextTitleCounts[title] != 1 ||
+          candidates.length != 1) {
+        continue;
+      }
+      final existing = candidates.single;
+      remapped[chapter.id] = existing.withCatalogMetadata(chapter);
+      remappedOriginalIds.add(existing.chapterId);
+      newIdByOriginalId[existing.chapterId] = chapter.id;
+    }
+
+    final nextIds = nextCatalog.map((chapter) => chapter.id).toSet();
+    for (final entry in manifest.chapters.values) {
+      if (remappedOriginalIds.contains(entry.chapterId)) continue;
+      if (!nextIds.contains(entry.chapterId) &&
+          !remapped.containsKey(entry.chapterId)) {
+        // Keep removed chapters as inaccessible orphans so a transiently
+        // incomplete source catalog cannot destroy a user's download.
+        remapped[entry.chapterId] = entry;
+        continue;
+      }
+      // The refreshed catalog reused this positional id for a chapter that
+      // cannot be identified unambiguously. Remove the stale association so
+      // it can never serve another chapter's text.
+      await _deleteEntryFile(bookDirectory, entry);
+    }
+
+    final previousPin = manifest.pinnedChapterId;
+    manifest.pinnedChapterId = previousPin == null
+        ? null
+        : newIdByOriginalId[previousPin] ??
+              (remapped.containsKey(previousPin) ? previousPin : null);
+    manifest.chapters
+      ..clear()
+      ..addAll(remapped);
+    manifest.catalog
+      ..clear()
+      ..addAll(nextCatalog);
+  }
+
+  bool _sameCatalog(
+    List<_NovelOfflineCatalogEntry> first,
+    List<_NovelOfflineCatalogEntry> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      final left = first[index];
+      final right = second[index];
+      if (left.id != right.id ||
+          left.title != right.title ||
+          left.index != right.index ||
+          left.url != right.url) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Map<String, int> _chapterTitleCounts(
+    List<_NovelOfflineCatalogEntry> chapters,
+  ) {
+    final counts = <String, int>{};
+    for (final chapter in chapters) {
+      final title = _normalizedChapterTitle(chapter.title);
+      if (title.isEmpty) continue;
+      counts[title] = (counts[title] ?? 0) + 1;
+    }
+    return counts;
   }
 
   Future<List<Map<String, dynamic>>?> _readChapterList(File file) async {
@@ -581,19 +855,46 @@ class NovelOfflineCacheService {
     }
   }
 
-  Future<void> _writeTextAtomically(File target, String content) async {
+  Future<void> _writeTextAtomically(
+    File target,
+    String content, {
+    bool keepRecoveryBackup = false,
+  }) async {
     await target.parent.create(recursive: true);
     final temporary = File(
       '${target.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
     );
     await temporary.writeAsString(content, flush: true);
     try {
-      if (await target.exists()) await target.delete();
-      await temporary.rename(target.path);
+      if (!Platform.isWindows) {
+        await temporary.rename(target.path);
+        return;
+      }
+      if (!keepRecoveryBackup || !await target.exists()) {
+        if (await target.exists()) await target.delete();
+        await temporary.rename(target.path);
+        return;
+      }
+
+      final backup = File('${target.path}.bak');
+      if (await backup.exists()) await backup.delete();
+      await target.rename(backup.path);
+      try {
+        await temporary.rename(target.path);
+      } catch (_) {
+        if (!await target.exists() && await backup.exists()) {
+          await backup.rename(target.path);
+        }
+        rethrow;
+      }
     } finally {
       if (await temporary.exists()) await temporary.delete();
     }
   }
+
+  bool _isManifestTemporary(File candidate, File manifest) =>
+      candidate.path.startsWith('${manifest.path}.') &&
+      candidate.path.endsWith('.tmp');
 
   Future<void> _touch(File file) async {
     try {
@@ -611,6 +912,19 @@ class NovelOfflineCacheService {
       '${bookDirectory.path}${Platform.pathSeparator}${entry.fileName}',
     );
     if (await file.exists()) await file.delete();
+  }
+
+  Future<bool> _isPersistentEntryValid(
+    Directory bookDirectory,
+    _NovelOfflineManifestEntry entry,
+  ) async {
+    final file = File(
+      '${bookDirectory.path}${Platform.pathSeparator}${entry.fileName}',
+    );
+    final content = await _readNonEmptyText(file);
+    if (content == null) return false;
+    return utf8.encode(content).length == entry.byteSize &&
+        _hash(content) == entry.digest;
   }
 
   Future<void> _ensureRoot() async {
@@ -643,6 +957,9 @@ class NovelOfflineCacheService {
     'manifest.json',
   );
 
+  File _manifestBackupFile(ContentIdentity identity) =>
+      File('${_manifestFile(identity).path}.bak');
+
   String _legacyChapterListPath(String novelId) =>
       '${_rootDirectory.path}${Platform.pathSeparator}'
       'chapters_${_hash(novelId)}.json';
@@ -653,6 +970,9 @@ class NovelOfflineCacheService {
 
   static String _hash(String value) =>
       sha256.convert(utf8.encode(value)).toString();
+
+  static String _normalizedChapterTitle(String value) =>
+      value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '');
 
   static int _asInt(Object? value, {required int fallback}) {
     if (value is int) return value;
@@ -681,6 +1001,7 @@ class _NovelOfflineManifest {
     required this.title,
     required this.updatedAtMs,
     required this.pinnedChapterId,
+    required this.catalog,
     required this.chapters,
   });
 
@@ -695,6 +1016,7 @@ class _NovelOfflineManifest {
     title: novel.title,
     updatedAtMs: DateTime.now().millisecondsSinceEpoch,
     pinnedChapterId: null,
+    catalog: <_NovelOfflineCatalogEntry>[],
     chapters: <String, _NovelOfflineManifestEntry>{},
   );
 
@@ -715,6 +1037,19 @@ class _NovelOfflineManifest {
         }
       }
     }
+    final catalog = <_NovelOfflineCatalogEntry>[];
+    final seenCatalogIds = <String>{};
+    final rawCatalog = json['catalog'];
+    if (rawCatalog is List) {
+      for (final rawEntry in rawCatalog.whereType<Map>()) {
+        final entry = _NovelOfflineCatalogEntry.fromJson(
+          rawEntry.cast<String, dynamic>(),
+        );
+        if (entry.id.isEmpty || !seenCatalogIds.add(entry.id)) continue;
+        catalog.add(entry);
+      }
+      catalog.sort((left, right) => left.index.compareTo(right.index));
+    }
     return _NovelOfflineManifest(
       schemaVersion: NovelOfflineCacheService._asInt(
         json['schemaVersion'],
@@ -729,6 +1064,7 @@ class _NovelOfflineManifest {
         fallback: 0,
       ),
       pinnedChapterId: json['pinnedChapterId']?.toString(),
+      catalog: catalog,
       chapters: chapters,
     );
   }
@@ -740,6 +1076,7 @@ class _NovelOfflineManifest {
   final String title;
   int updatedAtMs;
   String? pinnedChapterId;
+  final List<_NovelOfflineCatalogEntry> catalog;
   final Map<String, _NovelOfflineManifestEntry> chapters;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -750,9 +1087,59 @@ class _NovelOfflineManifest {
     'title': title,
     'updatedAtMs': updatedAtMs,
     'pinnedChapterId': pinnedChapterId,
+    'catalog': catalog.map((entry) => entry.toJson()).toList(growable: false),
     'chapters': <String, dynamic>{
       for (final entry in chapters.entries) entry.key: entry.value.toJson(),
     },
+  };
+}
+
+class _NovelOfflineCatalogEntry {
+  const _NovelOfflineCatalogEntry({
+    required this.id,
+    required this.title,
+    required this.index,
+    required this.url,
+  });
+
+  factory _NovelOfflineCatalogEntry.fromChapter(Chapter chapter) =>
+      _NovelOfflineCatalogEntry(
+        id: chapter.id,
+        title: chapter.title,
+        index: chapter.index,
+        url: chapter.url,
+      );
+
+  factory _NovelOfflineCatalogEntry.fromManifestEntry(
+    _NovelOfflineManifestEntry entry,
+  ) => _NovelOfflineCatalogEntry(
+    id: entry.chapterId,
+    title: entry.title,
+    index: entry.chapterIndex,
+    url: entry.url,
+  );
+
+  factory _NovelOfflineCatalogEntry.fromJson(Map<String, dynamic> json) =>
+      _NovelOfflineCatalogEntry(
+        id: json['id']?.toString() ?? '',
+        title: json['title']?.toString() ?? '',
+        index: NovelOfflineCacheService._asInt(json['index'], fallback: 0),
+        url: json['url']?.toString() ?? '',
+      );
+
+  final String id;
+  final String title;
+  final int index;
+  final String url;
+
+  Chapter toChapter(String novelId) =>
+      Chapter(id: id, novelId: novelId, title: title, index: index, url: url);
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': id,
+    'title': title,
+    'index': index,
+    'url': url,
   };
 }
 
@@ -813,6 +1200,20 @@ class _NovelOfflineManifestEntry {
         downloaded: downloaded ?? this.downloaded,
         updatedAtMs: DateTime.now().millisecondsSinceEpoch,
       );
+
+  _NovelOfflineManifestEntry withCatalogMetadata(
+    _NovelOfflineCatalogEntry chapter,
+  ) => _NovelOfflineManifestEntry(
+    chapterId: chapter.id,
+    chapterIndex: chapter.index,
+    title: chapter.title,
+    url: chapter.url,
+    fileName: fileName,
+    digest: digest,
+    byteSize: byteSize,
+    downloaded: downloaded,
+    updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+  );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'chapterId': chapterId,

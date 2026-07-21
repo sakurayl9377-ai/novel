@@ -1,9 +1,10 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:novel_app/features/novel_reader/novel_paged_view.dart';
+import 'package:novel_app/features/reader_core/reader_modes.dart';
 import 'package:novel_app/models/chapter.dart';
 import 'package:novel_app/models/novel.dart';
 import 'package:novel_app/models/reading_progress.dart';
@@ -14,7 +15,7 @@ import 'package:novel_app/providers/reading_provider.dart';
 import 'package:novel_app/providers/tts_provider.dart';
 import 'package:novel_app/screens/reading_screen.dart';
 import 'package:novel_app/services/storage_service.dart';
-import 'package:novel_app/widgets/continuous_chapter_view.dart';
+import 'package:novel_app/utils/reading_text_range.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -24,24 +25,24 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  testWidgets('external pause resumes TTS session before back checkpoint', (
+  testWidgets('manual pause then page turn restarts TTS from the new page', (
     tester,
   ) async {
     final testDirectory = Directory.systemTemp.createTempSync(
-      'reading_screen_lifecycle_',
+      'reading_screen_manual_pause_',
     );
-    final pathProviderChannel = const MethodChannel(
+    const pathProviderChannel = MethodChannel(
       'plugins.flutter.io/path_provider',
     );
+    const flutterTtsChannel = MethodChannel('flutter_tts');
+    const audioPlayerChannel = MethodChannel('xyz.luan/audioplayers');
+    const audioGlobalChannel = MethodChannel('xyz.luan/audioplayers.global');
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       pathProviderChannel,
       (call) async => call.method == 'getApplicationDocumentsDirectory'
           ? testDirectory.path
           : null,
     );
-    const flutterTtsChannel = MethodChannel('flutter_tts');
-    const audioPlayerChannel = MethodChannel('xyz.luan/audioplayers');
-    const audioGlobalChannel = MethodChannel('xyz.luan/audioplayers.global');
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       flutterTtsChannel,
       (_) async => 1,
@@ -78,12 +79,16 @@ void main() {
     SharedPreferences.setMockInitialValues(const <String, Object>{});
     await tester.runAsync(() => StorageService().init());
 
-    final saveGate = Completer<void>();
-    final readingProvider = _DelayedReadingProvider(saveGate);
-    final bookshelfProvider = _RecordingBookshelfProvider();
+    final readingProvider = _ImmediateReadingProvider();
+    readingProvider.previewSettings(
+      readingProvider.settings.copyWith(
+        pageMode: NovelPageMode.horizontalSlide,
+      ),
+    );
+    final bookshelfProvider = _NoopBookshelfProvider();
     final bookSourceProvider = BookSourceProvider();
     final authProvider = InteractionAuthProvider();
-    final ttsProvider = _RecordingTtsProvider();
+    final ttsProvider = _ManualPauseTtsProvider();
     final navigatorKey = GlobalKey<NavigatorState>();
     addTearDown(readingProvider.dispose);
     addTearDown(bookshelfProvider.dispose);
@@ -92,25 +97,25 @@ void main() {
     addTearDown(ttsProvider.dispose);
 
     final novel = Novel(
-      id: 'reader-dispose-regression',
-      title: '退出保存回归',
+      id: 'manual-pause-page-turn',
+      title: 'Manual pause regression',
       sourceId: 'local',
       isLocal: true,
       totalChapters: 1,
     );
-    final chapterContent = List<String>.generate(
-      120,
-      (index) => '　　第${index + 1}段正文，用于验证外部暂停后的同章进度同步。',
+    final content = List<String>.generate(
+      180,
+      (index) =>
+          '  Paragraph ${index + 1} has enough text to create several pages.',
     ).join('\n\n');
-    final interruptedOffset = chapterContent.indexOf('第90段');
     final chapter = Chapter(
-      id: 'reader-dispose-regression-0',
-      novelId: 'reader-dispose-regression',
-      title: '第一章',
+      id: 'manual-pause-page-turn-0',
+      novelId: novel.id,
+      title: 'Chapter 1',
       index: 0,
-      content: chapterContent,
+      content: content,
     );
-    ttsProvider.activate(novel.id, chapter.content, 17);
+    ttsProvider.activate(novel.id, content, 17);
 
     await tester.pumpWidget(
       MultiProvider(
@@ -135,98 +140,79 @@ void main() {
     );
     navigatorKey.currentState!.push(
       MaterialPageRoute<void>(
-        builder: (_) => ReadingScreen(
-          novel: novel,
-          chapters: [chapter],
-          startCharPosition: 9,
-        ),
+        builder: (_) => ReadingScreen(novel: novel, chapters: [chapter]),
       ),
     );
     await tester.pumpAndSettle();
-    expect(readingProvider.saveCalls, 0);
-    expect(find.byKey(const ValueKey('novel-tts-panel')), findsOneWidget);
-    expect(tester.takeException(), isNull);
 
-    ttsProvider.interruptAt(interruptedOffset);
-    await tester.pumpAndSettle();
-    final continuousReader = tester.widget<ContinuousChapterView>(
-      find.byType(ContinuousChapterView),
+    final pagedView = tester.widget<NovelPagedView>(
+      find.byType(NovelPagedView),
     );
-    final pausedAnchor = continuousReader.controller!.captureRenderedAnchor();
-    expect(pausedAnchor, isNotNull);
-    expect(pausedAnchor!.charPosition, closeTo(interruptedOffset, 80));
+    final pagedController = pagedView.controller!;
+    expect(pagedController.currentPage, 0);
+
+    const pausedSpeechOffset = 60;
+    ttsProvider.advanceTo(pausedSpeechOffset);
+    await tester.tap(find.text('暂停'));
+    await tester.pumpAndSettle();
+    expect(ttsProvider.pauseCalls, 1);
+
+    final turn = pagedController.nextPage();
+    await tester.pumpAndSettle();
+    expect(await turn, isTrue);
+    expect(pagedController.currentPage, 1);
+    final newPageOffset = pagedController.currentCharPosition!;
+    expect(newPageOffset, greaterThan(pausedSpeechOffset));
 
     await tester.tap(find.text('继续'));
-    await tester.pump();
-
-    expect(ttsProvider.playCalls, 1);
-    expect(ttsProvider.stopCalls, 0);
-    expect(ttsProvider.startCalls, 0);
-    expect(ttsProvider.currentStartOffset, interruptedOffset);
-
-    await tester.tap(find.byKey(const ValueKey('novel-tts-panel-close')));
-    await tester.pump();
-
-    await navigatorKey.currentState!.maybePop();
     await tester.pumpAndSettle();
 
-    expect(ttsProvider.checkpointCalls, 1);
-    expect(readingProvider.saveCalls, 0);
-    expect(bookshelfProvider.updateCalls, 0);
-    expect(ttsProvider.stopCalls, 0);
-    expect(ttsProvider.isSpeaking, isTrue);
+    expect(ttsProvider.playCalls, 0);
+    expect(ttsProvider.stopCalls, 1);
+    expect(ttsProvider.startCalls, 1);
+    expect(
+      ttsProvider.lastStartOffset,
+      skipReadingTextEdgeWhitespace(content, newPageOffset),
+    );
     expect(tester.takeException(), isNull);
-    saveGate.complete();
   });
 }
 
-class _DelayedReadingProvider extends ReadingProvider {
-  _DelayedReadingProvider(this.saveGate);
-
-  final Completer<void> saveGate;
-  int saveCalls = 0;
-  ReadingProgress? lastProgress;
+class _ImmediateReadingProvider extends ReadingProvider {
+  _ImmediateReadingProvider()
+    : super(settingsSaver: (_, _) async {}, settingsLoader: (_) async => null);
 
   @override
-  Future<void> saveProgress(Novel novel, ReadingProgress progress) async {
-    saveCalls += 1;
-    lastProgress = progress;
-    await saveGate.future;
-  }
+  Future<void> saveProgress(Novel novel, ReadingProgress progress) async {}
 }
 
-class _RecordingBookshelfProvider extends BookshelfProvider {
-  int updateCalls = 0;
-
+class _NoopBookshelfProvider extends BookshelfProvider {
   @override
-  Future<void> updateNovel(Novel novel) async {
-    updateCalls += 1;
-  }
+  Future<void> updateNovel(Novel novel) async {}
 }
 
-class _RecordingTtsProvider extends TtsProvider {
+class _ManualPauseTtsProvider extends TtsProvider {
   bool _active = false;
   bool _paused = false;
   String _owner = '';
   String _content = '';
   int _offset = -1;
+  int pauseCalls = 0;
   int stopCalls = 0;
   int playCalls = 0;
   int startCalls = 0;
-  int checkpointCalls = 0;
+  int? lastStartOffset;
 
   void activate(String novelId, String content, int offset) {
     _active = true;
+    _paused = false;
     _owner = 'novel:$novelId';
     _content = content;
     _offset = offset;
-    _paused = false;
   }
 
-  void interruptAt(int offset) {
+  void advanceTo(int offset) {
     _offset = offset;
-    _paused = true;
-    notifyListeners();
   }
 
   @override
@@ -251,8 +237,11 @@ class _RecordingTtsProvider extends TtsProvider {
   bool isOwnedBy(String ownerKey) => _active && ownerKey == _owner;
 
   @override
-  Future<void> checkpointActiveReadingProgress() async {
-    checkpointCalls += 1;
+  Future<bool> pauseSpeaking() async {
+    pauseCalls += 1;
+    _paused = true;
+    notifyListeners();
+    return true;
   }
 
   @override
@@ -261,6 +250,13 @@ class _RecordingTtsProvider extends TtsProvider {
     _paused = false;
     notifyListeners();
     return true;
+  }
+
+  @override
+  Future<void> stopSpeaking({bool clearSleepTimer = true}) async {
+    stopCalls += 1;
+    _active = false;
+    _paused = false;
   }
 
   @override
@@ -275,14 +271,8 @@ class _RecordingTtsProvider extends TtsProvider {
     required TtsChapterAccessCheck canOpenChapter,
   }) async {
     startCalls += 1;
+    lastStartOffset = startOffset;
     activate(novel.id, content, startOffset);
     return true;
-  }
-
-  @override
-  Future<void> stopSpeaking({bool clearSleepTimer = true}) async {
-    stopCalls += 1;
-    _active = false;
-    _paused = false;
   }
 }
