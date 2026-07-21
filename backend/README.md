@@ -200,6 +200,8 @@ APK with a new manifest checksum.
 
 升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。下载服务器只承载 APK 与更新清单，不能部署后端服务。
 
+直连发布 helper 始终要求 canonical 目录存在。历史兼容目录存在时同步更新，不存在时跳过；如果兼容路径是符号链接或非目录则中止发布。兼容清单先切换，canonical `version.json` 最后原子替换。
+
 ## 后端直连发布
 
 仓库不再保留 GitHub Actions 后端部署工作流。推送到 GitHub 只运行 CI 校验，不能触发生产服务器更新。

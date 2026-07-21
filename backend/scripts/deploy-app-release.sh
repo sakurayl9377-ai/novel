@@ -79,9 +79,25 @@ with zipfile.ZipFile(sys.argv[1], "r") as apk:
         raise SystemExit(1)
 PY
 
-for target_dir in "$canonical_dir" "$legacy_app3_dir" "$legacy_app_dir"; do
-  [[ -d "$target_dir" && ! -L "$target_dir" ]] || fail "release_directory_missing"
+[[ -d "$canonical_dir" && ! -L "$canonical_dir" ]] || fail "release_directory_missing"
+for target_dir in "$legacy_app3_dir" "$legacy_app_dir"; do
+  if [[ -e "$target_dir" || -L "$target_dir" ]]; then
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || fail "release_directory_invalid"
+  fi
 done
+
+# New download hosts only expose the canonical directory. Keep older mirrors
+# synchronized when they exist, without requiring obsolete paths to be created.
+manifest_dirs=()
+alias_dirs=("$canonical_dir")
+if [[ -d "$legacy_app_dir" ]]; then
+  manifest_dirs+=("$legacy_app_dir")
+fi
+if [[ -d "$legacy_app3_dir" ]]; then
+  manifest_dirs+=("$legacy_app3_dir")
+  alias_dirs+=("$legacy_app3_dir")
+fi
+manifest_dirs+=("$canonical_dir")
 
 current_version_code=0
 current_sha256=""
@@ -118,13 +134,13 @@ else
 fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-for target_dir in "$canonical_dir" "$legacy_app3_dir" "$legacy_app_dir"; do
+for target_dir in "${manifest_dirs[@]}"; do
   backup_dir="$target_dir/backup-${timestamp}-pre-${version_name}+${version_code}"
   install -d -m 0755 -o root -g root "$backup_dir"
   [[ ! -f "$target_dir/version.json" ]] \
     || cp -a -- "$target_dir/version.json" "$backup_dir/version.json"
 done
-for target_dir in "$canonical_dir" "$legacy_app3_dir"; do
+for target_dir in "${alias_dirs[@]}"; do
   backup_dir="$target_dir/backup-${timestamp}-pre-${version_name}+${version_code}"
   [[ ! -f "$target_dir/app-release.apk" ]] \
     || cp --reflink=auto -a -- "$target_dir/app-release.apk" "$backup_dir/app-release.apk"
@@ -138,23 +154,22 @@ install_atomic() {
   mv -Tf -- "$next_path" "$target_path"
 }
 
-install_atomic "$apk_path" "$canonical_dir/app-release.apk"
-install_atomic "$apk_path" "$legacy_app3_dir/app-release.apk"
-[[ "$(sha256sum -- "$canonical_dir/app-release.apk" | awk '{print $1}')" == "$expected_sha256" ]] \
-  || fail "canonical_alias_checksum_mismatch"
-[[ "$(sha256sum -- "$legacy_app3_dir/app-release.apk" | awk '{print $1}')" == "$expected_sha256" ]] \
-  || fail "legacy_alias_checksum_mismatch"
+for target_dir in "${alias_dirs[@]}"; do
+  install_atomic "$apk_path" "$target_dir/app-release.apk"
+  [[ "$(sha256sum -- "$target_dir/app-release.apk" | awk '{print $1}')" == "$expected_sha256" ]] \
+    || fail "alias_checksum_mismatch"
+done
 
 history_name="version-${version_name}+${version_code}.json"
-for target_dir in "$legacy_app_dir" "$legacy_app3_dir" "$canonical_dir"; do
+for target_dir in "${manifest_dirs[@]}"; do
   install_atomic "$manifest_path" "$target_dir/$history_name"
 done
 
 # Each manifest points to the immutable domain APK. Switch the canonical
 # manifest last so new clients only see a release after every legacy entry is ready.
-install_atomic "$manifest_path" "$legacy_app_dir/version.json"
-install_atomic "$manifest_path" "$legacy_app3_dir/version.json"
-install_atomic "$manifest_path" "$canonical_dir/version.json"
+for target_dir in "${manifest_dirs[@]}"; do
+  install_atomic "$manifest_path" "$target_dir/version.json"
+done
 
-printf '{"ok":true,"data":{"versionName":"%s","versionCode":%s,"sha256":"%s","bytes":%s,"targets":3}}\n' \
-  "$version_name" "$version_code" "$expected_sha256" "$apk_bytes"
+printf '{"ok":true,"data":{"versionName":"%s","versionCode":%s,"sha256":"%s","bytes":%s,"targets":%s}}\n' \
+  "$version_name" "$version_code" "$expected_sha256" "$apk_bytes" "${#manifest_dirs[@]}"
