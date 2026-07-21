@@ -221,6 +221,29 @@ export function migrate() {
       FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS game_sso_tickets (
+      ticket_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      game_open_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_game_sso_tickets_expiry
+      ON game_sso_tickets(expires_at, consumed_at);
+
+    CREATE TABLE IF NOT EXISTS game_account_links (
+      novel_user_id INTEGER PRIMARY KEY,
+      game_open_id TEXT NOT NULL UNIQUE,
+      player_id TEXT NOT NULL DEFAULT '',
+      server_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS chat_room_members (
       room_id TEXT NOT NULL,
       user_id INTEGER NOT NULL,

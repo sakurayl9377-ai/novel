@@ -27,6 +27,7 @@ import '../../screens/bookshelf_screen.dart';
 import '../../screens/book_detail_screen.dart';
 import '../../screens/chat_room_list_screen.dart';
 import '../../screens/growth_center_screen.dart';
+import '../../screens/game_center_screen.dart';
 import '../../screens/horse_race_game_screen.dart';
 import '../../screens/interaction_auth_screen.dart';
 import '../../screens/local_library_screens.dart';

@@ -73,6 +73,12 @@ export const config = {
   trustedProxies: envList('TRUST_PROXY', '127.0.0.1,::1'),
   allowDevAuthCodes: envBool('ALLOW_DEV_AUTH_CODES', false),
   allowBetaTestSession: envBool('ALLOW_BETA_TEST_SESSION', false),
+  bailianLaunchUrl: env('BAILIAN_LAUNCH_URL'),
+  bailianSsoSharedSecret: env('BAILIAN_SSO_SHARED_SECRET'),
+  bailianSsoTtlSeconds: Math.max(
+    1,
+    Math.min(60, Math.trunc(envNumber('BAILIAN_SSO_TTL_SECONDS', 60))),
+  ),
   videoCoverDir: path.resolve(
     rootDir,
     env('VIDEO_COVER_DIR', './data/video-covers'),

@@ -284,7 +284,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onSpace: _openMySpace,
                       onFavorites: _openFavorites,
                       onDownloads: _openDownloads,
-                      onHorseRaceGame: () => unawaited(_openHorseRaceGame()),
+                      onGameCenter: _openGameCenter,
                       onChatRoom: _openChatRoom,
                       onGrowthCenter: _openGrowthCenter,
                       onAdminCenter:
@@ -384,6 +384,17 @@ class _ProfileScreenState extends State<ProfileScreen>
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const HorseRaceGameScreen()),
+    );
+  }
+
+  void _openGameCenter() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GameCenterScreen(
+          onHorseRaceTap: () => unawaited(_openHorseRaceGame()),
+        ),
+      ),
     );
   }
 

@@ -48,6 +48,7 @@ dependencies:
   flutter_chat_ui: ^2.11.1
   flutter_chat_core: ^2.9.0
   record: ^7.1.1
+  webview_flutter: ^4.13.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -65,6 +66,7 @@ flutter:
     - assets/images/app_icon.png
     - assets/images/profile/
     - assets/images/chat_bot/
+    - assets/images/card_game/
     - assets/stickers/chat/
     - assets/books/default/
     - assets/fonts/licenses/

@@ -102,7 +102,7 @@ class _MoreServicesCard extends StatefulWidget {
     required this.onSpace,
     required this.onFavorites,
     required this.onDownloads,
-    required this.onHorseRaceGame,
+    required this.onGameCenter,
     required this.onChatRoom,
     required this.onGrowthCenter,
     required this.onCreatorCenter,
@@ -116,7 +116,7 @@ class _MoreServicesCard extends StatefulWidget {
   final VoidCallback onSpace;
   final VoidCallback onFavorites;
   final VoidCallback onDownloads;
-  final VoidCallback onHorseRaceGame;
+  final VoidCallback onGameCenter;
   final VoidCallback onChatRoom;
   final VoidCallback onGrowthCenter;
   final VoidCallback onCreatorCenter;
@@ -184,8 +184,8 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
       ),
       _ProfileShortcutEntry(
         Icons.sports_esports_outlined,
-        '小游戏',
-        widget.onHorseRaceGame,
+        '游戏中心',
+        widget.onGameCenter,
         color: const Color(0xFFE65D42),
       ),
       _ProfileShortcutEntry(
