@@ -11,7 +11,20 @@ import 'manga_image_service.dart';
 import 'site_domain_service.dart';
 import 'swr_cache.dart';
 
+typedef MangaPageFetcher =
+    Future<http.Response> Function(Uri uri, {required Duration timeout});
+typedef MangaSiteUriProvider = Future<Uri> Function();
+
 class MangaService {
+  MangaService({
+    MangaPageFetcher? pageFetcher,
+    MangaSiteUriProvider? siteUriProvider,
+  }) : // Keep public test seams separate from private implementation fields.
+       // ignore: prefer_initializing_formals
+       _pageFetcher = pageFetcher,
+       // ignore: prefer_initializing_formals
+       _siteUriProvider = siteUriProvider;
+
   static final Uri siteUri = Uri.parse('https://cn.bzmgcn.com/');
   static const SiteDomainConfig _domain = SiteDomainConfig(
     key: 'manga_baozi',
@@ -20,15 +33,17 @@ class MangaService {
       'https://cn.cnbzmg.com',
       'https://www.bzmgcn.com',
       'https://www.baozimh.com',
+      'https://www.twbzmg.com',
     ],
   );
   static const String _homeHtmlCacheKey = 'manga_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'manga_home_html_cache_time_v1';
   static const String _chapterImagesCachePrefix =
-      'manga_chapter_images_cache_v2_';
+      'manga_chapter_images_cache_v3_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
   static const Duration _chapterImagesCacheTtl = Duration(days: 7);
   static const int _maxChapterImageCacheEntries = 80;
+  static const int _maxChapterContentPages = 32;
   static final SwrCache<String, MangaHomeData> _homeCache = SwrCache(
     freshTtl: const Duration(minutes: 5),
     staleTtl: const Duration(hours: 4),
@@ -83,6 +98,8 @@ class MangaService {
   ];
 
   final SiteDomainService _domainService = SiteDomainService.instance;
+  final MangaPageFetcher? _pageFetcher;
+  final MangaSiteUriProvider? _siteUriProvider;
 
   static Map<String, int> get cacheTelemetryMetadata => {
     ..._homeCache.stats.toTelemetryMetadata(prefix: 'mangaHome'),
@@ -278,16 +295,70 @@ class MangaService {
   }
 
   Future<List<String>> _fetchChapterImagesUncached(Uri uri) async {
-    final response = await _getPage(uri, timeout: const Duration(seconds: 20));
-    if (response.statusCode != 200) {
-      throw Exception('HTTP ${response.statusCode}');
+    var currentUri = uri;
+    var chapterIdentity = _ChapterPageIdentity.fromUri(uri);
+    final visitedPageUris = <String>{};
+    final images = <String>[];
+
+    for (var page = 0; page < _maxChapterContentPages; page++) {
+      final response = await _getPage(
+        currentUri,
+        timeout: const Duration(seconds: 20),
+      );
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+
+      final responseUri = _responsePageUri(response, currentUri);
+      final visitKey = responseUri.removeFragment().toString();
+      if (!visitedPageUris.add(visitKey)) {
+        throw StateError('chapter page redirected in a loop');
+      }
+
+      final responseIdentity = _ChapterPageIdentity.fromUri(responseUri);
+      if (!chapterIdentity.isCompatibleWith(responseIdentity)) {
+        throw StateError('chapter page redirected to another chapter');
+      }
+      chapterIdentity = chapterIdentity.merge(responseIdentity);
+      final baseUri = _responseSiteUri(response);
+      final document = html_parser.parse(_decodeBody(response));
+      final pageImages = _BaoziDetailParser(
+        baseUri,
+      ).parseDirectImageUrls(document);
+      if (pageImages.isEmpty) throw Exception('chapter images not found');
+      images.addAll(pageImages);
+
+      Uri? nextUri;
+      for (final href in _nextChapterPageHrefs(document)) {
+        final candidate = _resolveChapterPageUri(href, responseUri);
+        if (candidate == null ||
+            !chapterIdentity.allows(candidate, currentUri: responseUri) ||
+            visitedPageUris.contains(candidate.removeFragment().toString())) {
+          continue;
+        }
+        nextUri = candidate;
+        break;
+      }
+
+      if (nextUri == null) {
+        return _completeChapterImages(uri, images);
+      }
+      currentUri = nextUri;
     }
-    final baseUri = _responseSiteUri(response);
-    final document = html_parser.parse(_decodeBody(response));
-    final images = _BaoziDetailParser(baseUri).parseDirectImages(document);
-    if (images.isEmpty) throw Exception('chapter images not found');
-    await _writeCachedChapterImages(uri, images);
-    return images;
+
+    throw StateError(
+      'chapter content pagination exceeds $_maxChapterContentPages pages',
+    );
+  }
+
+  Future<List<String>> _completeChapterImages(
+    Uri cacheUri,
+    List<String> images,
+  ) async {
+    final result = normalizeMangaChapterImageSequence(images);
+    if (result.isEmpty) throw Exception('chapter images not found');
+    await _writeCachedChapterImages(cacheUri, result);
+    return result;
   }
 
   Future<void> warmChapterImages(MangaChapter chapter) async {
@@ -391,17 +462,76 @@ class MangaService {
   }
 
   Future<Uri> _currentSiteUri() async {
+    final siteUriProvider = _siteUriProvider;
+    if (siteUriProvider != null) return siteUriProvider();
     final origin = await _domainService.currentOrigin(_domain);
     return Uri.parse('$origin/');
   }
 
   Future<http.Response> _getPage(Uri uri, {required Duration timeout}) async {
+    final pageFetcher = _pageFetcher;
+    if (pageFetcher != null) return pageFetcher(uri, timeout: timeout);
     return _domainService.get(
       _domain,
       uri,
       headers: _headers(referer: '${await _currentSiteUri()}'),
       timeout: timeout,
     );
+  }
+
+  Uri _responsePageUri(http.Response response, Uri fallback) {
+    return (response.request?.url ?? fallback).removeFragment();
+  }
+
+  Iterable<String> _nextChapterPageHrefs(dom.Document document) sync* {
+    for (final element in document.querySelectorAll(
+      'a[href], link[href], [data-url]',
+    )) {
+      if (!_looksLikeNextChapterPageLink(element)) continue;
+      for (final attribute in const ['href', 'data-url']) {
+        final href = element.attributes[attribute] ?? '';
+        if (href.trim().isNotEmpty) yield href;
+      }
+    }
+  }
+
+  bool _looksLikeNextChapterPageLink(dom.Element element) {
+    final rel = (element.attributes['rel'] ?? '').toLowerCase();
+    if (rel.split(RegExp(r'\s+')).contains('next')) return true;
+
+    final label = [
+      element.text,
+      element.attributes['aria-label'] ?? '',
+      element.attributes['title'] ?? '',
+      element.attributes['class'] ?? '',
+      element.attributes['id'] ?? '',
+    ].join(' ').toLowerCase();
+    if (RegExp(r'\bnext(?:\s+page)?\b').hasMatch(label)) return true;
+
+    return label.contains('\u4e0b\u4e00\u9875') ||
+        label.contains('\u4e0b\u9875') ||
+        label.contains('\u4e0b\u4e00\u9801') ||
+        label.contains('\u4e0b\u9801');
+  }
+
+  Uri? _resolveChapterPageUri(String rawHref, Uri currentUri) {
+    final href = rawHref.replaceAll('&amp;', '&').trim();
+    if (href.isEmpty) return null;
+    var resolved = currentUri.resolve(href).removeFragment();
+    if ((resolved.scheme != 'http' && resolved.scheme != 'https') ||
+        resolved.host.isEmpty) {
+      return null;
+    }
+    if (_isBaoziPageHost(resolved.host) &&
+        _isBaoziPageHost(currentUri.host) &&
+        resolved.host != currentUri.host) {
+      resolved = resolved.replace(
+        scheme: currentUri.scheme,
+        host: currentUri.host,
+        port: null,
+      );
+    }
+    return resolved;
   }
 
   Uri _responseSiteUri(http.Response response) {
@@ -414,7 +544,8 @@ class MangaService {
     return host == 'cn.bzmgcn.com' ||
         host == 'cn.cnbzmg.com' ||
         host == 'www.bzmgcn.com' ||
-        host == 'www.baozimh.com';
+        host == 'www.baozimh.com' ||
+        host == 'www.twbzmg.com';
   }
 
   Map<String, String> _headers({String referer = ''}) {
@@ -427,6 +558,83 @@ class MangaService {
     } catch (_) {
       return utf8.decode(response.bodyBytes, allowMalformed: true);
     }
+  }
+}
+
+class _ChapterPageIdentity {
+  const _ChapterPageIdentity({
+    this.comicId = '',
+    this.sectionSlot = '',
+    this.chapterSlot = '',
+  });
+
+  factory _ChapterPageIdentity.fromUri(Uri uri) {
+    final pathMatch = RegExp(
+      r'/comic/chapter/([^/]+)/(\d+)_(\d+)(?:[_-][^/]*)?\.html$',
+      caseSensitive: false,
+    ).firstMatch(uri.path);
+    return _ChapterPageIdentity(
+      comicId:
+          uri.queryParameters['comic_id']?.trim() ??
+          Uri.decodeComponent(pathMatch?.group(1) ?? '').trim(),
+      sectionSlot:
+          uri.queryParameters['section_slot']?.trim() ??
+          pathMatch?.group(2) ??
+          '',
+      chapterSlot:
+          uri.queryParameters['chapter_slot']?.trim() ??
+          pathMatch?.group(3) ??
+          '',
+    );
+  }
+
+  final String comicId;
+  final String sectionSlot;
+  final String chapterSlot;
+
+  bool get hasKnownValue =>
+      comicId.isNotEmpty || sectionSlot.isNotEmpty || chapterSlot.isNotEmpty;
+  bool get hasChapterLocation =>
+      sectionSlot.isNotEmpty || chapterSlot.isNotEmpty;
+
+  _ChapterPageIdentity merge(_ChapterPageIdentity other) {
+    return _ChapterPageIdentity(
+      comicId: comicId.isNotEmpty ? comicId : other.comicId,
+      sectionSlot: sectionSlot.isNotEmpty ? sectionSlot : other.sectionSlot,
+      chapterSlot: chapterSlot.isNotEmpty ? chapterSlot : other.chapterSlot,
+    );
+  }
+
+  bool isCompatibleWith(_ChapterPageIdentity other) {
+    return _sameComicId(comicId, other.comicId) &&
+        _sameSlot(sectionSlot, other.sectionSlot) &&
+        _sameSlot(chapterSlot, other.chapterSlot);
+  }
+
+  bool allows(Uri candidate, {required Uri currentUri}) {
+    if (candidate.host != currentUri.host) return false;
+    final next = _ChapterPageIdentity.fromUri(candidate);
+    if (!isCompatibleWith(next)) return false;
+    if (!next.hasKnownValue) return candidate.path == currentUri.path;
+    if (hasChapterLocation &&
+        !next.hasChapterLocation &&
+        candidate.path != currentUri.path) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _sameComicId(String expected, String actual) {
+    if (expected.isEmpty || actual.isEmpty) return true;
+    return expected == actual || _baseComicId(expected) == _baseComicId(actual);
+  }
+
+  bool _sameSlot(String expected, String actual) {
+    return expected.isEmpty || actual.isEmpty || expected == actual;
+  }
+
+  String _baseComicId(String value) {
+    return value.trim().toLowerCase().replaceFirst(RegExp(r'_[a-z0-9]+$'), '');
   }
 }
 
@@ -811,6 +1019,10 @@ class _BaoziDetailParser {
   }
 
   List<String> parseDirectImages(dom.Document document) {
+    return normalizeMangaChapterImageSequence(parseDirectImageUrls(document));
+  }
+
+  List<String> parseDirectImageUrls(dom.Document document) {
     final urls = <String>[];
     final seen = <String>{};
     for (final image in document.querySelectorAll('amp-img,img')) {
@@ -829,7 +1041,7 @@ class _BaoziDetailParser {
       if (!_looksLikePageImage(url) || !seen.add(url)) continue;
       urls.add(url);
     }
-    return normalizeMangaChapterImageSequence(urls);
+    return urls;
   }
 
   Map<String, String> _parseMeta(dom.Document document) {
