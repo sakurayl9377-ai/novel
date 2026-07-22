@@ -30,6 +30,7 @@ export const rankingMetrics = new Set(["hot", "new", "following", "completion"])
 export const rankingPeriods = new Set(["daily", "weekly"]);
 export const activityEventNames = new Set([
   ...behaviorEvents,
+  "login",
   "horse_race_bet",
   "horse_race_round",
   "horse_race_win",
@@ -469,6 +470,105 @@ export function claimActivityReward({
     safeRollback();
     throw error;
   }
+}
+
+export function syncLoginCampaignRewards({ userId }) {
+  const normalizedUserId = Number(userId || 0);
+  if (!normalizedUserId) throw badRequest("user not found");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const user = one(
+      `SELECT id FROM users
+       WHERE id = ? AND role = 'user' AND status = 'active'
+         AND lower(email) NOT IN ('chatbot@system.local', 'chat-bot@system.local')`,
+      [normalizedUserId],
+    );
+    if (!user) throw badRequest("user not found");
+    run(
+      "UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+      [normalizedUserId],
+    );
+    for (const task of activeLoginTasks()) {
+      if (!campaignTaskAllows(task, normalizedUserId, {})) continue;
+      awardLoginTask({ task, userId: normalizedUserId });
+    }
+    const result = pendingLoginRewardPayload(normalizedUserId);
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    safeRollback();
+    throw error;
+  }
+}
+
+export function acknowledgeLoginRewardNotice({ userId, noticeId }) {
+  const id = Number(noticeId || 0);
+  if (!Number.isSafeInteger(id) || id <= 0) throw badRequest("login reward notice is invalid");
+  const notice = one(
+    "SELECT id FROM login_reward_notices WHERE id = ? AND user_id = ?",
+    [id, userId],
+  );
+  if (!notice) throw badRequest("login reward notice not found");
+  run(
+    `UPDATE login_reward_notices
+     SET acknowledged_at = CASE
+       WHEN acknowledged_at = '' THEN datetime('now')
+       ELSE acknowledged_at END
+     WHERE id = ? AND user_id = ?`,
+    [id, userId],
+  );
+  return { ok: true };
+}
+
+// The campaign service calls this while its BEGIN IMMEDIATE transaction is active.
+export function backfillLoginCampaignRewards(campaignId) {
+  const campaign = one("SELECT * FROM campaigns WHERE id = ? AND status = 'active'", [campaignId]);
+  if (!campaign || !dateWindowActive(campaign.starts_at, campaign.ends_at)) return 0;
+  const task = one(
+    `SELECT t.*, c.title AS campaign_title, c.description AS campaign_description,
+            c.audience_json, c.min_version_code, c.max_version_code,
+            c.starts_at, c.ends_at
+     FROM activity_tasks t JOIN campaigns c ON c.id = t.campaign_id
+     WHERE t.campaign_id = ? AND t.event_name = 'login' AND t.status = 'active'
+     ORDER BY t.sort_order, t.id LIMIT 1`,
+    [campaignId],
+  );
+  if (!task) return 0;
+
+  const { startMs: dayStartMs, endMs: dayEndMs } = hongKongDayWindow();
+  const campaignStartMs = databaseTimeMs(campaign.starts_at, Number.NEGATIVE_INFINITY);
+  const campaignEndMs = databaseTimeMs(campaign.ends_at, Number.POSITIVE_INFINITY);
+  const activeStartMs = Math.max(dayStartMs, campaignStartMs);
+  const activeEndMs = Math.min(dayEndMs, campaignEndMs, Date.now() + 1000);
+  if (activeStartMs >= activeEndMs) return 0;
+
+  let awarded = 0;
+  const candidates = all(
+    `SELECT u.id,
+            CASE
+              WHEN COALESCE(i.last_seen_at, '') > COALESCE(u.last_login_at, '')
+                THEN i.last_seen_at
+              ELSE u.last_login_at
+            END AS active_at,
+            COALESCE(i.version_code, 0) AS version_code
+     FROM users u
+     LEFT JOIN user_app_installs i ON i.id = (
+       SELECT latest.id FROM user_app_installs latest
+       WHERE latest.user_id = u.id
+       ORDER BY latest.last_seen_at DESC, latest.id DESC LIMIT 1
+     )
+     WHERE u.role = 'user' AND u.status = 'active'
+       AND lower(u.email) NOT IN ('chatbot@system.local', 'chat-bot@system.local')`,
+  );
+  for (const candidate of candidates) {
+    const activeAtMs = databaseTimeMs(candidate.active_at, Number.NaN);
+    if (!Number.isFinite(activeAtMs) || activeAtMs < activeStartMs || activeAtMs >= activeEndMs) {
+      continue;
+    }
+    if (!campaignTaskAllows(task, candidate.id, { versionCode: candidate.version_code })) continue;
+    if (awardLoginTask({ task, userId: candidate.id })) awarded += 1;
+  }
+  return awarded;
 }
 
 export function advanceActivityTasks({ userId, eventName, amount = 1, context = {} }) {
@@ -989,6 +1089,112 @@ function dailyHorseRaceTotals(userId) {
     [userId, dayStart, dayStart + 86400000],
   );
   return { bet: Number(row?.bet || 0), payout: Number(row?.payout || 0) };
+}
+
+function activeLoginTasks() {
+  return all(
+    `SELECT t.*, c.title AS campaign_title, c.description AS campaign_description,
+            c.audience_json, c.min_version_code, c.max_version_code,
+            c.starts_at, c.ends_at
+     FROM activity_tasks t JOIN campaigns c ON c.id = t.campaign_id
+     WHERE t.status = 'active' AND t.event_name = 'login' AND c.status = 'active'
+       AND (c.starts_at = '' OR datetime(c.starts_at) <= datetime('now'))
+       AND (c.ends_at = '' OR datetime(c.ends_at) > datetime('now'))
+       AND NOT EXISTS (
+         SELECT 1 FROM activity_tasks earlier
+         WHERE earlier.campaign_id = t.campaign_id
+           AND earlier.status = 'active' AND earlier.event_name = 'login'
+           AND (earlier.sort_order < t.sort_order
+             OR (earlier.sort_order = t.sort_order AND earlier.id < t.id))
+       )
+     ORDER BY c.id, t.sort_order, t.id`,
+  );
+}
+
+function awardLoginTask({ task, userId }) {
+  const existing = one(
+    `SELECT rc.id
+     FROM reward_claims rc
+     JOIN activity_tasks claimed_task ON claimed_task.id = rc.task_id
+     WHERE rc.campaign_id = ? AND rc.user_id = ?
+       AND claimed_task.event_name = 'login'
+     LIMIT 1`,
+    [task.campaign_id, userId],
+  );
+  if (existing) return false;
+  run(
+    `INSERT INTO user_activity_progress
+       (campaign_id, task_id, user_id, progress_count, completed_at)
+     VALUES (?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(campaign_id, task_id, user_id) DO UPDATE SET
+       progress_count = excluded.progress_count,
+       completed_at = CASE
+         WHEN user_activity_progress.completed_at <> '' THEN user_activity_progress.completed_at
+         ELSE datetime('now') END,
+       updated_at = datetime('now')`,
+    [task.campaign_id, task.id, userId, Math.max(1, Number(task.target_count) || 1)],
+  );
+  const claim = run(
+    `INSERT OR IGNORE INTO reward_claims
+       (campaign_id, task_id, user_id, points_awarded, coins_awarded, idempotency_key)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [task.campaign_id, task.id, userId, task.reward_points, task.reward_coins,
+     `login:${task.campaign_id}:${userId}`],
+  );
+  if (!Number(claim.changes || 0)) return false;
+  const claimId = Number(claim.lastInsertRowid);
+  creditDynamicReward({
+    userId,
+    points: task.reward_points,
+    coins: task.reward_coins,
+    action: "login_reward",
+    description: task.title,
+    relatedType: "campaign",
+    relatedId: String(task.campaign_id),
+  });
+  run(
+    `INSERT INTO login_reward_notices
+       (campaign_id, task_id, claim_id, user_id, title, content, coins_awarded)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [task.campaign_id, task.id, claimId, userId,
+     task.campaign_title || task.title,
+     task.description || task.campaign_description || task.title,
+     Math.max(0, Number(task.reward_coins) || 0)],
+  );
+  return true;
+}
+
+function pendingLoginRewardPayload(userId) {
+  const balance = Number(one("SELECT sakura_coins FROM users WHERE id = ?", [userId])?.sakura_coins || 0);
+  const items = all(
+    `SELECT id, campaign_id, title, content, coins_awarded, created_at
+     FROM login_reward_notices
+     WHERE user_id = ? AND acknowledged_at = ''
+     ORDER BY id ASC`,
+    [userId],
+  ).map((row) => ({
+    id: Number(row.id),
+    campaignId: Number(row.campaign_id),
+    title: row.title,
+    content: row.content || "",
+    coinsAwarded: Number(row.coins_awarded || 0),
+    createdAt: row.created_at,
+  }));
+  return { balance, items };
+}
+
+function hongKongDayWindow(nowMs = Date.now()) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const startMs = Math.floor((nowMs + offsetMs) / dayMs) * dayMs - offsetMs;
+  return { startMs, endMs: startMs + dayMs };
+}
+
+function databaseTimeMs(value, fallback) {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const parsed = Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : `${text.replace(" ", "T")}Z`);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function creditDynamicReward({ userId, points, coins, action, description, relatedType, relatedId }) {

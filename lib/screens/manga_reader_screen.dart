@@ -7,7 +7,6 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../config/theme.dart';
@@ -151,7 +150,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
     } catch (_) {
       _preferences = const MangaReaderPreferences();
     }
-    unawaited(_syncPageOrientation(_preferences));
     _scrollController.addListener(_handleScrollChanged);
     _telemetryTrace = AppTelemetryService.instance.openScreen(
       'manga_reader',
@@ -187,11 +185,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
 
   @override
   void dispose() {
-    unawaited(
-      SystemChrome.setPreferredOrientations(const [
-        DeviceOrientation.portraitUp,
-      ]),
-    );
     WidgetsBinding.instance.removeObserver(this);
     _chapterLoadGeneration++;
     _evictTrackedPrefetches();
@@ -1593,7 +1586,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
         next.encode(),
       ),
     );
-    unawaited(_syncPageOrientation(next));
     if (qualityChanged) {
       _evictTrackedPrefetches();
       _pageGeometryVersion.value += 1;
@@ -1611,12 +1603,6 @@ class _MangaReaderScreenState extends State<MangaReaderScreen>
       }
       if (modeChanged || qualityChanged) _prefetchNearCurrentLocation();
     });
-  }
-
-  Future<void> _syncPageOrientation(MangaReaderPreferences preferences) {
-    return SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-    ]);
   }
 
   Future<void> _showReaderSettings() {

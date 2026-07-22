@@ -76,6 +76,23 @@ void main() {
       controller.dispose();
     });
 
+    test('preserves the authoritative already-signed result', () async {
+      final repository = _FakeProfileRepository()
+        ..profileResponses['token'] = Future<UserProfile>.value(
+          UserProfile(user: _user(9)),
+        )
+        ..alreadySigned = true;
+      final controller = ProfileController(repository: repository);
+      await controller.switchSession(user: _user(9), token: 'token');
+
+      final result = await controller.signIn();
+
+      expect(result.alreadySigned, isTrue);
+      expect(result.profile.user.id, 9);
+      expect(controller.state.profile?.user.id, 9);
+      controller.dispose();
+    });
+
     test(
       'tracks history, favorites and downloads returning from child pages',
       () {
@@ -131,10 +148,14 @@ class _FakeProfileRepository implements ProfileRepository {
       <String, Future<UserProfile>>{};
   List<ShopItem> shopItems = const <ShopItem>[];
   int unreadCount = 0;
+  bool alreadySigned = false;
 
   @override
-  Future<UserProfile> dailySignIn({required String token}) {
-    return fetchProfile(token: token);
+  Future<DailySignInResult> dailySignIn({required String token}) async {
+    return DailySignInResult(
+      profile: await fetchProfile(token: token),
+      alreadySigned: alreadySigned,
+    );
   }
 
   @override

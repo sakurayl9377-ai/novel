@@ -10,6 +10,7 @@ class _StatsPanel extends StatelessWidget {
     required this.onMemberCenter,
     required this.onComments,
     required this.onDanmaku,
+    required this.onWallet,
   });
 
   final InteractionUser? user;
@@ -20,6 +21,7 @@ class _StatsPanel extends StatelessWidget {
   final VoidCallback onMemberCenter;
   final VoidCallback onComments;
   final VoidCallback onDanmaku;
+  final VoidCallback onWallet;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +46,11 @@ class _StatsPanel extends StatelessWidget {
               const _ProfileShortDivider(),
               _HeroStat(label: '弹幕', value: stats.danmaku, onTap: onDanmaku),
               const _ProfileShortDivider(),
-              _HeroStat(label: '樱花币', value: growth.sakuraCoins),
+              _HeroStat(
+                label: '樱花币',
+                value: growth.sakuraCoins,
+                onTap: onWallet,
+              ),
             ],
           ),
           const SizedBox(height: 13),
@@ -170,12 +176,14 @@ class _DailySignInCard extends StatelessWidget {
     required this.rewards,
     required this.onOpen,
     required this.onSignIn,
+    required this.pending,
   });
 
   final InteractionUser? user;
   final List<DailyRewardProgress> rewards;
   final VoidCallback onOpen;
   final Future<UserProfile?> Function() onSignIn;
+  final bool pending;
 
   @override
   Widget build(BuildContext context) {
@@ -253,7 +261,11 @@ class _DailySignInCard extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              onPressed: signedToday ? onOpen : () => unawaited(onSignIn()),
+              onPressed: pending
+                  ? null
+                  : signedToday
+                  ? onOpen
+                  : () => unawaited(onSignIn()),
               style: FilledButton.styleFrom(
                 backgroundColor: selectedColor,
                 foregroundColor: Colors.white,
@@ -263,7 +275,9 @@ class _DailySignInCard extends StatelessWidget {
                 ),
               ),
               child: Text(
-                signedToday
+                pending
+                    ? '签到中...'
+                    : signedToday
                     ? '已签到 · 查看今日奖励'
                     : '签到领取 $todayPoints 成长值${todayCoins > 0 ? ' + $todayCoins 樱花币' : ''}',
                 style: const TextStyle(

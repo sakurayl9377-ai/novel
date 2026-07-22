@@ -1,5 +1,21 @@
 part of '../profile_screen.dart';
 
+const List<String> profileMoreServicesOrder = <String>[
+  '商城',
+  '我的装扮',
+  '书架',
+  '历史记录',
+  '钱包',
+  '收藏',
+  '聊天室',
+  '游戏中心',
+  '空间',
+  '发现中心',
+  '创作中心',
+  '下载',
+  '运营管理',
+];
+
 // Kept for the compact profile variant used by smaller layouts.
 // ignore: unused_element
 class _QuickFeatureGrid extends StatelessWidget {
@@ -99,10 +115,11 @@ class _MoreServicesCard extends StatefulWidget {
     required this.onBookshelf,
     required this.onShop,
     required this.onDressUp,
+    required this.onWallet,
     required this.onSpace,
     required this.onFavorites,
     required this.onDownloads,
-    required this.onHorseRaceGame,
+    required this.onGameCenter,
     required this.onChatRoom,
     required this.onGrowthCenter,
     required this.onCreatorCenter,
@@ -113,10 +130,11 @@ class _MoreServicesCard extends StatefulWidget {
   final VoidCallback onBookshelf;
   final VoidCallback onShop;
   final VoidCallback onDressUp;
+  final VoidCallback onWallet;
   final VoidCallback onSpace;
   final VoidCallback onFavorites;
   final VoidCallback onDownloads;
-  final VoidCallback onHorseRaceGame;
+  final VoidCallback onGameCenter;
   final VoidCallback onChatRoom;
   final VoidCallback onGrowthCenter;
   final VoidCallback onCreatorCenter;
@@ -127,96 +145,88 @@ class _MoreServicesCard extends StatefulWidget {
 }
 
 class _MoreServicesCardState extends State<_MoreServicesCard> {
-  static const int _itemsPerPage = 8;
-  final PageController _pageController = PageController();
-  int _pageIndex = 0;
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final entries = [
       _ProfileShortcutEntry(
         Icons.storefront_outlined,
-        '商城',
+        profileMoreServicesOrder[0],
         widget.onShop,
         color: const Color(0xFFE78A98),
       ),
       _ProfileShortcutEntry(
         Icons.auto_awesome_motion_outlined,
-        '我的装扮',
+        profileMoreServicesOrder[1],
         widget.onDressUp,
         color: const Color(0xFFB25DFF),
       ),
       _ProfileShortcutEntry(
         Icons.menu_book_outlined,
-        '书架',
+        profileMoreServicesOrder[2],
         widget.onBookshelf,
         color: const Color(0xFF4978D0),
       ),
       _ProfileShortcutEntry(
         Icons.history_rounded,
-        '历史记录',
+        profileMoreServicesOrder[3],
         widget.onHistoryRecords,
         color: const Color(0xFF52647A),
       ),
       _ProfileShortcutEntry(
+        Icons.account_balance_wallet_outlined,
+        profileMoreServicesOrder[4],
+        widget.onWallet,
+        color: const Color(0xFFCF4773),
+      ),
+      _ProfileShortcutEntry(
         Icons.star_border_rounded,
-        '收藏',
+        profileMoreServicesOrder[5],
         widget.onFavorites,
         color: const Color(0xFFD39A28),
       ),
       _ProfileShortcutEntry(
         Icons.forum_outlined,
-        '聊天室',
+        profileMoreServicesOrder[6],
         widget.onChatRoom,
         color: const Color(0xFF1E9CCF),
       ),
       _ProfileShortcutEntry(
+        Icons.sports_esports_outlined,
+        profileMoreServicesOrder[7],
+        widget.onGameCenter,
+        color: const Color(0xFFE65D42),
+      ),
+      _ProfileShortcutEntry(
         Icons.photo_library_outlined,
-        '空间',
+        profileMoreServicesOrder[8],
         widget.onSpace,
         color: const Color(0xFF6B72D6),
       ),
       _ProfileShortcutEntry(
-        Icons.sports_esports_outlined,
-        '小游戏',
-        widget.onHorseRaceGame,
-        color: const Color(0xFFE65D42),
-      ),
-      _ProfileShortcutEntry(
         Icons.explore_outlined,
-        '发现中心',
+        profileMoreServicesOrder[9],
         widget.onGrowthCenter,
         color: const Color(0xFF3C8D7B),
       ),
       _ProfileShortcutEntry(
         Icons.drive_file_rename_outline_rounded,
-        '创作中心',
+        profileMoreServicesOrder[10],
         widget.onCreatorCenter,
         color: const Color(0xFF22324A),
       ),
       _ProfileShortcutEntry(
         Icons.file_download_outlined,
-        '下载',
+        profileMoreServicesOrder[11],
         widget.onDownloads,
         color: const Color(0xFF496579),
       ),
       if (widget.onAdminCenter != null)
         _ProfileShortcutEntry(
           Icons.admin_panel_settings_outlined,
-          '运营管理',
+          profileMoreServicesOrder[12],
           widget.onAdminCenter!,
           color: const Color(0xFF8458B3),
         ),
-    ];
-    final pages = <List<_ProfileShortcutEntry>>[
-      for (var start = 0; start < entries.length; start += _itemsPerPage)
-        entries.sublist(start, math.min(start + _itemsPerPage, entries.length)),
     ];
     return _SurfaceCard(
       padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
@@ -230,37 +240,104 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
           const SizedBox(height: 10),
           const _ProfileSectionDivider(),
           const SizedBox(height: 12),
-          SizedBox(
-            height: 132,
+          ProfileServicesPager(
+            children: [
+              for (final entry in entries)
+                _ProfileShortcutAction(
+                  entry: entry,
+                  iconSize: 22,
+                  labelSize: 11,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Paginated service grid whose viewport follows the current page row count.
+///
+/// Public primarily so the layout contract can be covered without constructing
+/// the entire profile screen and its data providers.
+class ProfileServicesPager extends StatefulWidget {
+  const ProfileServicesPager({super.key, required this.children});
+
+  final List<Widget> children;
+
+  @override
+  State<ProfileServicesPager> createState() => _ProfileServicesPagerState();
+}
+
+class _ProfileServicesPagerState extends State<ProfileServicesPager> {
+  static const int _itemsPerPage = 8;
+  static const double _rowHeight = 62;
+  static const double _rowSpacing = 8;
+  final PageController _pageController = PageController();
+  int _pageIndex = 0;
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = <List<Widget>>[
+      for (
+        var start = 0;
+        start < widget.children.length;
+        start += _itemsPerPage
+      )
+        widget.children.sublist(
+          start,
+          math.min(start + _itemsPerPage, widget.children.length),
+        ),
+    ];
+    if (pages.isEmpty) return const SizedBox.shrink();
+
+    final currentRows = (pages[_pageIndex].length / 4).ceil();
+    final viewportHeight =
+        currentRows * _rowHeight + math.max(0, currentRows - 1) * _rowSpacing;
+
+    return Column(
+      children: [
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: SizedBox(
+            key: const ValueKey('profile-services-viewport'),
+            height: viewportHeight,
             child: PageView.builder(
               controller: _pageController,
               itemCount: pages.length,
               onPageChanged: (value) => setState(() => _pageIndex = value),
               itemBuilder: (context, pageIndex) {
-                final pageEntries = pages[pageIndex];
+                final pageChildren = pages[pageIndex];
                 return Stack(
                   children: [
                     GridView.builder(
                       physics: const NeverScrollableScrollPhysics(),
                       padding: EdgeInsets.zero,
-                      itemCount: pageEntries.length,
+                      itemCount: pageChildren.length,
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 4,
-                            mainAxisSpacing: 8,
+                            mainAxisSpacing: _rowSpacing,
                             crossAxisSpacing: 4,
-                            mainAxisExtent: 62,
+                            mainAxisExtent: _rowHeight,
                           ),
-                      itemBuilder: (context, index) => _ProfileShortcutAction(
-                        entry: pageEntries[index],
-                        iconSize: 22,
-                        labelSize: 11,
-                      ),
+                      itemBuilder: (context, index) => pageChildren[index],
                     ),
                     Positioned.fill(
                       child: IgnorePointer(
                         child: _ProfileServiceSeparators(
-                          itemCount: pageEntries.length,
+                          key: ValueKey(
+                            'profile-services-separators-$pageIndex',
+                          ),
+                          itemCount: pageChildren.length,
                         ),
                       ),
                     ),
@@ -269,17 +346,12 @@ class _MoreServicesCardState extends State<_MoreServicesCard> {
               },
             ),
           ),
-          if (pages.length > 1) ...[
-            const SizedBox(height: 8),
-            Center(
-              child: _ProfileServicePageDots(
-                count: pages.length,
-                index: _pageIndex,
-              ),
-            ),
-          ],
+        ),
+        if (pages.length > 1) ...[
+          const SizedBox(height: 8),
+          _ProfileServicePageDots(count: pages.length, index: _pageIndex),
         ],
-      ),
+      ],
     );
   }
 }
@@ -360,7 +432,7 @@ class _ProfileShortDivider extends StatelessWidget {
 }
 
 class _ProfileServiceSeparators extends StatelessWidget {
-  const _ProfileServiceSeparators({required this.itemCount});
+  const _ProfileServiceSeparators({super.key, required this.itemCount});
 
   final int itemCount;
 
@@ -383,7 +455,8 @@ class _ProfileServiceSeparatorPainter extends CustomPainter {
     const columns = 4;
     final rows = (itemCount / columns).ceil().clamp(1, 2);
     final cellWidth = size.width / columns;
-    final cellHeight = size.height / rows;
+    const rowHeight = 62.0;
+    const rowSpacing = 8.0;
     final paint = Paint()
       ..color = const Color(0xFF526D8D).withValues(alpha: 0.3)
       ..strokeWidth = 1.4
@@ -392,7 +465,7 @@ class _ProfileServiceSeparatorPainter extends CustomPainter {
     for (var row = 0; row < rows; row++) {
       final rowItemCount = math.min(columns, itemCount - row * columns);
       if (rowItemCount <= 1) continue;
-      final y = row * cellHeight + cellHeight / 2;
+      final y = row * (rowHeight + rowSpacing) + rowHeight / 2;
       for (var col = 1; col < rowItemCount; col++) {
         final x = col * cellWidth;
         canvas.drawLine(Offset(x, y - 20), Offset(x, y + 20), paint);
@@ -401,7 +474,7 @@ class _ProfileServiceSeparatorPainter extends CustomPainter {
 
     if (rows <= 1) return;
     final visibleColumns = math.min(columns, itemCount);
-    final y = cellHeight;
+    final y = rowHeight + rowSpacing / 2;
     for (var col = 0; col < visibleColumns; col++) {
       final x = col * cellWidth + cellWidth / 2;
       canvas.drawLine(Offset(x - 17, y), Offset(x + 17, y), paint);

@@ -15,7 +15,12 @@ import type {
   CatalogSearchItem,
   GrowthContentType,
 } from '@/types/growth-operations';
-import { growthContentTypeLabel, growthEventLabel } from '@/utils/growth-operations';
+import {
+  growthContentTypeLabel,
+  growthEventLabel,
+  growthTaskSupportsContentScope,
+  normalizeGrowthTaskTargetCount,
+} from '@/utils/growth-operations';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -50,7 +55,8 @@ const form = reactive({
 const editing = computed(() => Boolean(props.task));
 const identityLocked = computed(() => Boolean(props.task?.identityLocked));
 const rewardLocked = computed(() => Boolean(props.task?.rewardLocked));
-const contentEvent = computed(() => new Set(['exposure', 'click', 'open', 'start', 'complete', 'favorite']).has(form.eventName));
+const loginEvent = computed(() => form.eventName === 'login');
+const contentEvent = computed(() => growthTaskSupportsContentScope(form.eventName));
 
 watch(
   () => props.modelValue,
@@ -72,6 +78,17 @@ watch(
     });
     catalog.value = [];
     if (form.contentKey) void searchCatalog(form.contentKey);
+  },
+);
+
+watch(
+  () => form.eventName,
+  (eventName) => {
+    if (eventName !== 'login') return;
+    form.targetCount = 1;
+    form.contentType = '';
+    form.contentKey = '';
+    catalog.value = [];
   },
 );
 
@@ -114,7 +131,7 @@ async function save(): Promise<void> {
       title: form.title.trim(),
       description: form.description.trim(),
       eventName: form.eventName,
-      targetCount: form.targetCount,
+      targetCount: normalizeGrowthTaskTargetCount(form.eventName, form.targetCount),
       rewardPoints: form.rewardPoints,
       rewardCoins: form.rewardCoins,
       contentType: contentEvent.value ? form.contentType : '' as GrowthContentType,
@@ -181,6 +198,15 @@ function errorMessage(error: unknown, fallback: string): string {
         show-icon
       />
 
+      <ElAlert
+        v-if="loginEvent"
+        title="登录赠币任务"
+        description="活动期间用户打开 App 后自动发放，每人一次；活动标题和任务说明将用于获奖弹窗。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+
       <div class="form-grid">
         <ElFormItem label="任务标识" required>
           <ElInput v-model="form.taskKey" :disabled="identityLocked" maxlength="120" placeholder="start-reading" />
@@ -203,7 +229,7 @@ function errorMessage(error: unknown, fallback: string): string {
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="目标次数" required>
-          <ElInputNumber v-model="form.targetCount" :min="1" :max="1000000" :disabled="identityLocked" controls-position="right" />
+          <ElInputNumber v-model="form.targetCount" :min="1" :max="1000000" :disabled="identityLocked || loginEvent" controls-position="right" />
         </ElFormItem>
       </div>
 

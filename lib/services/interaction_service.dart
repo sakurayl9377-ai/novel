@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/interaction_models.dart';
 import '../models/interaction_user.dart';
+import '../models/wallet_models.dart';
 import 'interaction_auth_service.dart';
 
 class InteractionServiceException implements Exception {
@@ -40,6 +41,26 @@ class InteractionService {
       token: token,
     );
     return UserProfile.fromJson(json);
+  }
+
+  Future<SakuraWalletSnapshot> fetchWallet({
+    required String token,
+    int page = 1,
+    int pageSize = 30,
+    int snapshotMaxId = 0,
+  }) async {
+    final queryParameters = <String, String>{
+      'page': page.clamp(1, 999999).toString(),
+      'pageSize': pageSize.clamp(1, 50).toString(),
+    };
+    if (snapshotMaxId > 0) {
+      queryParameters['snapshotMaxId'] = snapshotMaxId.toString();
+    }
+    final uri = Uri.parse(
+      '$apiBaseUrl/users/me/wallet',
+    ).replace(queryParameters: queryParameters);
+    final json = await _request('GET', uri, token: token);
+    return SakuraWalletSnapshot.fromJson(json);
   }
 
   Future<UserProfile> fetchUserProfile({
@@ -187,14 +208,14 @@ class InteractionService {
     return _items(json).map(ChatBotDirectMessage.fromJson).toList();
   }
 
-  Future<UserProfile> dailySignIn({required String token}) async {
+  Future<DailySignInResult> dailySignIn({required String token}) async {
     final json = await _request(
       'POST',
       Uri.parse('$apiBaseUrl/users/me/signin'),
       token: token,
       body: const {},
     );
-    return UserProfile.fromJson(json);
+    return DailySignInResult.fromJson(json);
   }
 
   Future<UserProfile> followUser({

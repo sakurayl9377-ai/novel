@@ -222,6 +222,53 @@ export function migrate() {
       FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS game_sso_tickets (
+      ticket_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      game_open_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_game_sso_tickets_expiry
+      ON game_sso_tickets(expires_at, consumed_at);
+
+    CREATE TABLE IF NOT EXISTS game_account_links (
+      novel_user_id INTEGER PRIMARY KEY,
+      game_open_id TEXT NOT NULL UNIQUE,
+      player_id TEXT NOT NULL DEFAULT '',
+      server_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (novel_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS bailian_payment_orders (
+      id TEXT PRIMARY KEY,
+      game_order_id TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      game_open_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      money_cents INTEGER NOT NULL CHECK (money_cents > 0),
+      coin_cost INTEGER NOT NULL CHECK (coin_cost > 0),
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'paid',
+      fulfillment_attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      fulfilled_at TEXT,
+      refunded_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
+      UNIQUE(user_id, idempotency_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bailian_payment_orders_user
+      ON bailian_payment_orders(user_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS chat_room_members (
       room_id TEXT NOT NULL,
       user_id INTEGER NOT NULL,
@@ -1052,6 +1099,27 @@ export function migrate() {
       FOREIGN KEY (task_id) REFERENCES activity_tasks(id) ON DELETE RESTRICT,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS login_reward_notices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL,
+      task_id INTEGER NOT NULL,
+      claim_id INTEGER NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      coins_awarded INTEGER NOT NULL DEFAULT 0,
+      acknowledged_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (campaign_id, user_id),
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE RESTRICT,
+      FOREIGN KEY (task_id) REFERENCES activity_tasks(id) ON DELETE RESTRICT,
+      FOREIGN KEY (claim_id) REFERENCES reward_claims(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_login_reward_notices_pending
+      ON login_reward_notices(user_id, acknowledged_at, id);
 
     CREATE TABLE IF NOT EXISTS campaign_revisions (
       campaign_id INTEGER NOT NULL,

@@ -2,7 +2,7 @@ name: novel_app
 description: "Android 端小说阅读 APP - 支持本地导入、书源管理、书架管理、在线阅读、听书等功能"
 publish_to: 'none'
 
-version: 4.1.40+94
+version: 4.1.43+99
 
 environment:
   sdk: ^3.12.1
@@ -48,6 +48,7 @@ dependencies:
   flutter_chat_ui: ^2.11.1
   flutter_chat_core: ^2.9.0
   record: ^7.1.1
+  webview_flutter: ^4.13.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

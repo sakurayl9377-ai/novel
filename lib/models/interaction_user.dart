@@ -159,6 +159,28 @@ class UserGrowth {
   final List<UserLevelEffect> effects;
   final UserPrivileges privileges;
 
+  UserGrowth copyWith({int? sakuraCoins}) {
+    return UserGrowth(
+      level: level,
+      maxLevel: maxLevel,
+      levelName: levelName,
+      levelEffect: levelEffect,
+      dailyPointCap: dailyPointCap,
+      dailyPointsEarned: dailyPointsEarned,
+      dailyPointsRemaining: dailyPointsRemaining,
+      dailyCoinsEarned: dailyCoinsEarned,
+      signInStreakDays: signInStreakDays,
+      targetDays: targetDays,
+      points: points,
+      sakuraCoins: sakuraCoins ?? this.sakuraCoins,
+      currentLevelPoints: currentLevelPoints,
+      nextLevelPoints: nextLevelPoints,
+      progress: progress,
+      effects: effects,
+      privileges: privileges,
+    );
+  }
+
   factory UserGrowth.fromJson(Map<String, dynamic> json) {
     final privilegesJson = json['privileges'];
     return UserGrowth(
@@ -352,6 +374,20 @@ class UserProfile {
   final UserDailyCaps dailyCaps;
   final bool followedByMe;
 
+  UserProfile copyWith({InteractionUser? user}) {
+    return UserProfile(
+      user: user ?? this.user,
+      stats: stats,
+      photos: photos,
+      inventory: inventory,
+      equipment: equipment,
+      recentRewards: recentRewards,
+      dailyRewards: dailyRewards,
+      dailyCaps: dailyCaps,
+      followedByMe: followedByMe,
+    );
+  }
+
   factory UserProfile.fromJson(Map<String, dynamic> json) {
     final userJson = json['user'];
     final statsJson = json['stats'];
@@ -381,6 +417,29 @@ class UserProfile {
       if (entry.slot == slot) return entry.item;
     }
     return null;
+  }
+}
+
+class DailySignInResult {
+  const DailySignInResult({
+    required this.profile,
+    required this.alreadySigned,
+    this.reward,
+  });
+
+  final UserProfile profile;
+  final bool alreadySigned;
+  final RewardEvent? reward;
+
+  factory DailySignInResult.fromJson(Map<String, dynamic> json) {
+    final rewardJson = json['reward'];
+    return DailySignInResult(
+      profile: UserProfile.fromJson(json),
+      alreadySigned: json['alreadySigned'] == true,
+      reward: rewardJson is Map
+          ? RewardEvent.fromJson(rewardJson.cast<String, dynamic>())
+          : null,
+    );
   }
 }
 

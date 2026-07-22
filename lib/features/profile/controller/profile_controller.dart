@@ -76,7 +76,7 @@ abstract interface class ProfileRepository {
 
   Future<int> fetchUnreadCount({required String token});
 
-  Future<UserProfile> dailySignIn({required String token});
+  Future<DailySignInResult> dailySignIn({required String token});
 }
 
 class InteractionProfileRepository implements ProfileRepository {
@@ -99,7 +99,7 @@ class InteractionProfileRepository implements ProfileRepository {
   }
 
   @override
-  Future<UserProfile> dailySignIn({required String token}) {
+  Future<DailySignInResult> dailySignIn({required String token}) {
     return _service.dailySignIn(token: token);
   }
 }
@@ -255,21 +255,22 @@ class ProfileController extends ChangeNotifier {
     }
   }
 
-  Future<UserProfile> signIn() async {
+  Future<DailySignInResult> signIn() async {
     final userId = _state.sessionUserId;
     final token = _token;
     if (userId == null || token.isEmpty) {
       throw StateError('A signed-in session is required.');
     }
     final sessionGeneration = _sessionGeneration;
-    final profile = await _repository.dailySignIn(token: token);
+    final result = await _repository.dailySignIn(token: token);
+    final profile = result.profile;
     if (sessionGeneration == _sessionGeneration &&
         userId == _state.sessionUserId &&
         token == _token &&
         profile.user.id == userId) {
       replaceProfile(profile);
     }
-    return profile;
+    return result;
   }
 
   void replaceProfile(UserProfile profile) {

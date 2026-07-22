@@ -28,6 +28,7 @@ const audienceLabels: Record<CampaignAudiencePreset, string> = {
 };
 
 const eventLabels: Record<string, string> = {
+  login: '登录 App',
   exposure: '内容曝光',
   click: '点击内容',
   open: '打开详情',
@@ -38,6 +39,8 @@ const eventLabels: Record<string, string> = {
   horse_race_round: '完成赛马轮次',
   horse_race_win: '赢得赛马轮次',
 };
+
+const contentScopedEvents = new Set(['exposure', 'click', 'open', 'start', 'complete', 'favorite']);
 
 export function growthContentTypeLabel(type: string): string {
   return contentTypeLabels[type] || '全部内容';
@@ -76,6 +79,7 @@ export function growthEventLabel(event: string): string {
 
 export function growthEventShortLabel(event: string): string {
   return ({
+    login: '登录',
     exposure: '曝光',
     click: '点击',
     open: '打开',
@@ -83,6 +87,14 @@ export function growthEventShortLabel(event: string): string {
     complete: '完成',
     favorite: '收藏',
   } as Record<string, string>)[event] || growthEventLabel(event);
+}
+
+export function growthTaskSupportsContentScope(event: string): boolean {
+  return contentScopedEvents.has(event);
+}
+
+export function normalizeGrowthTaskTargetCount(event: string, targetCount: number): number {
+  return event === 'login' ? 1 : targetCount;
 }
 
 export function growthOperationActionLabel(action: string): string {

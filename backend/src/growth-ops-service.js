@@ -1,6 +1,7 @@
 import { all, db, one, run } from "./db.js";
 import {
   activityEventNames,
+  backfillLoginCampaignRewards,
   funnelAnalytics,
   rankingBoard,
   rankingMetrics,
@@ -346,6 +347,7 @@ export function transitionGrowthCampaign(adminId, idValue, body = {}) {
       [targetStatus, adminId, id, Number(current.revision)],
     );
     if (!result.changes) throw conflict("growth_campaign_revision_conflict");
+    if (targetStatus === "active") backfillLoginCampaignRewards(id);
     snapshotCampaign(id, adminId, note);
     const after = campaignSnapshot(requireCampaign(id));
     recordOperationEvent({
@@ -427,6 +429,7 @@ export function createGrowthCampaignTask(adminId, campaignIdValue, body = {}) {
     requireExpectedRevision(body.expectedRevision, campaign.revision, "growth_campaign_revision_conflict");
     const values = campaignTaskInput(body);
     requireTaskKeyAvailable(campaignId, values.taskKey);
+    validateLoginTaskForCampaign(campaignId, values);
     const result = insertCampaignTask(campaignId, values);
     const taskId = Number(result.lastInsertRowid);
     bumpCampaignRevision(campaignId, adminId, campaign.revision);
@@ -460,6 +463,7 @@ export function updateGrowthCampaignTask(adminId, campaignIdValue, taskIdValue, 
     if (!current) throw notFound("growth_campaign_task_not_found");
     const values = campaignTaskInput(body, current);
     requireTaskKeyAvailable(campaignId, values.taskKey, taskId);
+    validateLoginTaskForCampaign(campaignId, values, taskId);
     enforceTaskLocks(current, values);
     const before = taskSnapshot(current);
     run(
@@ -596,6 +600,18 @@ function campaignTaskInput(body, current = null) {
   if (!new Set(["active", "disabled"]).has(status)) {
     throw badRequest("growth_campaign_task_status_invalid");
   }
+  const targetCount = boundedInteger(
+    valueFrom(body, "targetCount", current?.target_count || 1),
+    "targetCount",
+    1,
+    1000000,
+  );
+  if (eventName === "login" && targetCount !== 1) {
+    throw badRequest("growth_campaign_login_task_target_invalid");
+  }
+  if (eventName === "login" && (contentType || contentKey)) {
+    throw badRequest("growth_campaign_login_task_filter_invalid");
+  }
   return {
     taskKey: current?.task_key && !Object.hasOwn(body, "taskKey")
       ? current.task_key
@@ -603,7 +619,7 @@ function campaignTaskInput(body, current = null) {
     title: requiredString(valueFrom(body, "title", current?.title), "title", 200),
     description: optionalString(valueFrom(body, "description", current?.description), 1000),
     eventName,
-    targetCount: boundedInteger(valueFrom(body, "targetCount", current?.target_count || 1), "targetCount", 1, 1000000),
+    targetCount,
     rewardPoints: boundedInteger(valueFrom(body, "rewardPoints", current?.reward_points || 0), "rewardPoints", 0, 100000),
     rewardCoins: boundedInteger(valueFrom(body, "rewardCoins", current?.reward_coins || 0), "rewardCoins", 0, 100000),
     filtersJson: JSON.stringify(filters),
@@ -630,7 +646,41 @@ function validateCampaignActivation(campaign, acknowledged) {
   )) {
     throw badRequest("growth_campaign_task_required_for_activation");
   }
+  validateLoginTasksForActivation(campaign.id);
   if (!acknowledged) throw badRequest("growth_campaign_budget_acknowledgement_required");
+}
+
+function validateLoginTaskForCampaign(campaignId, values, excludedTaskId = 0) {
+  if (values.eventName !== "login" || values.status !== "active") return;
+  const duplicate = excludedTaskId
+    ? one(
+        `SELECT 1 FROM activity_tasks
+         WHERE campaign_id = ? AND event_name = 'login' AND status = 'active' AND id <> ?`,
+        [campaignId, excludedTaskId],
+      )
+    : one(
+        `SELECT 1 FROM activity_tasks
+         WHERE campaign_id = ? AND event_name = 'login' AND status = 'active'`,
+        [campaignId],
+      );
+  if (duplicate) throw conflict("growth_campaign_login_task_conflict");
+}
+
+function validateLoginTasksForActivation(campaignId) {
+  const tasks = all(
+    `SELECT target_count, filters_json FROM activity_tasks
+     WHERE campaign_id = ? AND event_name = 'login' AND status = 'active'`,
+    [campaignId],
+  );
+  if (tasks.length > 1) throw conflict("growth_campaign_login_task_conflict");
+  for (const task of tasks) {
+    if (Number(task.target_count) !== 1) {
+      throw badRequest("growth_campaign_login_task_target_invalid");
+    }
+    if (Object.keys(parseJsonObject(task.filters_json, {})).length) {
+      throw badRequest("growth_campaign_login_task_filter_invalid");
+    }
+  }
 }
 
 function enforceTaskLocks(current, values) {

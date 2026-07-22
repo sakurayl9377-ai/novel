@@ -8,11 +8,13 @@ import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'config/theme.dart';
 import 'models/interaction_models.dart';
+import 'models/login_reward_notice.dart';
 import 'services/app_update_service.dart';
 import 'services/app_telemetry_service.dart';
 import 'services/download_manager_service.dart';
 import 'services/growth_service.dart';
 import 'services/interaction_service.dart';
+import 'services/login_reward_service.dart';
 import 'services/progress_sync_service.dart';
 import 'services/storage_service.dart';
 import 'services/tts_media_control_service.dart';
@@ -257,9 +259,11 @@ class MainScaffold extends StatefulWidget {
   State<MainScaffold> createState() => _MainScaffoldState();
 }
 
-class _MainScaffoldState extends State<MainScaffold> {
+class _MainScaffoldState extends State<MainScaffold>
+    with WidgetsBindingObserver {
   final AppUpdateService _startupUpdateService = AppUpdateService();
   final InteractionService _interactionService = InteractionService();
+  final LoginRewardService _loginRewardService = LoginRewardService();
   static const String _announcementSeenKey = 'app_announcement_seen_id';
   int _currentIndex = 0;
   final Set<int> _visitedTabIndexes = {0};
@@ -280,6 +284,11 @@ class _MainScaffoldState extends State<MainScaffold> {
   );
   bool _didCheckStartupUpdate = false;
   bool _didCheckStartupAnnouncement = false;
+  bool _startupChecksCompleted = false;
+  InteractionAuthProvider? _authProvider;
+  String _lastLoginRewardToken = '';
+  bool _loginRewardSyncRunning = false;
+  bool _loginRewardResyncRequested = false;
   static const List<String> _tabTelemetryNames = [
     'novel_home',
     'manga_home',
@@ -291,6 +300,7 @@ class _MainScaffoldState extends State<MainScaffold> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _routeObservers = List.generate(
       5,
       (index) => _TabRouteObserver(
@@ -319,11 +329,142 @@ class _MainScaffoldState extends State<MainScaffold> {
     });
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = context.read<InteractionAuthProvider>();
+    if (!identical(_authProvider, next)) {
+      _authProvider?.removeListener(_handleAuthChanged);
+      _authProvider = next..addListener(_handleAuthChanged);
+    }
+    _scheduleLoginRewardSync();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _scheduleLoginRewardSync(force: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _authProvider?.removeListener(_handleAuthChanged);
+    super.dispose();
+  }
+
   Future<void> _runStartupChecks() async {
-    final bootstrapFuture = _loadAppBootstrap();
-    await _checkStartupUpdate();
-    await _checkStartupAnnouncement();
-    await bootstrapFuture;
+    try {
+      final bootstrapFuture = _loadAppBootstrap();
+      await _checkStartupUpdate();
+      await _checkStartupAnnouncement();
+      await bootstrapFuture;
+    } finally {
+      _startupChecksCompleted = true;
+      _scheduleLoginRewardSync();
+    }
+  }
+
+  void _handleAuthChanged() => _scheduleLoginRewardSync();
+
+  void _scheduleLoginRewardSync({bool force = false}) {
+    if (!mounted || !_startupChecksCompleted) return;
+    final auth = _authProvider;
+    if (auth == null || auth.isLoading || !auth.isLoggedIn) {
+      if (auth == null || !auth.isLoggedIn) _lastLoginRewardToken = '';
+      return;
+    }
+    if (_loginRewardSyncRunning) {
+      _loginRewardResyncRequested =
+          _loginRewardResyncRequested ||
+          force ||
+          _lastLoginRewardToken != auth.token;
+      return;
+    }
+    if (!force && _lastLoginRewardToken == auth.token) return;
+    _lastLoginRewardToken = auth.token;
+    unawaited(_syncLoginRewards(auth.token));
+  }
+
+  Future<void> _syncLoginRewards(String token) async {
+    _loginRewardSyncRunning = true;
+    try {
+      final result = await _loginRewardService.sync(token: token);
+      if (!mounted || _authProvider?.token != token) return;
+      final auth = _authProvider;
+      final user = auth?.user;
+      if (auth != null &&
+          user != null &&
+          user.growth.sakuraCoins != result.balance) {
+        await auth.updateCachedUser(
+          user.copyWith(
+            growth: user.growth.copyWith(sakuraCoins: result.balance),
+          ),
+        );
+        if (!mounted || _authProvider?.token != token) return;
+      }
+      for (final notice in result.items) {
+        if (!mounted || _authProvider?.token != token) break;
+        await _showLoginRewardNotice(notice);
+        if (!mounted || _authProvider?.token != token) break;
+        try {
+          await _loginRewardService.acknowledge(
+            token: token,
+            noticeId: notice.id,
+          );
+        } catch (_) {
+          // Keep the notice pending so it is shown again after the next sync.
+          break;
+        }
+      }
+    } catch (_) {
+      if (_lastLoginRewardToken == token) _lastLoginRewardToken = '';
+    } finally {
+      _loginRewardSyncRunning = false;
+      if (_loginRewardResyncRequested) {
+        _loginRewardResyncRequested = false;
+        _scheduleLoginRewardSync(force: true);
+      }
+    }
+  }
+
+  Future<void> _showLoginRewardNotice(LoginRewardNotice notice) {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.redeem_outlined),
+        title: Text(notice.title.isEmpty ? '登录赠礼' : notice.title),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (notice.content.isNotEmpty) Text(notice.content),
+                if (notice.content.isNotEmpty) const SizedBox(height: 16),
+                Text(
+                  '已到账 +${notice.coinsAwarded} 樱花币',
+                  style: Theme.of(dialogContext).textTheme.titleMedium
+                      ?.copyWith(
+                        color: Theme.of(dialogContext).colorScheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadAppBootstrap() async {

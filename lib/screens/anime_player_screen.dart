@@ -89,6 +89,7 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
   bool _managedFullScreenActive = false;
   bool _managedFullScreenRouteVisible = false;
   bool _managedFullScreenExitRequested = false;
+  bool _managedFullScreenForcedOrientation = false;
   int _managedFullScreenEpoch = 0;
   int _managedFullScreenSessionGeneration = 0;
   int _managedFullScreenEnterBlockedUntilMs = 0;
@@ -738,9 +739,10 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
   }
 
   Future<void> _restoreSystemUi() async {
-    await SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-    ]);
+    if (_managedFullScreenForcedOrientation) {
+      _managedFullScreenForcedOrientation = false;
+      await SystemChrome.setPreferredOrientations(const []);
+    }
     await SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
@@ -1113,9 +1115,13 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
         _fullScreenGuard.expire(DateTime.now().millisecondsSinceEpoch);
       },
     );
-    await SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.landscapeLeft,
-    ]);
+    if (await PlayerPlatformService.isAutoRotationEnabled()) {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      _managedFullScreenForcedOrientation = true;
+    }
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     await PlayerPlatformService.setFullscreenSystemUi(true);
     if (!mounted ||

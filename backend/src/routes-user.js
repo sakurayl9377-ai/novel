@@ -20,6 +20,7 @@ import { levelFromPoints, minimumLevelForPrivilege } from "./growth.js";
 import { privateUser, publicUser } from "./security.js";
 import { activeChatUserIds, chatJson } from "./websocket.js";
 import { dailyRewardCaps, grantReward, publicRewardRules } from "./rewards.js";
+import { listUserOrders, listUserWallet } from "./user-orders.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import {
   deleteRetiredManagedUploadKeys,
@@ -542,10 +543,15 @@ export async function userRoutes(app) {
           }
 
           if (avatarUrl && signature && bio) {
-            grantReward(request.user.id, "profile_complete", {
-              type: "profile",
-              id: String(request.user.id),
-            });
+            grantReward(
+              request.user.id,
+              "profile_complete",
+              {
+                type: "profile",
+                id: String(request.user.id),
+              },
+              { withinTransaction: true },
+            );
           }
           retiredPreviousKeys = markManagedUploadUrlsRetired({
             userId: request.user.id,
@@ -708,6 +714,18 @@ export async function userRoutes(app) {
       const items = (keyword ? rows : rows.reverse()).map(chatJson);
       return { items };
     },
+  );
+
+  app.get(
+    "/users/me/orders",
+    { preHandler: app.authRequired },
+    async (request) => listUserOrders(request.user.id, request.query || {}),
+  );
+
+  app.get(
+    "/users/me/wallet",
+    { preHandler: app.authRequired },
+    async (request) => listUserWallet(request.user.id, request.query || {}),
   );
 
   app.get(
@@ -892,10 +910,15 @@ export async function userRoutes(app) {
             [request.user.id, targetId],
           );
           if ((claimed.changes ?? 0) > 0) {
-            grantReward(request.user.id, "follow_user", {
-              type: "user",
-              id: String(targetId),
-            });
+            grantReward(
+              request.user.id,
+              "follow_user",
+              {
+                type: "user",
+                id: String(targetId),
+              },
+              { withinTransaction: true },
+            );
           }
         }
         db.exec("COMMIT");
@@ -1234,7 +1257,7 @@ async function profilePayload(userId, currentUserId) {
            COALESCE(SUM(coins_delta), 0) AS coins
          FROM user_reward_events
          WHERE user_id = ?
-           AND date(created_at) = date('now')
+           AND date(created_at, '+8 hours') = date('now', '+8 hours')
          GROUP BY action`,
         [userId],
       )
@@ -1269,12 +1292,12 @@ async function profilePayload(userId, currentUserId) {
     : false;
   const todayGrowth = isSelf
     ? one(
-        `SELECT
-           COALESCE(SUM(points_delta), 0) AS points,
-           COALESCE(SUM(coins_delta), 0) AS coins
+      `SELECT
+           COALESCE(SUM(CASE WHEN points_delta > 0 THEN points_delta ELSE 0 END), 0) AS points,
+           COALESCE(SUM(CASE WHEN coins_delta > 0 THEN coins_delta ELSE 0 END), 0) AS coins
          FROM user_reward_events
          WHERE user_id = ?
-           AND date(created_at) = date('now')`,
+           AND date(created_at, '+8 hours') = date('now', '+8 hours')`,
         [userId],
       )
     : null;
@@ -2114,33 +2137,41 @@ function contentTypeForUpload(file) {
 
 function countSignInStreakDays(userId) {
   const rows = all(
-    `SELECT date(created_at) AS sign_date
+    `SELECT date(created_at, '+8 hours') AS sign_date
      FROM user_reward_events
      WHERE user_id = ?
        AND action = 'daily_signin'
-     GROUP BY date(created_at)
+     GROUP BY date(created_at, '+8 hours')
      ORDER BY sign_date DESC`,
     [userId],
   );
   const dates = new Set(rows.map((row) => row.sign_date).filter(Boolean));
   if (dates.size === 0) return 0;
 
-  const cursor = new Date();
-  const today = isoDate(cursor);
+  let cursor = shanghaiDate(new Date());
+  const today = cursor;
   if (!dates.has(today)) {
-    cursor.setDate(cursor.getDate() - 1);
+    cursor = previousIsoDate(cursor);
   }
 
   let streak = 0;
-  while (dates.has(isoDate(cursor))) {
+  while (dates.has(cursor)) {
     streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
+    cursor = previousIsoDate(cursor);
   }
   return streak;
 }
 
-function isoDate(value) {
-  return value.toISOString().slice(0, 10);
+function shanghaiDate(value) {
+  return new Date(value.getTime() + 8 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+function previousIsoDate(value) {
+  const cursor = new Date(`${value}T00:00:00.000Z`);
+  cursor.setUTCDate(cursor.getUTCDate() - 1);
+  return cursor.toISOString().slice(0, 10);
 }
 
 function shopItemJson(row) {

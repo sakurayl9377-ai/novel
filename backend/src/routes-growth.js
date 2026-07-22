@@ -1,4 +1,5 @@
 import {
+  acknowledgeLoginRewardNotice,
   activityFeed,
   claimSeasonTaskReward,
   claimActivityReward,
@@ -7,6 +8,7 @@ import {
   rankingBoard,
   recommendations,
   responsibleGamingState,
+  syncLoginCampaignRewards,
   startHorseRaceCooldown,
   startHorseRaceSelfExclusion,
   updateResponsibleGaming,
@@ -14,6 +16,21 @@ import {
 import { optionalInt, optionalString } from "./validators.js";
 
 export async function growthRoutes(app) {
+  app.post(
+    "/growth/login-rewards/sync",
+    { preHandler: app.authRequired },
+    async (request) => syncLoginCampaignRewards({ userId: request.user.id }),
+  );
+
+  app.post(
+    "/growth/login-rewards/:id/ack",
+    { preHandler: app.authRequired },
+    async (request) => acknowledgeLoginRewardNotice({
+      userId: request.user.id,
+      noticeId: optionalInt(request.params.id, 0),
+    }),
+  );
+
   app.post(
     "/app/behavior-events",
     { preHandler: app.authOptional },

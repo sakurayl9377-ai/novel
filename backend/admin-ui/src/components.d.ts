@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AnalyticsErrorDrawer: typeof import('./components/analytics/AnalyticsErrorDrawer.vue')['default']
+    AppAnnouncementWorkbench: typeof import('./components/notifications/AppAnnouncementWorkbench.vue')['default']
     AuditDetailDrawer: typeof import('./components/audit/AuditDetailDrawer.vue')['default']
     CampaignDetailDrawer: typeof import('./components/growth-operations/CampaignDetailDrawer.vue')['default']
     CampaignEditorDrawer: typeof import('./components/growth-operations/CampaignEditorDrawer.vue')['default']

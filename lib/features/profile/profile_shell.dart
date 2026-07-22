@@ -21,6 +21,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   String _sessionFingerprint = '';
   int _assistantProfileGeneration = 0;
   int _assistantPreferencesGeneration = 0;
+  bool _signInPending = false;
 
   List<ShopItem> get _shopItems => _controller.state.shopItems;
   bool get _isLoading => _controller.state.isLoading;
@@ -92,7 +93,19 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   UserProfile? _profileForAuth(InteractionAuthProvider auth) {
-    return _controller.profileFor(auth.user);
+    final profile = _controller.profileFor(auth.user);
+    final cachedUser = auth.user;
+    if (profile == null || cachedUser == null) return profile;
+    if (profile.user.growth.sakuraCoins == cachedUser.growth.sakuraCoins) {
+      return profile;
+    }
+    return profile.copyWith(
+      user: profile.user.copyWith(
+        growth: profile.user.growth.copyWith(
+          sakuraCoins: cachedUser.growth.sakuraCoins,
+        ),
+      ),
+    );
   }
 
   Future<bool> _ensureLogin() async {
@@ -109,19 +122,31 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   Future<UserProfile?> _signIn() async {
+    if (_signInPending) return null;
     final loggedIn = await _ensureLogin();
     if (!mounted || !loggedIn) return null;
     final auth = context.read<InteractionAuthProvider>();
+    setState(() => _signInPending = true);
     try {
-      final profile = await _controller.signIn();
+      final result = await _controller.signIn();
+      final profile = result.profile;
       if (!mounted) return profile;
       await auth.updateCachedUser(profile.user);
       if (!mounted) return profile;
-      _showMessage('签到成功，经验和樱花币已到账');
+      if (result.alreadySigned) {
+        _showMessage('今日已签到，请明天再来');
+      } else {
+        final reward = result.reward;
+        final points = reward?.points ?? 0;
+        final coins = reward?.coins ?? 0;
+        _showMessage('签到成功，+$points 成长值、+$coins 樱花币已到账');
+      }
       return profile;
     } catch (_) {
-      if (mounted) _showMessage('今天已经签过到了');
+      if (mounted) _showMessage('签到失败，请稍后重试');
       return null;
+    } finally {
+      if (mounted) setState(() => _signInPending = false);
     }
   }
 
@@ -267,6 +292,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onMemberCenter: _openMemberCenter,
                       onComments: () => _openMyInteractions(initialTab: 0),
                       onDanmaku: () => _openMyInteractions(initialTab: 1),
+                      onWallet: _openWallet,
                     ),
                     const SizedBox(height: _profileModuleGap),
                     _DailySignInCard(
@@ -274,6 +300,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       rewards: profile?.dailyRewards ?? const [],
                       onOpen: _openDailyRewards,
                       onSignIn: _signIn,
+                      pending: _signInPending,
                     ),
                     const SizedBox(height: _profileModuleGap),
                     _MoreServicesCard(
@@ -281,10 +308,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onBookshelf: _openBookshelf,
                       onShop: _openShop,
                       onDressUp: _openMyDressUp,
+                      onWallet: _openWallet,
                       onSpace: _openMySpace,
                       onFavorites: _openFavorites,
                       onDownloads: _openDownloads,
-                      onHorseRaceGame: () => unawaited(_openHorseRaceGame()),
+                      onGameCenter: _openGameCenter,
                       onChatRoom: _openChatRoom,
                       onGrowthCenter: _openGrowthCenter,
                       onAdminCenter:
@@ -384,6 +412,17 @@ class _ProfileScreenState extends State<ProfileScreen>
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const HorseRaceGameScreen()),
+    );
+  }
+
+  void _openGameCenter() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GameCenterScreen(
+          onHorseRaceTap: () => unawaited(_openHorseRaceGame()),
+        ),
+      ),
     );
   }
 
@@ -565,6 +604,19 @@ class _ProfileScreenState extends State<ProfileScreen>
     if (next == null || !mounted) return;
     _controller.replaceProfile(next);
     await auth.updateCachedUser(next.user);
+  }
+
+  Future<void> _openWallet() async {
+    if (!await _ensureLogin()) return;
+    if (!mounted) return;
+    final auth = context.read<InteractionAuthProvider>();
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProfileWalletPage(token: auth.token, service: _service),
+      ),
+    );
+    if (mounted) await _load();
   }
 
   Future<void> _openMyDressUp() async {
