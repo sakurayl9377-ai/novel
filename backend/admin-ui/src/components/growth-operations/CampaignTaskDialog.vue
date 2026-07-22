@@ -176,6 +176,7 @@ function errorMessage(error: unknown, fallback: string): string {
   <ElDialog
     :model-value="modelValue"
     width="min(680px, 94vw)"
+    append-to-body
     destroy-on-close
     :close-on-click-modal="false"
     @update:model-value="emit('update:modelValue', $event)"
