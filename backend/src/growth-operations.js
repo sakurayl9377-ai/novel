@@ -479,7 +479,7 @@ export function syncLoginCampaignRewards({ userId }) {
   try {
     const user = one(
       `SELECT id FROM users
-       WHERE id = ? AND role = 'user' AND status = 'active'
+       WHERE id = ? AND status = 'active'
          AND lower(email) NOT IN ('chatbot@system.local', 'chat-bot@system.local')`,
       [normalizedUserId],
     );
@@ -557,7 +557,7 @@ export function backfillLoginCampaignRewards(campaignId) {
        WHERE latest.user_id = u.id
        ORDER BY latest.last_seen_at DESC, latest.id DESC LIMIT 1
      )
-     WHERE u.role = 'user' AND u.status = 'active'
+     WHERE u.status = 'active'
        AND lower(u.email) NOT IN ('chatbot@system.local', 'chat-bot@system.local')`,
   );
   for (const candidate of candidates) {

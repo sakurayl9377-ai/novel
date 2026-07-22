@@ -21,6 +21,21 @@ test("login rewards are atomic, idempotent and exposed through wallet history", 
   const app = await buildServer();
   try {
     const admin = await login(app, "admin@admin.local", "admin123456");
+    const adminUserId = Number(
+      one("SELECT id FROM users WHERE email = ?", ["admin@admin.local"])?.id || 0,
+    );
+    await jsonRequest(
+      app,
+      "POST",
+      "/users/me/app-install",
+      { installId: "admin-install", versionName: "4.1.43", versionCode: 120, platform: "android" },
+      admin.token,
+    );
+    assert.deepEqual(
+      await jsonRequest(app, "POST", "/growth/login-rewards/sync", {}, admin.token),
+      { balance: 0, items: [] },
+      "active administrator accounts can synchronize login rewards",
+    );
     const eligible = await createUserAndSession(app, {
       email: "eligible-login@example.com",
       createdAt: "datetime('now', '-1 day')",
@@ -147,6 +162,7 @@ test("login rewards are atomic, idempotent and exposed through wallet history", 
       admin.token,
     );
     assert.equal(activated.item.status, "active");
+    assert.equal(balance(adminUserId), 25, "activation backfills an administrator using the app");
     assert.equal(balance(eligible.userId), 25, "activation backfills an eligible login");
     assert.equal(balance(oldVersion.userId), 0, "activation respects minimum app version");
     assert.equal(balance(wrongAudience.userId), 0, "activation respects campaign audience");
