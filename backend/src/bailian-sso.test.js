@@ -12,7 +12,7 @@ process.env.ADMIN_USERNAME = 'bailian-sso-test-admin';
 process.env.ADMIN_PASSWORD = 'bailian-sso-test-admin-password';
 process.env.BAILIAN_LAUNCH_URL = 'https://game.example.test/bailian/';
 process.env.BAILIAN_SSO_SHARED_SECRET = 'bailian-sso-test-shared-secret';
-process.env.BAILIAN_SSO_TTL_SECONDS = '60';
+process.env.BAILIAN_SSO_TTL_SECONDS = '600';
 
 const Fastify = (await import('fastify')).default;
 const { authRequired, createSession } = await import('./auth.js');
@@ -20,7 +20,7 @@ const { closeDb, migrate, one, run } = await import('./db.js');
 const { gameRoutes } = await import('./routes-game.js');
 const { hashPassword, hashToken } = await import('./security.js');
 
-test('Bailian SSO tickets are authenticated, short-lived, and single-use', async () => {
+test('Bailian SSO tickets are authenticated, bounded, and account-bound', async () => {
   migrate();
   const userId = Number(run(
     `INSERT INTO users (email, nickname, password_hash)
@@ -45,7 +45,7 @@ test('Bailian SSO tickets are authenticated, short-lived, and single-use', async
     assert.equal(issued.statusCode, 200);
     assert.equal(issued.headers['cache-control'], 'no-store');
     const payload = issued.json();
-    assert.equal(payload.expiresIn, 60);
+    assert.equal(payload.expiresIn, 600);
     assert.ok(payload.ticket.length >= 40);
     assert.equal(new URL(payload.launchUrl).searchParams.get('ticket'), payload.ticket);
     assert.equal(new URL(payload.launchUrl).searchParams.get('openId'), `novel_${userId}`);
@@ -60,10 +60,20 @@ test('Bailian SSO tickets are authenticated, short-lived, and single-use', async
     assert.equal(wrongSecret.statusCode, 401);
     assert.equal(one('SELECT consumed_at FROM game_sso_tickets').consumed_at, null);
 
+    const wrongOpenId = await consume(
+      app,
+      payload.ticket,
+      process.env.BAILIAN_SSO_SHARED_SECRET,
+      'novel_other-user',
+    );
+    assert.equal(wrongOpenId.statusCode, 401);
+    assert.equal(one('SELECT consumed_at FROM game_sso_tickets').consumed_at, null);
+
     const consumed = await consume(
       app,
       payload.ticket,
       process.env.BAILIAN_SSO_SHARED_SECRET,
+      `novel_${userId}`,
     );
     assert.equal(consumed.statusCode, 200);
     assert.deepEqual(consumed.json(), {
@@ -73,13 +83,31 @@ test('Bailian SSO tickets are authenticated, short-lived, and single-use', async
       expiresAt: payload.expiresAt,
     });
 
-    const replay = await consume(
+    const reconnect = await consume(
+      app,
+      payload.ticket,
+      process.env.BAILIAN_SSO_SHARED_SECRET,
+      `novel_${userId}`,
+    );
+    assert.equal(reconnect.statusCode, 200);
+    assert.deepEqual(reconnect.json(), consumed.json());
+
+    const wrongReconnect = await consume(
+      app,
+      payload.ticket,
+      process.env.BAILIAN_SSO_SHARED_SECRET,
+      'novel_other-user',
+    );
+    assert.equal(wrongReconnect.statusCode, 401);
+    assert.equal(wrongReconnect.json().error, 'invalid_or_expired_ticket');
+
+    const replayWithoutOpenId = await consume(
       app,
       payload.ticket,
       process.env.BAILIAN_SSO_SHARED_SECRET,
     );
-    assert.equal(replay.statusCode, 401);
-    assert.equal(replay.json().error, 'invalid_or_expired_ticket');
+    assert.equal(replayWithoutOpenId.statusCode, 401);
+    assert.equal(replayWithoutOpenId.json().error, 'invalid_or_expired_ticket');
 
     const second = (await issue(app, bearer)).json();
     assert.equal(
@@ -95,6 +123,7 @@ test('Bailian SSO tickets are authenticated, short-lived, and single-use', async
       app,
       second.ticket,
       process.env.BAILIAN_SSO_SHARED_SECRET,
+      `novel_${userId}`,
     );
     assert.equal(expired.statusCode, 401);
   } finally {
@@ -112,11 +141,11 @@ function issue(app, bearer) {
   });
 }
 
-function consume(app, ticket, secret) {
+function consume(app, ticket, secret, openId) {
   return app.inject({
     method: 'POST',
     url: '/games/bailian/sso-ticket/consume',
     headers: { 'x-bailian-sso-secret': secret },
-    payload: { ticket },
+    payload: { ticket, ...(openId ? { openId } : {}) },
   });
 }

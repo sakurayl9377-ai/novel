@@ -48,17 +48,51 @@ export function issueBailianTicket(userId, now = new Date()) {
   };
 }
 
-export function consumeBailianTicket(rawTicket) {
+export function consumeBailianTicket(rawTicket, expectedGameOpenId = null) {
   if (!rawTicket || typeof rawTicket !== 'string') return null;
+  const ticketHash = hashToken(rawTicket);
+  const openId = trimToNull(expectedGameOpenId);
+  const consumed = openId
+    ? one(
+      `UPDATE game_sso_tickets
+       SET consumed_at = datetime('now')
+       WHERE ticket_hash = ?
+         AND game_open_id = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       RETURNING user_id, game_open_id, expires_at`,
+      [ticketHash, openId],
+    )
+    : one(
+      `UPDATE game_sso_tickets
+       SET consumed_at = datetime('now')
+       WHERE ticket_hash = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       RETURNING user_id, game_open_id, expires_at`,
+      [ticketHash],
+    );
+  if (consumed) return consumed;
+
+  // A game socket can reconnect while the WebView still holds the original
+  // launch URL. Allow that bounded replay only for the same account and only
+  // while the ticket's original expiry window is still open.
+  if (!openId) return null;
   return one(
-    `UPDATE game_sso_tickets
-     SET consumed_at = datetime('now')
+    `SELECT user_id, game_open_id, expires_at
+     FROM game_sso_tickets
      WHERE ticket_hash = ?
-       AND consumed_at IS NULL
-       AND datetime(expires_at) > datetime('now')
-     RETURNING user_id, game_open_id, expires_at`,
-    [hashToken(rawTicket)],
+       AND game_open_id = ?
+       AND consumed_at IS NOT NULL
+       AND datetime(expires_at) > datetime('now')`,
+    [ticketHash, openId],
   );
+}
+
+function trimToNull(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
 
 export function verifyBailianSharedSecret(candidate) {

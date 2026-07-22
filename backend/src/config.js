@@ -75,9 +75,12 @@ export const config = {
   allowBetaTestSession: envBool('ALLOW_BETA_TEST_SESSION', false),
   bailianLaunchUrl: env('BAILIAN_LAUNCH_URL'),
   bailianSsoSharedSecret: env('BAILIAN_SSO_SHARED_SECRET'),
+  // Cold WebView starts can download hundreds of hashed assets before the
+  // game socket submits the ticket. Keep the window bounded, but long enough
+  // for a first install on a slower mobile connection.
   bailianSsoTtlSeconds: Math.max(
-    1,
-    Math.min(60, Math.trunc(envNumber('BAILIAN_SSO_TTL_SECONDS', 60))),
+    60,
+    Math.min(900, Math.trunc(envNumber('BAILIAN_SSO_TTL_SECONDS', 600))),
   ),
   bailianPaymentCatalogFile: env('BAILIAN_PAYMENT_CATALOG_FILE'),
   bailianPaymentCatalogJson: env('BAILIAN_PAYMENT_CATALOG_JSON'),

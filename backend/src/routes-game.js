@@ -71,7 +71,10 @@ export async function gameRoutes(app) {
     if (!verifyBailianSharedSecret(request.headers['x-bailian-sso-secret'])) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    const consumed = consumeBailianTicket(request.body?.ticket);
+    const consumed = consumeBailianTicket(
+      request.body?.ticket,
+      request.body?.openId,
+    );
     if (!consumed) {
       return reply.code(401).send({ error: 'invalid_or_expired_ticket' });
     }
