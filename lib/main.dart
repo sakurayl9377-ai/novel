@@ -27,6 +27,7 @@ import 'providers/tts_provider.dart';
 import 'screens/anime_screen.dart';
 import 'screens/manga_screen.dart';
 import 'screens/modao_payment_screen.dart';
+import 'screens/modao_sso_authorization_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/reading_screen.dart';
@@ -288,7 +289,8 @@ class _MainScaffoldState extends State<MainScaffold>
   bool _didCheckStartupUpdate = false;
   bool _didCheckStartupAnnouncement = false;
   bool _startupChecksCompleted = false;
-  bool _handlingModaoPaymentRequest = false;
+  bool _externalRequestDrainRunning = false;
+  bool _externalRequestDrainRequested = false;
   InteractionAuthProvider? _authProvider;
   String _lastLoginRewardToken = '';
   bool _loginRewardSyncRunning = false;
@@ -305,7 +307,10 @@ class _MainScaffoldState extends State<MainScaffold>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _modaoPaymentBridge.start(_schedulePendingModaoPayment);
+    _modaoPaymentBridge.start(
+      onPaymentRequestAvailable: _scheduleExternalRequestDrain,
+      onSsoAuthorizationRequestAvailable: _scheduleExternalRequestDrain,
+    );
     _routeObservers = List.generate(
       5,
       (index) => _TabRouteObserver(
@@ -330,8 +335,7 @@ class _MainScaffoldState extends State<MainScaffold>
         screen: _tabTelemetryNames[_currentIndex],
         metadata: const {'initial': true},
       );
-      unawaited(_runStartupChecks());
-      unawaited(_openPendingModaoPayment());
+      unawaited(_runInitialExternalFlowAndStartupChecks());
     });
   }
 
@@ -349,6 +353,7 @@ class _MainScaffoldState extends State<MainScaffold>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _scheduleExternalRequestDrain();
       _scheduleLoginRewardSync(force: true);
     }
   }
@@ -361,36 +366,91 @@ class _MainScaffoldState extends State<MainScaffold>
     super.dispose();
   }
 
-  void _schedulePendingModaoPayment() {
+  void _scheduleExternalRequestDrain() {
+    _externalRequestDrainRequested = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_openPendingModaoPayment());
+      if (mounted) unawaited(_drainPendingExternalRequests());
     });
   }
 
-  Future<void> _openPendingModaoPayment() async {
-    if (_handlingModaoPaymentRequest || !mounted) return;
-    _handlingModaoPaymentRequest = true;
-    try {
-      final navigator = _navigatorKeys[_currentIndex].currentState;
-      if (navigator == null) {
-        _schedulePendingModaoPayment();
-        return;
-      }
-      final request = await _modaoPaymentBridge.takePendingRequest();
-      if (request == null || !mounted) return;
-      await navigator.push<void>(
-        MaterialPageRoute<void>(
-          settings: const RouteSettings(name: '/games/modao/payment'),
-          builder: (_) =>
-              ModaoPaymentScreen(request: request, bridge: _modaoPaymentBridge),
-        ),
-      );
-    } catch (_) {
-      // Invalid or stale external payment requests are ignored safely.
-    } finally {
-      _handlingModaoPaymentRequest = false;
+  Future<void> _runInitialExternalFlowAndStartupChecks() async {
+    await _drainPendingExternalRequests();
+    if (mounted) await _runStartupChecks();
+  }
+
+  Future<void> _drainPendingExternalRequests() async {
+    if (_externalRequestDrainRunning || !mounted) return;
+    if (_authProvider == null) {
+      _scheduleExternalRequestDrain();
+      return;
     }
-    if (mounted) _schedulePendingModaoPayment();
+    _externalRequestDrainRunning = true;
+    try {
+      var continueDraining = true;
+      while (continueDraining && mounted) {
+        _externalRequestDrainRequested = false;
+        if (!mounted) return;
+        final navigator = Navigator.of(context, rootNavigator: true);
+        final authorization = await _takePendingModaoAuthorizationSafely();
+        if (authorization != null && mounted) {
+          await navigator.push<void>(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(name: '/games/modao/authorize'),
+              builder: (_) => ModaoSsoAuthorizationScreen(
+                request: authorization,
+                bridge: _modaoPaymentBridge,
+              ),
+            ),
+          );
+          if (!mounted) return;
+          continueDraining = await _modaoPaymentBridge
+              .acknowledgeSsoAuthorizationRequest(authorization);
+          continue;
+        }
+
+        final payment = await _takePendingModaoPaymentSafely();
+        if (payment != null && mounted) {
+          await navigator.push<void>(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(name: '/games/modao/payment'),
+              builder: (_) => ModaoPaymentScreen(
+                request: payment,
+                bridge: _modaoPaymentBridge,
+              ),
+            ),
+          );
+          if (!mounted) return;
+          continueDraining = await _modaoPaymentBridge
+              .acknowledgePaymentRequest(payment);
+          continue;
+        }
+        continueDraining = _externalRequestDrainRequested;
+      }
+    } catch (_) {
+      // Requests remain persisted until their route finishes and is acknowledged.
+    } finally {
+      _externalRequestDrainRunning = false;
+    }
+    if (mounted && _externalRequestDrainRequested) {
+      _scheduleExternalRequestDrain();
+    }
+  }
+
+  Future<ModaoSsoAuthorizationRequest?>
+  _takePendingModaoAuthorizationSafely() async {
+    try {
+      return await _modaoPaymentBridge.takePendingSsoAuthorizationRequest();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<ModaoPaymentRequest?> _takePendingModaoPaymentSafely() async {
+    try {
+      return await _modaoPaymentBridge.takePendingRequest();
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _runStartupChecks() async {

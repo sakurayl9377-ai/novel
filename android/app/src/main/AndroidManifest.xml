@@ -22,7 +22,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:supportsPictureInPicture="true"
@@ -46,6 +46,15 @@
                     android:scheme="sakura-novel"
                     android:host="modao-payment"
                     android:path="/pay" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="sakura-novel"
+                    android:host="modao-auth"
+                    android:path="/request" />
             </intent-filter>
             <intent-filter>
                 <action android:name="com.novel.novel_app.MODAO_PAYMENT" />

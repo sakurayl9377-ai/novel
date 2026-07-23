@@ -342,6 +342,22 @@ class ModaoPaymentRequest {
   }
 }
 
+class ModaoSsoAuthorizationRequest {
+  const ModaoSsoAuthorizationRequest({required this.requestId});
+
+  final String requestId;
+
+  factory ModaoSsoAuthorizationRequest.fromPlatform(
+    Map<Object?, Object?> value,
+  ) {
+    final requestId = value['requestId']?.toString().trim() ?? '';
+    if (!_isSsoRequestId(requestId)) {
+      throw const ModaoGameException('游戏登录授权请求无效');
+    }
+    return ModaoSsoAuthorizationRequest(requestId: requestId);
+  }
+}
+
 class ModaoPayment {
   const ModaoPayment({
     required this.gameOrderId,
@@ -408,10 +424,16 @@ class ModaoPaymentBridge {
 
   final MethodChannel _platformChannel;
 
-  void start(void Function() onPaymentRequestAvailable) {
+  void start({
+    required void Function() onPaymentRequestAvailable,
+    required void Function() onSsoAuthorizationRequestAvailable,
+  }) {
     _platformChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onPaymentRequestAvailable') {
-        onPaymentRequestAvailable();
+      switch (call.method) {
+        case 'onPaymentRequestAvailable':
+          onPaymentRequestAvailable();
+        case 'onSsoAuthorizationRequestAvailable':
+          onSsoAuthorizationRequestAvailable();
       }
     });
   }
@@ -423,6 +445,34 @@ class ModaoPaymentBridge {
       'takePendingPaymentRequest',
     );
     return value == null ? null : ModaoPaymentRequest.fromPlatform(value);
+  }
+
+  Future<bool> acknowledgePaymentRequest(ModaoPaymentRequest request) async {
+    return await _platformChannel.invokeMethod<bool>(
+          'ackPendingPaymentRequest',
+          {'gameOrderId': request.gameOrderId, 'productId': request.productId},
+        ) ??
+        false;
+  }
+
+  Future<ModaoSsoAuthorizationRequest?>
+  takePendingSsoAuthorizationRequest() async {
+    final value = await _platformChannel.invokeMapMethod<Object?, Object?>(
+      'takePendingSsoAuthorizationRequest',
+    );
+    return value == null
+        ? null
+        : ModaoSsoAuthorizationRequest.fromPlatform(value);
+  }
+
+  Future<bool> acknowledgeSsoAuthorizationRequest(
+    ModaoSsoAuthorizationRequest request,
+  ) async {
+    return await _platformChannel.invokeMethod<bool>(
+          'ackPendingSsoAuthorizationRequest',
+          {'requestId': request.requestId},
+        ) ??
+        false;
   }
 
   Future<bool> returnToGame({
@@ -438,6 +488,26 @@ class ModaoPaymentBridge {
           'status': status,
           'balance': balance,
         }) ??
+        false;
+  }
+
+  Future<bool> returnSsoAuthorizationToGame({
+    required ModaoSsoAuthorizationRequest request,
+    required ModaoSsoTicket ticket,
+  }) async {
+    if (!_isSsoRequestId(request.requestId) ||
+        !_isSsoTicket(ticket.ticket) ||
+        !_isTrustedSsoExchangeUri(ticket.exchangeUrl)) {
+      throw const ModaoGameException('游戏登录授权结果无效');
+    }
+    return await _platformChannel
+            .invokeMethod<bool>('returnSsoAuthorizationToGame', {
+              'packageName': ModaoGameManifest.expectedPackageName,
+              'requestId': request.requestId,
+              'ticket': ticket.ticket,
+              'exchangeUrl': ticket.exchangeUrl.toString(),
+              'allowedSsoHost': ModaoGameService.modaoSsoHost,
+            }) ??
         false;
   }
 }
@@ -1347,6 +1417,24 @@ bool _isPaymentIdentifier(String value) =>
     value.isNotEmpty &&
     value.length <= 128 &&
     RegExp(r'^[A-Za-z0-9._:-]+$').hasMatch(value);
+
+bool _isSsoRequestId(String value) =>
+    value.length >= 32 &&
+    value.length <= 128 &&
+    RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(value);
+
+bool _isSsoTicket(String value) =>
+    value.length >= 32 &&
+    value.length <= 256 &&
+    RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(value);
+
+bool _isTrustedSsoExchangeUri(Uri uri) =>
+    uri.scheme == 'https' &&
+    uri.host == ModaoGameService.modaoSsoHost &&
+    (!uri.hasPort || uri.port == 443) &&
+    uri.userInfo.isEmpty &&
+    uri.fragment.isEmpty &&
+    uri.path == '/sakura/sso/exchange';
 
 bool _isIdempotencyKey(String value) =>
     value.length >= 16 &&

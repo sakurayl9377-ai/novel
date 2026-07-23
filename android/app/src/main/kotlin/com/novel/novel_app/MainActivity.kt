@@ -44,6 +44,7 @@ class MainActivity : AudioServiceActivity() {
     private companion object {
         val modaoMergeCoordinatorLock = Any()
         val modaoDownloadStateLock = Any()
+        val modaoExternalRequestLock = Any()
         val modaoIoExecutor = Executors.newSingleThreadExecutor()
 
         @Volatile
@@ -58,6 +59,12 @@ class MainActivity : AudioServiceActivity() {
     private val ttsNotificationChannel = "com.novel.novel_app.channel.tts"
     private val modaoPackageName = "com.you91.fish.lucky"
     private val modaoSourcePackage = "com.novel.novel_app"
+    private val modaoExpectedSigningCertificateSha256 =
+        "c345303f1b945e5b49100d38edc2abf85cd0513f0f240437e03a7face9e2f37c"
+    private val modaoExternalRequestPreferences = "modao_external_requests"
+    private val modaoPaymentOrderIdKey = "payment_order_id"
+    private val modaoPaymentProductIdKey = "payment_product_id"
+    private val modaoSsoRequestIdKey = "sso_request_id"
     private val modaoDownloadPreferences = "modao_game_download"
     private val modaoDownloadIdKey = "download_id"
     private val modaoDownloadPathKey = "download_path"
@@ -76,7 +83,6 @@ class MainActivity : AudioServiceActivity() {
     private val modaoDownloadErrorKey = "error"
     private var readerChannel: MethodChannel? = null
     private var modaoMethodChannel: MethodChannel? = null
-    private var pendingModaoPaymentRequest: Map<String, String>? = null
     private var mangaTileChannel: MangaTileChannel? = null
     private var readerSessionActive = false
     private var readerVolumeKeysEnabled = false
@@ -114,11 +120,16 @@ class MainActivity : AudioServiceActivity() {
         val file: File,
     )
 
+    private data class CapturedModaoExternalRequests(
+        val payment: Boolean = false,
+        val ssoAuthorization: Boolean = false,
+    )
+
     private class ModaoMergeCancelled : Exception()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        captureModaoPaymentRequest(intent)
+        captureModaoExternalRequests(intent)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         allowContentInDisplayCutout()
     }
@@ -126,9 +137,21 @@ class MainActivity : AudioServiceActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (captureModaoPaymentRequest(intent)) {
+        val captured = captureModaoExternalRequests(intent)
+        if (captured.payment) {
             modaoMethodChannel?.invokeMethod("onPaymentRequestAvailable", null)
         }
+        if (captured.ssoAuthorization) {
+            modaoMethodChannel?.invokeMethod(
+                "onSsoAuthorizationRequestAvailable",
+                null,
+            )
+        }
+    }
+
+    override fun onPostResume() {
+        super.onPostResume()
+        notifyPendingModaoExternalRequests()
     }
 
     private fun allowContentInDisplayCutout() {
@@ -299,8 +322,7 @@ class MainActivity : AudioServiceActivity() {
                     val exchangeUrl = call.argument<String>("exchangeUrl").orEmpty()
                     val allowedSsoHost = call.argument<String>("allowedSsoHost").orEmpty()
                     if (requestedPackage != modaoPackageName ||
-                        ticket.isBlank() ||
-                        ticket.length > 2048 ||
+                        !ModaoExternalRequestContract.isSsoTicket(ticket) ||
                         !isTrustedSsoUrl(exchangeUrl, allowedSsoHost)
                     ) {
                         result.error("INVALID_LAUNCH", "Invalid game launch request", null)
@@ -309,15 +331,32 @@ class MainActivity : AudioServiceActivity() {
                     }
                 }
                 "takePendingPaymentRequest" -> {
-                    val pending = pendingModaoPaymentRequest
-                    pendingModaoPaymentRequest = null
-                    result.success(pending)
+                    result.success(takePendingModaoPaymentRequest())
+                }
+                "ackPendingPaymentRequest" -> {
+                    val gameOrderId = call.argument<String>("gameOrderId").orEmpty()
+                    val productId = call.argument<String>("productId").orEmpty()
+                    result.success(
+                        acknowledgePendingModaoPaymentRequest(
+                            gameOrderId = gameOrderId,
+                            productId = productId,
+                        ),
+                    )
+                }
+                "takePendingSsoAuthorizationRequest" -> {
+                    result.success(takePendingModaoSsoAuthorizationRequest())
+                }
+                "ackPendingSsoAuthorizationRequest" -> {
+                    val requestId = call.argument<String>("requestId").orEmpty()
+                    result.success(
+                        acknowledgePendingModaoSsoAuthorizationRequest(requestId),
+                    )
                 }
                 "returnPaymentToGame" -> {
                     val gameOrderId = call.argument<String>("gameOrderId").orEmpty()
                     val status = call.argument<String>("status").orEmpty()
                     val balance = (call.argument<Number>("balance") ?: 0).toLong()
-                    if (!isPaymentIdentifier(gameOrderId) ||
+                    if (!ModaoExternalRequestContract.isPaymentIdentifier(gameOrderId) ||
                         !Regex("^[a-z_]{2,32}$").matches(status) ||
                         balance < 0
                     ) {
@@ -326,9 +365,36 @@ class MainActivity : AudioServiceActivity() {
                         result.success(returnPaymentToGame(gameOrderId, status, balance))
                     }
                 }
+                "returnSsoAuthorizationToGame" -> {
+                    val requestedPackage = call.argument<String>("packageName")
+                    val requestId = call.argument<String>("requestId").orEmpty()
+                    val ticket = call.argument<String>("ticket").orEmpty()
+                    val exchangeUrl = call.argument<String>("exchangeUrl").orEmpty()
+                    val allowedSsoHost = call.argument<String>("allowedSsoHost").orEmpty()
+                    if (requestedPackage != modaoPackageName ||
+                        !ModaoExternalRequestContract.isSsoRequestId(requestId) ||
+                        !ModaoExternalRequestContract.isSsoTicket(ticket) ||
+                        !isTrustedSsoUrl(exchangeUrl, allowedSsoHost)
+                    ) {
+                        result.error(
+                            "INVALID_SSO_CALLBACK",
+                            "Invalid game authorization result",
+                            null,
+                        )
+                    } else {
+                        result.success(
+                            returnSsoAuthorizationToGame(
+                                requestId = requestId,
+                                ticket = ticket,
+                                exchangeUrl = exchangeUrl,
+                            ),
+                        )
+                    }
+                }
                 else -> result.notImplemented()
             }
         } }
+        notifyPendingModaoExternalRequests()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, playerChannel).setMethodCallHandler { call, result ->
             when (call.method) {
                 "isPictureInPictureSupported" -> {
@@ -752,39 +818,238 @@ class MainActivity : AudioServiceActivity() {
         )
     }
 
-    private fun captureModaoPaymentRequest(sourceIntent: Intent?): Boolean {
-        if (sourceIntent == null) return false
+    private fun captureModaoExternalRequests(
+        sourceIntent: Intent?,
+    ): CapturedModaoExternalRequests {
+        if (sourceIntent == null) return CapturedModaoExternalRequests()
         val data = sourceIntent.data
-        val isDeepLink = sourceIntent.action == Intent.ACTION_VIEW &&
-            data?.scheme == "sakura-novel" &&
-            data.host == "modao-payment" &&
-            data.path == "/pay"
-        val isExplicitAction = sourceIntent.action == "com.novel.novel_app.MODAO_PAYMENT" ||
-            sourceIntent.action == "$packageName.MODAO_PAYMENT"
-        if (!isDeepLink && !isExplicitAction) return false
-        val gameOrderId = (
-            data?.getQueryParameter("gameOrderId")
-                ?: sourceIntent.getStringExtra("gameOrderId")
-                ?: sourceIntent.getStringExtra("sakura_game_order_id")
-            ).orEmpty().trim()
-        val productId = (
-            data?.getQueryParameter("productId")
-                ?: sourceIntent.getStringExtra("productId")
-                ?: sourceIntent.getStringExtra("sakura_product_id")
-            ).orEmpty().trim()
-        if (!isPaymentIdentifier(gameOrderId) || !isPaymentIdentifier(productId)) {
-            return false
+        val link = try {
+            ModaoExternalRequestContract.Link(
+                action = sourceIntent.action,
+                scheme = data?.scheme,
+                host = data?.host,
+                path = data?.path,
+                port = data?.port ?: -1,
+                userInfo = data?.userInfo,
+                fragment = data?.fragment,
+                queryParameterNames = data?.queryParameterNames.orEmpty(),
+            )
+        } catch (_: Exception) {
+            ModaoExternalRequestContract.Link(
+                action = sourceIntent.action,
+                scheme = data?.scheme,
+                host = data?.host,
+                path = data?.path,
+            )
         }
-        pendingModaoPaymentRequest = mapOf(
-            "gameOrderId" to gameOrderId,
-            "productId" to productId,
+        val recognizesPayment = ModaoExternalRequestContract.recognizesPayment(
+            link,
+            packageName,
         )
-        return true
+        val recognizesAuthorization =
+            ModaoExternalRequestContract.recognizesSsoAuthorization(link)
+        if (!recognizesPayment && !recognizesAuthorization) {
+            return CapturedModaoExternalRequests()
+        }
+
+        val paymentRequest = try {
+            ModaoExternalRequestContract.parsePayment(
+                link = link,
+                appPackageName = packageName,
+                gameOrderId = data?.getQueryParameter("gameOrderId")
+                    ?: sourceIntent.getStringExtra("gameOrderId")
+                    ?: sourceIntent.getStringExtra("sakura_game_order_id"),
+                productId = data?.getQueryParameter("productId")
+                    ?: sourceIntent.getStringExtra("productId")
+                    ?: sourceIntent.getStringExtra("sakura_product_id"),
+            )
+        } catch (_: Exception) {
+            null
+        }
+        val authorizationRequest = try {
+            ModaoExternalRequestContract.parseSsoAuthorization(
+                link = link,
+                requestId = data?.getQueryParameter("requestId"),
+            )
+        } catch (_: Exception) {
+            null
+        }
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        val paymentCaptured = if (paymentRequest == null) {
+            false
+        } else {
+            synchronized(modaoExternalRequestLock) {
+                preferences.edit()
+                    .putString(
+                        modaoPaymentOrderIdKey,
+                        paymentRequest.gameOrderId,
+                    )
+                    .putString(
+                        modaoPaymentProductIdKey,
+                        paymentRequest.productId,
+                    )
+                    .commit()
+            }
+        }
+        val authorizationCaptured = if (authorizationRequest == null) {
+            false
+        } else {
+            synchronized(modaoExternalRequestLock) {
+                preferences.edit()
+                    .putString(
+                        modaoSsoRequestIdKey,
+                        authorizationRequest.requestId,
+                    )
+                    .commit()
+            }
+        }
+        clearCapturedModaoIntent(sourceIntent)
+        return CapturedModaoExternalRequests(
+            payment = paymentCaptured,
+            ssoAuthorization = authorizationCaptured,
+        )
     }
 
-    private fun isPaymentIdentifier(value: String): Boolean {
-        return value.length in 1..128 &&
-            Regex("^[A-Za-z0-9._:-]+$").matches(value)
+    private fun clearCapturedModaoIntent(sourceIntent: Intent) {
+        sourceIntent.action = Intent.ACTION_MAIN
+        sourceIntent.data = null
+        sourceIntent.removeExtra("gameOrderId")
+        sourceIntent.removeExtra("productId")
+        sourceIntent.removeExtra("sakura_game_order_id")
+        sourceIntent.removeExtra("sakura_product_id")
+    }
+
+    private fun takePendingModaoPaymentRequest(): Map<String, String>? {
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        return synchronized(modaoExternalRequestLock) {
+            val gameOrderId = preferences
+                .getString(modaoPaymentOrderIdKey, null)
+                .orEmpty()
+            val productId = preferences
+                .getString(modaoPaymentProductIdKey, null)
+                .orEmpty()
+            val valid = ModaoExternalRequestContract.isPaymentIdentifier(
+                gameOrderId,
+            ) && ModaoExternalRequestContract.isPaymentIdentifier(productId)
+            if (valid) {
+                mapOf(
+                    "gameOrderId" to gameOrderId,
+                    "productId" to productId,
+                )
+            } else {
+                preferences.edit()
+                    .remove(modaoPaymentOrderIdKey)
+                    .remove(modaoPaymentProductIdKey)
+                    .commit()
+                null
+            }
+        }
+    }
+
+    private fun acknowledgePendingModaoPaymentRequest(
+        gameOrderId: String,
+        productId: String,
+    ): Boolean {
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        return synchronized(modaoExternalRequestLock) {
+            if (!ModaoExternalRequestContract.matchesPaymentAcknowledgement(
+                    storedGameOrderId = preferences.getString(
+                        modaoPaymentOrderIdKey,
+                        null,
+                    ),
+                    storedProductId = preferences.getString(
+                        modaoPaymentProductIdKey,
+                        null,
+                    ),
+                    gameOrderId = gameOrderId,
+                    productId = productId,
+                )
+            ) {
+                false
+            } else {
+                preferences.edit()
+                    .remove(modaoPaymentOrderIdKey)
+                    .remove(modaoPaymentProductIdKey)
+                    .commit()
+            }
+        }
+    }
+
+    private fun takePendingModaoSsoAuthorizationRequest(): Map<String, String>? {
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        return synchronized(modaoExternalRequestLock) {
+            val requestId = preferences
+                .getString(modaoSsoRequestIdKey, null)
+                .orEmpty()
+            val valid = ModaoExternalRequestContract.isSsoRequestId(requestId)
+            if (valid) {
+                mapOf("requestId" to requestId)
+            } else {
+                preferences.edit().remove(modaoSsoRequestIdKey).commit()
+                null
+            }
+        }
+    }
+
+    private fun acknowledgePendingModaoSsoAuthorizationRequest(
+        requestId: String,
+    ): Boolean {
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        return synchronized(modaoExternalRequestLock) {
+            if (!ModaoExternalRequestContract.matchesSsoAcknowledgement(
+                    storedRequestId = preferences.getString(
+                        modaoSsoRequestIdKey,
+                        null,
+                    ),
+                    requestId = requestId,
+                )
+            ) {
+                false
+            } else {
+                preferences.edit().remove(modaoSsoRequestIdKey).commit()
+            }
+        }
+    }
+
+    private fun notifyPendingModaoExternalRequests() {
+        val channel = modaoMethodChannel ?: return
+        val preferences = getSharedPreferences(
+            modaoExternalRequestPreferences,
+            Context.MODE_PRIVATE,
+        )
+        val hasPayment = synchronized(modaoExternalRequestLock) {
+            ModaoExternalRequestContract.isPaymentIdentifier(
+                preferences.getString(modaoPaymentOrderIdKey, null).orEmpty(),
+            ) && ModaoExternalRequestContract.isPaymentIdentifier(
+                preferences.getString(modaoPaymentProductIdKey, null).orEmpty(),
+            )
+        }
+        val hasAuthorization = synchronized(modaoExternalRequestLock) {
+            ModaoExternalRequestContract.isSsoRequestId(
+                preferences.getString(modaoSsoRequestIdKey, null).orEmpty(),
+            )
+        }
+        if (hasPayment) {
+            channel.invokeMethod("onPaymentRequestAvailable", null)
+        }
+        if (hasAuthorization) {
+            channel.invokeMethod("onSsoAuthorizationRequestAvailable", null)
+        }
     }
 
     private fun returnPaymentToGame(
@@ -792,6 +1057,7 @@ class MainActivity : AudioServiceActivity() {
         status: String,
         balance: Long,
     ): Boolean {
+        if (!isTrustedInstalledModaoGame()) return false
         val intent = packageManager.getLaunchIntentForPackage(modaoPackageName)
             ?: return false
         intent.apply {
@@ -811,6 +1077,45 @@ class MainActivity : AudioServiceActivity() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun returnSsoAuthorizationToGame(
+        requestId: String,
+        ticket: String,
+        exchangeUrl: String,
+    ): Boolean {
+        if (!isTrustedInstalledModaoGame()) return false
+        val intent = packageManager.getLaunchIntentForPackage(modaoPackageName)
+            ?: return false
+        intent.apply {
+            action = ModaoExternalRequestContract.ssoCallbackAction
+            setPackage(ModaoExternalRequestContract.gamePackageName)
+            data = null
+            putExtra("sakura_sso_ticket", ticket)
+            putExtra("sakura_sso_exchange_url", exchangeUrl)
+            putExtra("sakura_sso_source", modaoSourcePackage)
+            putExtra("sakura_sso_request_id", requestId)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        return try {
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isTrustedInstalledModaoGame(): Boolean {
+        val packageInfo = try {
+            packageInfoWithSignatures(modaoPackageName)
+        } catch (_: PackageManager.NameNotFoundException) {
+            return false
+        }
+        return packageInfo.packageName == modaoPackageName &&
+            signingCertificateDigests(packageInfo)
+                .contains(modaoExpectedSigningCertificateSha256)
     }
 
     private fun installedGameInfo(): Map<String, Any?> {
@@ -2272,6 +2577,7 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun launchModaoGame(ticket: String, exchangeUrl: String): Boolean {
+        if (!isTrustedInstalledModaoGame()) return false
         val intent = packageManager.getLaunchIntentForPackage(modaoPackageName)
             ?: return false
         intent.apply {
