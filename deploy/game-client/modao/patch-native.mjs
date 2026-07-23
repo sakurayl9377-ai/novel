@@ -1,9 +1,6 @@
 import fs from "node:fs";
-
-const [smaliPath, manifestPath] = process.argv.slice(2);
-if (!smaliPath || !manifestPath) {
-  throw new Error("usage: node patch-native.mjs <AppActivity.smali> <AndroidManifest.xml>");
-}
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 function replaceOnce(source, label, before, after) {
   const first = source.indexOf(before);
@@ -14,7 +11,8 @@ function replaceOnce(source, label, before, after) {
   return source.slice(0, first) + after + source.slice(first + before.length);
 }
 
-let smali = fs.readFileSync(smaliPath, "utf8").replace(/\r\n/g, "\n");
+export function patchNativeSmali(input) {
+let smali = input.replace(/\r\n/g, "\n");
 
 smali = replaceOnce(
   smali,
@@ -116,9 +114,78 @@ smali = replaceOnce(
     return-object v0
 .end method
 
+.method public static createSakuraRequestId()Ljava/lang/String;
+    .locals 3
+
+    invoke-static {}, Ljava/util/UUID;->randomUUID()Ljava/util/UUID;
+
+    move-result-object v0
+
+    invoke-virtual {v0}, Ljava/util/UUID;->toString()Ljava/lang/String;
+
+    move-result-object v0
+
+    const-string v1, "-"
+
+    const-string v2, ""
+
+    invoke-virtual {v0, v1, v2}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
+
+    move-result-object v0
+
+    return-object v0
+.end method
+
 
 # virtual methods
 `,
+);
+
+smali = replaceOnce(
+  smali,
+  "handle an unavailable Sakura app",
+  `    invoke-direct {v2, v3, v4}, Landroid/content/Intent;-><init>(Ljava/lang/String;Landroid/net/Uri;)V
+
+    invoke-virtual {v1, v2}, Lcom/cocos/game/AppActivity;->startActivity(Landroid/content/Intent;)V
+
+    .line 670
+    new-instance v1, Lorg/json/JSONObject;`,
+  `    invoke-direct {v2, v3, v4}, Landroid/content/Intent;-><init>(Ljava/lang/String;Landroid/net/Uri;)V
+
+    invoke-virtual {v4}, Landroid/net/Uri;->getScheme()Ljava/lang/String;
+
+    move-result-object v3
+
+    const-string v4, "sakura-novel"
+
+    invoke-virtual {v4, v3}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+
+    move-result v3
+
+    if-eqz v3, :sakura_open_unscoped
+
+    const-string v3, "com.novel.novel_app"
+
+    invoke-virtual {v2, v3}, Landroid/content/Intent;->setPackage(Ljava/lang/String;)Landroid/content/Intent;
+
+    :sakura_open_unscoped
+    :try_start_sakura_open
+    invoke-virtual {v1, v2}, Lcom/cocos/game/AppActivity;->startActivity(Landroid/content/Intent;)V
+    :try_end_sakura_open
+    .catch Landroid/content/ActivityNotFoundException; {:try_start_sakura_open .. :try_end_sakura_open} :catch_sakura_open
+
+    goto :sakura_open_success
+
+    :catch_sakura_open
+    move-exception v1
+
+    const-string v1, "{\\"ok\\":false,\\"error\\":\\"activity_not_found\\"}"
+
+    return-object v1
+
+    :sakura_open_success
+    .line 670
+    new-instance v1, Lorg/json/JSONObject;`,
 );
 
 smali = replaceOnce(
@@ -147,26 +214,54 @@ smali = replaceOnce(
 `,
 );
 
-fs.writeFileSync(smaliPath, smali, "utf8");
+return smali;
+}
 
-let manifest = fs.readFileSync(manifestPath, "utf8").replace(/\r\n/g, "\n");
+export function patchNativeManifest(input) {
+let manifest = input.replace(/\r\n/g, "\n");
 manifest = manifest.replace('android:debuggable="true"', 'android:debuggable="false"');
-manifest = replaceOnce(
-  manifest,
-  "register Sakura deep link",
-  `            <intent-filter>
+const launcherFilter = `            <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>`,
-  `            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
+            </intent-filter>`;
+const legacySakuraFilter = `
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="sakura-modao" android:host="login"/>
-            </intent-filter>`,
+            </intent-filter>`;
+const callbackFilter = `
+            <intent-filter>
+                <action android:name="com.you91.fish.lucky.SAKURA_SSO_CALLBACK"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>`;
+manifest = replaceOnce(
+  manifest,
+  "register Sakura deep link",
+  launcherFilter,
+  launcherFilter +
+    (manifest.includes('android:scheme="sakura-modao"')
+      ? callbackFilter
+      : legacySakuraFilter + callbackFilter),
 );
-fs.writeFileSync(manifestPath, manifest, "utf8");
+return manifest;
+}
+
+function isDirectInvocation() {
+  if (!process.argv[1]) return false;
+  return pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+}
+
+if (isDirectInvocation()) {
+  const [smaliPath, manifestPath] = process.argv.slice(2);
+  if (!smaliPath || !manifestPath) {
+    throw new Error(
+      "usage: node patch-native.mjs <AppActivity.smali> <AndroidManifest.xml>",
+    );
+  }
+  const smali = fs.readFileSync(smaliPath, "utf8");
+  const manifest = fs.readFileSync(manifestPath, "utf8");
+  fs.writeFileSync(smaliPath, patchNativeSmali(smali), "utf8");
+  fs.writeFileSync(manifestPath, patchNativeManifest(manifest), "utf8");
+}

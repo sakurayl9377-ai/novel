@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 import { bypassDeadLegacyHotUpdate } from "./patch-hot-update.mjs";
 import { patchManagedSsoFlow } from "./patch-managed-sso.mjs";
+import { patchSakuraPaymentUi } from "./patch-sakura-payment-ui.mjs";
 
 const args = process.argv.slice(2);
 const skipReconnect = args.includes("--skip-reconnect");
@@ -193,6 +194,7 @@ replaceOnce(
 );
 
 source = patchManagedSsoFlow(source);
+source = patchSakuraPaymentUi(source);
 source = bypassDeadLegacyHotUpdate(source);
 
 if (source.includes("root.SakuraBridge")) {

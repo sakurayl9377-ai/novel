@@ -18,10 +18,15 @@ public final class SakuraBridge {
     private static final String KEY_TICKET = "sso_ticket";
     private static final String KEY_EXCHANGE_URL = "sso_exchange_url";
     private static final String KEY_SOURCE = "sso_source";
+    private static final String KEY_REQUEST_ID = "sso_request_id";
 
+    public static final String ACTION_SSO_CALLBACK =
+            "com.you91.fish.lucky.SAKURA_SSO_CALLBACK";
+    public static final String NOVEL_APP_PACKAGE = "com.novel.novel_app";
     public static final String EXTRA_SSO_TICKET = "sakura_sso_ticket";
     public static final String EXTRA_SSO_EXCHANGE_URL = "sakura_sso_exchange_url";
     public static final String EXTRA_SSO_SOURCE = "sakura_sso_source";
+    public static final String EXTRA_SSO_REQUEST_ID = "sakura_sso_request_id";
     public static final String EXTRA_PAYMENT_ORDER_ID = "sakura_payment_order_id";
     public static final String EXTRA_PAYMENT_STATUS = "sakura_payment_status";
     public static final String EXTRA_PAYMENT_BALANCE = "sakura_payment_balance";
@@ -41,20 +46,25 @@ public final class SakuraBridge {
             return;
         }
 
-        String ticket = readValue(intent, EXTRA_SSO_TICKET, "ticket");
+        String ticket = intent.getStringExtra(EXTRA_SSO_TICKET);
         if (TextUtils.isEmpty(ticket)) {
             return;
         }
-        String exchangeUrl = readValue(intent, EXTRA_SSO_EXCHANGE_URL, "exchangeUrl");
-        String source = readValue(intent, EXTRA_SSO_SOURCE, "source");
-        if (!isTicket(ticket) || !isExchangeUrl(exchangeUrl)) {
+        String exchangeUrl = intent.getStringExtra(EXTRA_SSO_EXCHANGE_URL);
+        String source = intent.getStringExtra(EXTRA_SSO_SOURCE);
+        String requestId = intent.getStringExtra(EXTRA_SSO_REQUEST_ID);
+        if (!isTicket(ticket)
+                || !isExchangeUrl(exchangeUrl)
+                || !NOVEL_APP_PACKAGE.equals(source)
+                || (!TextUtils.isEmpty(requestId) && !isRequestId(requestId))) {
             return;
         }
 
         SharedPreferences.Editor editor = prefs(activity).edit()
                 .putString(KEY_TICKET, ticket)
                 .putString(KEY_EXCHANGE_URL, exchangeUrl)
-                .putString(KEY_SOURCE, source);
+                .putString(KEY_SOURCE, source)
+                .putString(KEY_REQUEST_ID, requestId);
         editor.apply();
     }
 
@@ -72,6 +82,9 @@ public final class SakuraBridge {
         config.put("sakura_sso_ticket", ticket);
         config.put("sakura_sso_exchange_url", exchangeUrl);
         config.put("sakura_sso_source", source);
+        config.put(
+                "sakura_sso_request_id",
+                preferences.getString(KEY_REQUEST_ID, ""));
     }
 
     public static Map<String, Object> createLoginEvent(Activity activity) {
@@ -92,7 +105,20 @@ public final class SakuraBridge {
         event.put("sso_ticket", ticket);
         event.put("sso_exchange_url", preferences.getString(KEY_EXCHANGE_URL, ""));
         event.put("sso_source", preferences.getString(KEY_SOURCE, ""));
+        event.put("sso_request_id", preferences.getString(KEY_REQUEST_ID, ""));
         return event;
+    }
+
+    public static Uri createAuthorizationUri(String requestId) {
+        if (!isRequestId(requestId)) {
+            return null;
+        }
+        return new Uri.Builder()
+                .scheme("sakura-novel")
+                .authority("modao-auth")
+                .appendPath("request")
+                .appendQueryParameter("requestId", requestId)
+                .build();
     }
 
     /**
@@ -168,16 +194,14 @@ public final class SakuraBridge {
                 .remove(KEY_TICKET)
                 .remove(KEY_EXCHANGE_URL)
                 .remove(KEY_SOURCE)
+                .remove(KEY_REQUEST_ID)
                 .apply();
         Intent intent = activity.getIntent();
         if (intent != null) {
             intent.removeExtra(EXTRA_SSO_TICKET);
             intent.removeExtra(EXTRA_SSO_EXCHANGE_URL);
             intent.removeExtra(EXTRA_SSO_SOURCE);
-            Uri data = intent.getData();
-            if (data != null && !TextUtils.isEmpty(data.getQueryParameter("ticket"))) {
-                intent.setData(null);
-            }
+            intent.removeExtra(EXTRA_SSO_REQUEST_ID);
         }
     }
 
@@ -185,17 +209,15 @@ public final class SakuraBridge {
         return activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE);
     }
 
-    private static String readValue(Intent intent, String extraName, String queryName) {
-        String value = intent.getStringExtra(extraName);
-        if (!TextUtils.isEmpty(value)) {
-            return value;
-        }
-        Uri data = intent.getData();
-        return data == null ? "" : data.getQueryParameter(queryName);
-    }
-
     private static boolean isTicket(String value) {
         return !TextUtils.isEmpty(value) && value.matches("[A-Za-z0-9_-]{32,256}");
+    }
+
+    private static boolean isRequestId(String value) {
+        return !TextUtils.isEmpty(value)
+                && value.length() >= 32
+                && value.length() <= 128
+                && value.matches("[A-Za-z0-9._:-]+");
     }
 
     private static boolean isIdentifier(String value) {
