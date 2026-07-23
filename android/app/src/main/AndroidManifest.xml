@@ -38,6 +38,19 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="sakura-novel"
+                    android:host="modao-payment"
+                    android:path="/pay" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.novel.novel_app.MODAO_PAYMENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
         <service
             android:name="com.ryanheise.audioservice.AudioService"
@@ -70,6 +83,7 @@
             android:value="2" />
     </application>
     <queries>
+        <package android:name="com.you91.fish.lucky" />
         <package android:name="com.vivo.permissionmanager" />
         <package android:name="com.iqoo.secure" />
         <intent>

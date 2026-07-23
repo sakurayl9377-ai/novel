@@ -94,6 +94,29 @@ export const config = {
     1000,
     Math.min(30000, Math.trunc(envNumber('BAILIAN_PAYMENT_TIMEOUT_MS', 5000))),
   ),
+  modaoLaunchUrl: env('MODAO_LAUNCH_URL'),
+  modaoSsoSharedSecret: env('MODAO_SSO_SHARED_SECRET'),
+  modaoSsoTtlSeconds: Math.max(
+    1,
+    Math.min(60, Math.trunc(envNumber('MODAO_SSO_TTL_SECONDS', 60))),
+  ),
+  modaoPaymentCatalogFile: env('MODAO_PAYMENT_CATALOG_FILE'),
+  modaoPaymentCatalogJson: env('MODAO_PAYMENT_CATALOG_JSON'),
+  modaoPaymentVerifyUrl: env('MODAO_PAYMENT_VERIFY_URL'),
+  modaoPaymentFulfillmentUrl: env('MODAO_PAYMENT_FULFILLMENT_URL'),
+  modaoPaymentHmacSecret: env('MODAO_PAYMENT_HMAC_SECRET'),
+  modaoPaymentMaxAttempts: Math.max(
+    1,
+    Math.min(10, Math.trunc(envNumber('MODAO_PAYMENT_MAX_ATTEMPTS', 3))),
+  ),
+  modaoPaymentTimeoutMs: Math.max(
+    1000,
+    Math.min(30000, Math.trunc(envNumber('MODAO_PAYMENT_TIMEOUT_MS', 5000))),
+  ),
+  modaoPaymentClaimTtlMs: Math.max(
+    30000,
+    Math.min(600000, Math.trunc(envNumber('MODAO_PAYMENT_CLAIM_TTL_MS', 60000))),
+  ),
   videoCoverDir: path.resolve(
     rootDir,
     env('VIDEO_COVER_DIR', './data/video-covers'),

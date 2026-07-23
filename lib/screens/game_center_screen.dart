@@ -7,6 +7,7 @@ import '../utils/auth_gate.dart';
 import 'bailian_game_screen.dart';
 import 'bailian_orders_screen.dart';
 import 'horse_race_game_screen.dart';
+import 'modao_game_screen.dart';
 
 /// The home for the app's lightweight entertainment experiences.
 class GameCenterScreen extends StatelessWidget {
@@ -15,6 +16,7 @@ class GameCenterScreen extends StatelessWidget {
     this.horseRaceDestinationBuilder,
     this.onHorseRaceTap,
     this.onBailianTap,
+    this.onModaoTap,
   });
 
   static const Key scrollKey = ValueKey<String>('game-center-scroll');
@@ -23,11 +25,13 @@ class GameCenterScreen extends StatelessWidget {
     'game-entry-horse-race',
   );
   static const Key bailianEntryKey = ValueKey<String>('game-entry-bailian');
+  static const Key modaoEntryKey = ValueKey<String>('game-entry-modao');
   static const Key ordersEntryKey = ValueKey<String>('game-orders-entry');
 
   final WidgetBuilder? horseRaceDestinationBuilder;
   final VoidCallback? onHorseRaceTap;
   final VoidCallback? onBailianTap;
+  final VoidCallback? onModaoTap;
 
   void _open(BuildContext context, WidgetBuilder builder) {
     Navigator.of(context).push(MaterialPageRoute<void>(builder: builder));
@@ -44,6 +48,19 @@ class GameCenterScreen extends StatelessWidget {
     final token = context.read<InteractionAuthProvider>().token;
     if (token.isEmpty) return;
     _open(context, (_) => BailianGameScreen(token: token));
+  }
+
+  Future<void> _openModao(BuildContext context) async {
+    final allowed = await ensureLoggedInForContent(
+      context,
+      allowed: false,
+      title: '登录后进入游戏',
+      message: '魔道修仙使用小说 App 账号直接登录。',
+    );
+    if (!allowed || !context.mounted) return;
+    final token = context.read<InteractionAuthProvider>().token;
+    if (token.isEmpty) return;
+    _open(context, (_) => ModaoGameScreen(token: token));
   }
 
   Future<void> _openOrders(BuildContext context) async {
@@ -167,6 +184,21 @@ class GameCenterScreen extends StatelessWidget {
                             ],
                             accent: const Color(0xFFFFD27A),
                             onTap: onBailianTap ?? () => _openBailian(context),
+                          ),
+                          _GameEntryCard(
+                            key: modaoEntryKey,
+                            eyebrow: '玄幻冒险',
+                            title: '魔道修仙',
+                            description: '踏入修真世界，探索天地机缘，开启属于你的仙途。',
+                            actionLabel: '查看游戏',
+                            icon: Icons.forest_rounded,
+                            colors: const [
+                              Color(0xFF1F654E),
+                              Color(0xFF29463F),
+                              Color(0xFF24253A),
+                            ],
+                            accent: const Color(0xFF9BE2BE),
+                            onTap: onModaoTap ?? () => _openModao(context),
                           ),
                         ]),
                       ),

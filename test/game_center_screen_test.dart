@@ -8,6 +8,7 @@ void main() {
     required Size size,
     VoidCallback? onHorseRaceTap,
     VoidCallback? onBailianTap,
+    VoidCallback? onModaoTap,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = size;
@@ -17,6 +18,7 @@ void main() {
         home: GameCenterScreen(
           onHorseRaceTap: onHorseRaceTap,
           onBailianTap: onBailianTap,
+          onModaoTap: onModaoTap,
         ),
       ),
     );
@@ -28,18 +30,21 @@ void main() {
   ) async {
     final semantics = tester.ensureSemantics();
     try {
-      await pumpCenter(tester, size: const Size(390, 844));
+      await pumpCenter(tester, size: const Size(900, 900));
 
       expect(find.text('樱游阁'), findsOneWidget);
       expect(find.text('樱愿召唤'), findsNothing);
       expect(find.text('视觉样片'), findsNothing);
       expect(find.text('樱花赛马'), findsOneWidget);
       expect(find.text('百练英雄'), findsOneWidget);
+      expect(find.text('魔道修仙'), findsOneWidget);
       expect(find.byKey(GameCenterScreen.horseRaceEntryKey), findsOneWidget);
       expect(find.byKey(GameCenterScreen.bailianEntryKey), findsOneWidget);
+      expect(find.byKey(GameCenterScreen.modaoEntryKey), findsOneWidget);
       expect(find.byKey(GameCenterScreen.ordersEntryKey), findsOneWidget);
       expect(find.bySemanticsLabel('樱花赛马，实时竞技'), findsOneWidget);
       expect(find.bySemanticsLabel('百练英雄，单点登录'), findsOneWidget);
+      expect(find.bySemanticsLabel('魔道修仙，玄幻冒险'), findsOneWidget);
     } finally {
       semantics.dispose();
     }
@@ -101,6 +106,25 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(GameCenterScreen.bailianEntryKey));
+    await tester.pump();
+
+    expect(taps, 1);
+  });
+
+  testWidgets('modao entry can retain the caller login gate', (tester) async {
+    var taps = 0;
+    await pumpCenter(
+      tester,
+      size: const Size(390, 844),
+      onModaoTap: () => taps += 1,
+    );
+
+    await tester.drag(
+      find.byKey(GameCenterScreen.scrollKey),
+      const Offset(0, -700),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(GameCenterScreen.modaoEntryKey));
     await tester.pump();
 
     expect(taps, 1);

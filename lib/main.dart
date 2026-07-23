@@ -15,6 +15,7 @@ import 'services/download_manager_service.dart';
 import 'services/growth_service.dart';
 import 'services/interaction_service.dart';
 import 'services/login_reward_service.dart';
+import 'services/modao_game_service.dart';
 import 'services/progress_sync_service.dart';
 import 'services/storage_service.dart';
 import 'services/tts_media_control_service.dart';
@@ -25,6 +26,7 @@ import 'providers/reading_provider.dart';
 import 'providers/tts_provider.dart';
 import 'screens/anime_screen.dart';
 import 'screens/manga_screen.dart';
+import 'screens/modao_payment_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/reading_screen.dart';
@@ -264,6 +266,7 @@ class _MainScaffoldState extends State<MainScaffold>
   final AppUpdateService _startupUpdateService = AppUpdateService();
   final InteractionService _interactionService = InteractionService();
   final LoginRewardService _loginRewardService = LoginRewardService();
+  final ModaoPaymentBridge _modaoPaymentBridge = ModaoPaymentBridge();
   static const String _announcementSeenKey = 'app_announcement_seen_id';
   int _currentIndex = 0;
   final Set<int> _visitedTabIndexes = {0};
@@ -285,6 +288,7 @@ class _MainScaffoldState extends State<MainScaffold>
   bool _didCheckStartupUpdate = false;
   bool _didCheckStartupAnnouncement = false;
   bool _startupChecksCompleted = false;
+  bool _handlingModaoPaymentRequest = false;
   InteractionAuthProvider? _authProvider;
   String _lastLoginRewardToken = '';
   bool _loginRewardSyncRunning = false;
@@ -301,6 +305,7 @@ class _MainScaffoldState extends State<MainScaffold>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _modaoPaymentBridge.start(_schedulePendingModaoPayment);
     _routeObservers = List.generate(
       5,
       (index) => _TabRouteObserver(
@@ -326,6 +331,7 @@ class _MainScaffoldState extends State<MainScaffold>
         metadata: const {'initial': true},
       );
       unawaited(_runStartupChecks());
+      unawaited(_openPendingModaoPayment());
     });
   }
 
@@ -351,7 +357,40 @@ class _MainScaffoldState extends State<MainScaffold>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _authProvider?.removeListener(_handleAuthChanged);
+    _modaoPaymentBridge.stop();
     super.dispose();
+  }
+
+  void _schedulePendingModaoPayment() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_openPendingModaoPayment());
+    });
+  }
+
+  Future<void> _openPendingModaoPayment() async {
+    if (_handlingModaoPaymentRequest || !mounted) return;
+    _handlingModaoPaymentRequest = true;
+    try {
+      final navigator = _navigatorKeys[_currentIndex].currentState;
+      if (navigator == null) {
+        _schedulePendingModaoPayment();
+        return;
+      }
+      final request = await _modaoPaymentBridge.takePendingRequest();
+      if (request == null || !mounted) return;
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          settings: const RouteSettings(name: '/games/modao/payment'),
+          builder: (_) =>
+              ModaoPaymentScreen(request: request, bridge: _modaoPaymentBridge),
+        ),
+      );
+    } catch (_) {
+      // Invalid or stale external payment requests are ignored safely.
+    } finally {
+      _handlingModaoPaymentRequest = false;
+    }
+    if (mounted) _schedulePendingModaoPayment();
   }
 
   Future<void> _runStartupChecks() async {

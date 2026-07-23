@@ -16,8 +16,11 @@ import {
   listBailianPayments,
   previewBailianPayment, retryBailianPayment,
 } from './bailian-payments.js';
+import { modaoGameRoutes } from './routes-modao-game.js';
 
 export async function gameRoutes(app) {
+  app.register(modaoGameRoutes);
+
   const paymentHandler = (handler) => async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     if (!bailianPaymentsAvailable()) return reply.code(503).send({ error: 'bailian_payments_unavailable' });

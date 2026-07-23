@@ -1,0 +1,17 @@
+{
+  "packageName": "com.you91.fish.lucky",
+  "versionName": "10.0.0.0",
+  "versionCode": 2023981000,
+  "apkUrl": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.apk",
+  "sizeBytes": 5,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "signingCertificateSha256": "c345303f1b945e5b49100d38edc2abf85cd0513f0f240437e03a7face9e2f37c",
+  "parts": [
+    {"index": 0, "url": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.part-000.apk", "sizeBytes": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"index": 1, "url": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.part-001.apk", "sizeBytes": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"index": 2, "url": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.part-002.apk", "sizeBytes": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"index": 3, "url": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.part-003.apk", "sizeBytes": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"index": 4, "url": "https://novel.kxhub.xyz/games/modao/modao-2023981000-000000000000.part-004.apk", "sizeBytes": 1, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  ],
+  "notes": []
+}
