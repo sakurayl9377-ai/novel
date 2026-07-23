@@ -19,20 +19,53 @@ const panel = source.slice(
 
 assert.ok(
   source.includes(
-    'Math.round(10*e)+" \\u6a31\\u82b1\\u5e01":"-- \\u6a31\\u82b1\\u5e01"',
+    'static fromatPayPrice(t){let e="",a=(t/n.aaa.sConfigDataPool.getLine("164").parameter[0][0]).toFixed(2)',
   ),
-  "cash prices are not converted to Sakura coins at 10:1",
+  "cash prices no longer use the original RMB formatter",
 );
-assert.ok(panel.includes("this.baseui.btn_weixin.visible=!1"));
-assert.ok(panel.includes('a.title="\\u6a31\\u82b1\\u5e01\\u652f\\u4ed8"'));
 assert.ok(
   panel.includes(
-    'this.money_text.text="\\u9700\\u652f\\u4ed8\\uff1a"+Math.round(10*e)+" \\u6a31\\u82b1\\u5e01"',
+    'this.money_text.text="\u652f\u4ed8\u91d1\u989d:"+e+"\u5143"',
   ),
 );
-assert.ok(panel.includes("a.x=(this.baseui.btn_weixin.x+a.x)/2"));
 assert.ok(panel.includes("this.baseui.btn_alipay,this,this.onAlipayPay"));
-assert.ok(!panel.includes("onWeixinPay()"));
-assert.ok(!panel.includes('this.money_text.text="\\u652f\\u4ed8\\u91d1\\u989d:"'));
+assert.ok(panel.includes("this.baseui.btn_weixin,this,this.onWeixinPay"));
+assert.ok(panel.includes("onWeixinPay()"));
+assert.ok(panel.includes("onAlipayPay()"));
+assert.ok(!panel.includes("\u6a31\u82b1\u5e01"));
+assert.ok(
+  panel.includes("beforeAdd(t){window.SakuraPaymentPanel=this,"),
+  "payment panel is not available to the native payment result callback",
+);
+assert.ok(
+  panel.includes(
+    "window.SakuraPaymentPanel===this&&(window.SakuraPaymentPanel=null)",
+  ),
+  "payment panel handle is not cleared on close",
+);
+assert.ok(
+  panel.includes(
+    "i.off(this.baseui.btn_weixin,this,this.onWeixinPay),i.off(this.baseui.btn_alipay,this,this.onAlipayPay)",
+  ),
+  "payment action listeners are not removed when the panel closes",
+);
+assert.ok(
+  source.includes(
+    "if(window.SakuraBridge&&L.sakuraSession)return void window.SakuraBridge.openPayment(L,t,e)",
+  ),
+  "RMB payment choices do not route through Sakura payment",
+);
+assert.ok(
+  source.includes(
+    '-1!=["delivered","fulfilled","success"].indexOf(t)&&(a&&"function"==typeof a.removeSelf&&a.removeSelf(),S.showMessage("\\u652f\\u4ed8\\u6210\\u529f"))',
+  ),
+  "a delivered Sakura payment does not close the payment panel",
+);
+assert.ok(
+  !source.includes(
+    '["cancelled","failed","pending"].indexOf(t)&&(a&&"function"==typeof a.removeSelf',
+  ),
+  "a non-delivered Sakura payment must keep the payment panel open",
+);
 
-console.log("Sakura payment UI tests passed");
+console.log("RMB display with Sakura payment routing tests passed");

@@ -5,8 +5,10 @@ expected_server="47.88.26.14"
 acknowledged_server="${1:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 helper_source="${MODAO_RELEASE_HELPER_SOURCE:-$script_dir/deploy-modao-game-release.sh}"
+hot_helper_source="${MODAO_HOT_UPDATE_HELPER_SOURCE:-$script_dir/deploy-modao-hot-update.sh}"
 nginx_source="${NOVEL_DOWNLOAD_NGINX_SOURCE:-$script_dir/nginx-https.conf}"
 helper_target="${MODAO_RELEASE_HELPER_TARGET:-/usr/local/sbin/novel-modao-game-release-deploy}"
+hot_helper_target="${MODAO_HOT_UPDATE_HELPER_TARGET:-/usr/local/sbin/novel-modao-hot-update-deploy}"
 if [[ -n "${NOVEL_DOWNLOAD_NGINX_TARGET:-}" ]]; then
   nginx_target="$NOVEL_DOWNLOAD_NGINX_TARGET"
 elif [[ -d /etc/nginx/conf.d ]]; then
@@ -30,8 +32,10 @@ skip_reload="${NOVEL_DOWNLOAD_SKIP_RELOAD:-0}"
 work_dir=""
 nginx_backup=""
 helper_backup=""
+hot_helper_backup=""
 nginx_switched=false
 helper_switched=false
+hot_helper_switched=false
 enabled_created=false
 committed=false
 
@@ -68,6 +72,9 @@ rollback() {
   if [[ "$helper_switched" == true ]]; then
     restore_file "$helper_backup" "$helper_target" 0755
   fi
+  if [[ "$hot_helper_switched" == true ]]; then
+    restore_file "$hot_helper_backup" "$hot_helper_target" 0755
+  fi
   if [[ "$nginx_switched" == true ]]; then
     restore_file "$nginx_backup" "$nginx_target" 0644
   fi
@@ -101,7 +108,7 @@ trap 'exit 143' TERM
 
 [[ $EUID -eq 0 ]] || fail "root_required"
 [[ "$acknowledged_server" == "$expected_server" ]] || fail "server_acknowledgement_required"
-for target in "$helper_target" "$nginx_target" "$release_dir"; do
+for target in "$helper_target" "$hot_helper_target" "$nginx_target" "$release_dir"; do
   [[ "$target" == /* && "$target" != *$'\n'* && "$target" != *$'\r'* ]] \
     || fail "target_path_invalid"
 done
@@ -110,12 +117,18 @@ if [[ -n "$nginx_enabled" ]]; then
     || fail "target_path_invalid"
 fi
 [[ -f "$helper_source" && ! -L "$helper_source" ]] || fail "helper_source_invalid"
+[[ -f "$hot_helper_source" && ! -L "$hot_helper_source" ]] || fail "hot_helper_source_invalid"
 [[ -f "$nginx_source" && ! -L "$nginx_source" ]] || fail "nginx_source_invalid"
 bash -n "$helper_source" || fail "helper_syntax_invalid"
+bash -n "$hot_helper_source" || fail "hot_helper_syntax_invalid"
 grep -Fq 'part_count=5' "$helper_source" \
   || fail "helper_modao_parts_missing"
 grep -Fq 'location = /games/modao/manifest.json {' "$nginx_source" \
   || fail "nginx_modao_manifest_route_missing"
+grep -Fq '/games/modao/hot/(version|project)\.manifest' "$nginx_source" \
+  || fail "nginx_modao_hot_manifest_route_missing"
+grep -Fq 'location ^~ /games/modao/hot/releases/ {' "$nginx_source" \
+  || fail "nginx_modao_hot_asset_route_missing"
 grep -Fq '.part-00[0-4]\.apk$' "$nginx_source" \
   || fail "nginx_modao_part_route_missing"
 grep -Fq 'public, max-age=31536000, immutable, no-transform' "$nginx_source" \
@@ -132,15 +145,17 @@ apksigner_bin="$(resolve_command "$apksigner_command")" || fail "apksigner_missi
 "$nginx_bin" -t >/dev/null 2>&1 || fail "existing_nginx_config_invalid"
 
 helper_parent="$(dirname -- "$helper_target")"
+hot_helper_parent="$(dirname -- "$hot_helper_target")"
 nginx_parent="$(dirname -- "$nginx_target")"
-target_parents=("$helper_parent" "$nginx_parent")
+target_parents=("$helper_parent" "$hot_helper_parent" "$nginx_parent")
 if [[ -n "$nginx_enabled" ]]; then
   target_parents+=("$(dirname -- "$nginx_enabled")")
 fi
 for parent in "${target_parents[@]}"; do
   [[ -d "$parent" && ! -L "$parent" ]] || fail "target_directory_invalid"
 done
-[[ ! -L "$helper_target" && ! -L "$nginx_target" ]] || fail "target_symlink_invalid"
+[[ ! -L "$helper_target" && ! -L "$hot_helper_target" && ! -L "$nginx_target" ]] \
+  || fail "target_symlink_invalid"
 if [[ -n "$nginx_enabled" && -e "$nginx_enabled" ]]; then
   [[ -L "$nginx_enabled" ]] || fail "nginx_enabled_path_conflict"
   [[ "$(readlink -f -- "$nginx_enabled")" == "$(realpath -m -- "$nginx_target")" ]] \
@@ -150,8 +165,10 @@ fi
 work_dir="$(mktemp -d /tmp/novel-download-install.XXXXXX)"
 nginx_backup="$work_dir/nginx.previous"
 helper_backup="$work_dir/helper.previous"
+hot_helper_backup="$work_dir/hot-helper.previous"
 [[ ! -f "$nginx_target" ]] || cp -a -- "$nginx_target" "$nginx_backup"
 [[ ! -f "$helper_target" ]] || cp -a -- "$helper_target" "$helper_backup"
+[[ ! -f "$hot_helper_target" ]] || cp -a -- "$hot_helper_target" "$hot_helper_backup"
 
 nginx_next="${nginx_target}.next.$$"
 install -o root -g root -m 0644 -- "$nginx_source" "$nginx_next"
@@ -169,6 +186,10 @@ helper_next="${helper_target}.next.$$"
 install -o root -g root -m 0755 -- "$helper_source" "$helper_next"
 mv -Tf -- "$helper_next" "$helper_target"
 helper_switched=true
+hot_helper_next="${hot_helper_target}.next.$$"
+install -o root -g root -m 0755 -- "$hot_helper_source" "$hot_helper_next"
+mv -Tf -- "$hot_helper_next" "$hot_helper_target"
+hot_helper_switched=true
 install -d -m 0755 -o root -g root -- "$release_dir"
 
 if [[ "$skip_reload" != "1" ]]; then
@@ -178,5 +199,6 @@ committed=true
 printf 'download_install_status=ok\n'
 printf 'download_install_server=%s\n' "$expected_server"
 printf 'download_install_helper=%s\n' "$helper_target"
+printf 'download_install_hot_helper=%s\n' "$hot_helper_target"
 printf 'download_install_nginx=%s\n' "$nginx_target"
 printf 'download_install_release_dir=%s\n' "$release_dir"

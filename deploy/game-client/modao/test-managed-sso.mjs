@@ -122,7 +122,7 @@ assert.equal(
   decodedLiteralAfter(
     'static sakuraPaymentFailure(e){_.logE("Sakura payment failed",e),S.showTip1(null,',
   ),
-  "\u6a31\u82b1\u5e01\u652f\u4ed8\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5",
+  "\u652f\u4ed8\u670d\u52a1\u6682\u4e0d\u53ef\u7528\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5",
 );
 
 console.log("managed Sakura authorization bundle tests passed");

@@ -10,7 +10,9 @@ const ticket = "T".repeat(48);
 const requestId = "R".repeat(32);
 const exchangeUrl = "https://novel.kxhub.xyz/sakura/sso/exchange";
 const gameToken = "G".repeat(64);
-const serverToken = "S".repeat(32);
+// Production's legacy server-list token is intentionally shorter than an SSO
+// session token; both values have separate contracts.
+const serverToken = "legacy-1";
 
 function makeXhrClass(plan, requests) {
   return class FakeXMLHttpRequest {
@@ -225,6 +227,7 @@ let persistedSession;
   assert.equal(saved.pendingRequest, undefined);
   assert.equal(saved.session.accountId, "42");
   assert.equal(saved.session.token, gameToken);
+  assert.equal(saved.session.serverInfo.data.token, serverToken);
   persistedSession = state.stored;
 }
 

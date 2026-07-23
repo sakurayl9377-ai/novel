@@ -79,6 +79,11 @@
     return /^[A-Za-z0-9._:-]{16,256}$/.test(result) ? result : "";
   }
 
+  function serverToken(value) {
+    var result = text(value);
+    return /^[A-Za-z0-9._:-]{1,256}$/.test(result) ? result : "";
+  }
+
   function paymentLaunchUrl(value) {
     var result = text(value);
     if (!/^sakura-novel:\/\/modao-payment\/pay\?/i.test(result)) return "";
@@ -102,7 +107,7 @@
     var sid = text(data.sid);
     var name = text(data.name);
     var ip = text(data.ip);
-    var serverToken = token(data.token);
+    var normalizedServerToken = serverToken(data.token);
     var port = Number(data.port);
     if (
       !/^\d{1,4}$/.test(sid) ||
@@ -111,7 +116,7 @@
       !Number.isInteger(port) ||
       port < 1 ||
       port > 65535 ||
-      !serverToken
+      !normalizedServerToken
     ) {
       return null;
     }
@@ -123,7 +128,7 @@
         name: name,
         ip: ip,
         port: port,
-        token: serverToken,
+        token: normalizedServerToken,
       },
     };
   }

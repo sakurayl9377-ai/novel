@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 helper="$script_dir/deploy-modao-game-release.sh"
+hot_helper="$script_dir/deploy-modao-hot-update.sh"
 installer="$script_dir/install-modao-release-channel.sh"
 approved_signer="c345303f1b945e5b49100d38edc2abf85cd0513f0f240437e03a7face9e2f37c"
 token="Audit$$${RANDOM}"
@@ -12,17 +13,27 @@ rejected_dir="/tmp/novel-modao-rejected-target-${token}"
 lock_file="/tmp/novel-modao-release-${token}.lock"
 mock_root="/tmp/novel-modao-mocks-${token}"
 install_root="/tmp/novel-modao-install-${token}"
+hot_staging_dir="/tmp/novel-modao-hot-update-117-${token}"
+hot_release_dir="/tmp/novel-modao-hot-update-target-${token}"
+hot_lock_file="/tmp/novel-modao-hot-update-${token}.lock"
 
 cleanup() {
-  case "$staging_dir:$release_dir:$rejected_dir:$mock_root:$install_root" in
-    /tmp/novel-modao-release-*:/tmp/novel-modao-release-target-*:/tmp/novel-modao-rejected-target-*:/tmp/novel-modao-mocks-*:/tmp/novel-modao-install-*)
-      rm -rf -- "$staging_dir" "$release_dir" "$rejected_dir" "$mock_root" "$install_root"
+  case "$staging_dir:$release_dir:$rejected_dir:$mock_root:$install_root:$hot_staging_dir:$hot_release_dir" in
+    /tmp/novel-modao-release-*:/tmp/novel-modao-release-target-*:/tmp/novel-modao-rejected-target-*:/tmp/novel-modao-mocks-*:/tmp/novel-modao-install-*:/tmp/novel-modao-hot-update-*:/tmp/novel-modao-hot-update-target-*)
+      rm -rf -- \
+        "$staging_dir" \
+        "$release_dir" \
+        "$rejected_dir" \
+        "$mock_root" \
+        "$install_root" \
+        "$hot_staging_dir" \
+        "$hot_release_dir"
       ;;
     *)
       printf 'Unsafe test cleanup paths\n' >&2
       ;;
   esac
-  rm -f -- "$lock_file"
+  rm -f -- "$lock_file" "$hot_lock_file"
 }
 
 trap cleanup EXIT
@@ -208,11 +219,13 @@ mkdir -p \
   "$install_root/conf.d" \
   "$install_root/releases"
 installed_helper="$install_root/sbin/novel-modao-game-release-deploy"
+installed_hot_helper="$install_root/sbin/novel-modao-hot-update-deploy"
 installed_nginx="$install_root/conf.d/novel-download.conf"
 
 installer_env=(
   env
   "MODAO_RELEASE_HELPER_TARGET=$installed_helper"
+  "MODAO_HOT_UPDATE_HELPER_TARGET=$installed_hot_helper"
   "NOVEL_DOWNLOAD_NGINX_TARGET=$installed_nginx"
   "MODAO_GAME_RELEASE_DIR=$install_root/releases/modao"
   "NOVEL_DOWNLOAD_NGINX_BIN=$mock_root/nginx"
@@ -242,9 +255,84 @@ fi
 "${installer_env[@]}" bash "$installer" 47.88.26.14 >/dev/null
 "${installer_env[@]}" bash "$installer" 47.88.26.14 >/dev/null
 [[ -x "$installed_helper" ]]
+[[ -x "$installed_hot_helper" ]]
 [[ -f "$installed_nginx" ]]
 [[ ! -L "$installed_nginx" ]]
 [[ ! -e "$install_root/sites-enabled/novel-download.conf" ]]
 [[ -d "$install_root/releases/modao" ]]
+
+mkdir -m 0700 -p -- "$hot_staging_dir/releases/117/assets/main"
+python3 - "$hot_staging_dir" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+staging = pathlib.Path(sys.argv[1])
+payload = b"managed hot update fixture\n"
+asset_path = staging / "releases" / "117" / "assets" / "main" / "index.js"
+asset_path.write_bytes(payload)
+base_url = "https://novel.kxhub.xyz/games/modao/hot/"
+shared = {
+    "version": "117",
+    "packageUrl": f"{base_url}releases/117/",
+    "remoteVersionUrl": f"{base_url}version.manifest",
+    "remoteManifestUrl": f"{base_url}project.manifest",
+}
+project = {
+    **shared,
+    "assets": {
+        "assets/main/index.js": {
+            "size": len(payload),
+            "md5": hashlib.md5(payload).hexdigest(),
+            "compressed": False,
+        }
+    },
+    "searchPaths": [],
+}
+(staging / "version.manifest").write_text(
+    json.dumps(shared, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+(staging / "project.manifest").write_text(
+    json.dumps(project, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+(staging / "release-metadata.json").write_text(
+    json.dumps(
+        {"version": "117", "assetCount": 1, "totalBytes": len(payload)},
+        separators=(",", ":"),
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+find "$hot_staging_dir" -type d -exec chmod 0700 {} +
+find "$hot_staging_dir" -type f -exec chmod 0600 {} +
+
+MODAO_HOT_UPDATE_DIR="$hot_release_dir" \
+MODAO_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+  bash "$hot_helper" "$hot_staging_dir" >/dev/null
+MODAO_HOT_UPDATE_DIR="$hot_release_dir" \
+MODAO_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+  bash "$hot_helper" "$hot_staging_dir" >/dev/null
+cmp -- \
+  "$hot_staging_dir/releases/117/assets/main/index.js" \
+  "$hot_release_dir/releases/117/assets/main/index.js"
+cmp -- "$hot_staging_dir/project.manifest" "$hot_release_dir/project.manifest"
+cmp -- "$hot_staging_dir/version.manifest" "$hot_release_dir/version.manifest"
+[[ -f "$hot_release_dir/history/project-117.manifest" ]]
+[[ -f "$hot_release_dir/history/version-117.manifest" ]]
+[[ "$(stat -c '%a' -- "$hot_release_dir/releases/117")" == "755" ]]
+
+chmod 0777 "$hot_staging_dir"
+if MODAO_HOT_UPDATE_DIR="$hot_release_dir" \
+  MODAO_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+    bash "$hot_helper" "$hot_staging_dir" >"$mock_root/hot-permissions-rejected.out"; then
+  printf 'Hot-update helper accepted a world-writable stage\n' >&2
+  exit 1
+fi
+grep -Fq '"error":"staging_permissions_invalid"' \
+  "$mock_root/hot-permissions-rejected.out"
 
 printf 'Modao download release channel tests passed.\n'

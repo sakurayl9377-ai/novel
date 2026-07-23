@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import path from "node:path";
 
-import { bypassDeadLegacyHotUpdate } from "./patch-hot-update.mjs";
+import { enableManagedHotUpdate } from "./patch-hot-update.mjs";
 import { patchManagedSsoFlow } from "./patch-managed-sso.mjs";
 import { patchSakuraPaymentUi } from "./patch-sakura-payment-ui.mjs";
+import { prepareManagedHotUpdateAssets } from "./prepare-hot-update.mjs";
 
 const args = process.argv.slice(2);
 const skipReconnect = args.includes("--skip-reconnect");
@@ -195,7 +197,7 @@ replaceOnce(
 
 source = patchManagedSsoFlow(source);
 source = patchSakuraPaymentUi(source);
-source = bypassDeadLegacyHotUpdate(source);
+source = enableManagedHotUpdate(source);
 
 if (source.includes("root.SakuraBridge")) {
   throw new Error("Sakura bridge is already present in the target");
@@ -203,3 +205,4 @@ if (source.includes("root.SakuraBridge")) {
 source += "\n;\n" + bridgeSource + "\n";
 
 fs.writeFileSync(target, source, "utf8");
+prepareManagedHotUpdateAssets(path.resolve(path.dirname(target), "..", ".."));
