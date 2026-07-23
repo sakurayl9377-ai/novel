@@ -45,6 +45,10 @@ grep -Fq \
   printf 'Release helper must use the non-symlink /run/lock default\n' >&2
   exit 1
 }
+grep -Fq 'chattr +i -- "$current_manifest"' "$helper" || {
+  printf 'Production manifest must be protected against out-of-band rollback\n' >&2
+  exit 1
+}
 
 real_nginx_bin="${MODAO_REAL_NGINX_BIN:-$(command -v nginx || true)}"
 [[ -n "$real_nginx_bin" && -x "$real_nginx_bin" ]] || {

@@ -14,8 +14,22 @@ maximum_part_bytes=500000000
 approved_signing_certificate_sha256="c345303f1b945e5b49100d38edc2abf85cd0513f0f240437e03a7face9e2f37c"
 apksigner_bin="${MODAO_APKSIGNER_BIN:-apksigner}"
 temporary_paths=()
+current_manifest=""
+manifest_needs_reprotect=false
+
+reprotect_current_manifest() {
+  if [[ "$manifest_needs_reprotect" == true && -n "$current_manifest" \
+    && -f "$current_manifest" && ! -L "$current_manifest" ]]; then
+    if chattr +i -- "$current_manifest" >/dev/null 2>&1; then
+      manifest_needs_reprotect=false
+    else
+      printf '{"ok":false,"error":"manifest_reprotect_failed"}\n' >&2
+    fi
+  fi
+}
 
 cleanup() {
+  reprotect_current_manifest
   if (( ${#temporary_paths[@]} > 0 )); then
     rm -f -- "${temporary_paths[@]}"
   fi
@@ -434,7 +448,24 @@ fi
 
 # Switch the small manifest last. A client can never observe a manifest before
 # the immutable APK it references is fully present and checksum-verified.
-install_atomic "$manifest_path" "$current_manifest"
+if [[ "$release_dir" == "$production_dir" ]]; then
+  command -v chattr >/dev/null 2>&1 || fail "manifest_protection_unavailable"
+  command -v lsattr >/dev/null 2>&1 || fail "manifest_protection_unavailable"
+  if [[ -e "$current_manifest" ]]; then
+    current_attributes="$(lsattr -d -- "$current_manifest" 2>/dev/null | awk '{print $1}')" \
+      || fail "manifest_protection_check_failed"
+    if [[ "$current_attributes" == *i* ]]; then
+      chattr -i -- "$current_manifest" || fail "manifest_unprotect_failed"
+      manifest_needs_reprotect=true
+    fi
+  fi
+  manifest_needs_reprotect=true
+  install_atomic "$manifest_path" "$current_manifest"
+  chattr +i -- "$current_manifest" || fail "manifest_protect_failed"
+  manifest_needs_reprotect=false
+else
+  install_atomic "$manifest_path" "$current_manifest"
+fi
 
 printf '{"ok":true,"data":{"versionName":"%s","versionCode":%s,"apk":"%s","sha256":"%s","signingCertificateSha256":"%s","bytes":%s,"parts":%s,"path":"/games/modao"}}\n' \
   "$version_name" "$version_code" "$apk_name" "$expected_sha256" \
