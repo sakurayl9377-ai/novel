@@ -14,16 +14,19 @@ void main() {
   });
 
   test(
-    'merges every same-chapter page and ignores legacy first-page cache',
+    'normalizes each page and trims only adjacent pagination overlap',
     () async {
       final firstPage = Uri.parse(
-        'https://reader.example/comic/chapter/demo/0_7.html?case=two-pages',
+        'https://reader.example/comic/chapter/demo/0_7.html?case=three-pages',
       );
       final secondPage = Uri.parse(
         'https://reader.example/comic/chapter/demo/0_7_2.html',
       );
+      final thirdPage = Uri.parse(
+        'https://reader.example/comic/chapter/demo/0_7_3.html',
+      );
       final legacyCacheKey =
-          'manga_chapter_images_cache_v2_${base64Url.encode(utf8.encode('$firstPage'))}';
+          'manga_chapter_images_cache_v3_${base64Url.encode(utf8.encode('$firstPage'))}';
       SharedPreferences.setMockInitialValues({
         legacyCacheKey: jsonEncode({
           'cachedAt': DateTime.now().millisecondsSinceEpoch,
@@ -37,17 +40,48 @@ void main() {
             '''
         <html><body>
           <img src="https://static-tw.bzmgcn.com/scomic/demo/001.jpg">
-          <amp-img data-src="https://static-tw.bzmgcn.com/scomic/demo/002.jpg"></amp-img>
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/002.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/003.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/004.jpg">
+          <script>
+            ["https://static-tw.baozimh.com/scomic/demo/001.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/002.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/003.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/004.jpg?t=retry"]
+          </script>
           <a rel="next" href="$firstPage">Next page</a>
           <a class="pagination-next" href="javascript:;" data-url="/comic/chapter/demo/0_7_2.html">&#19979;&#19968;&#39029;</a>
           <a rel="next" href="/comic/chapter/demo/0_8.html">Next chapter</a>
         </body></html>
       ''',
-        '$secondPage':
-            '''
+        '$secondPage': '''
         <html><body>
           <img src="https://static-tw.bzmgcn.com/scomic/demo/003.jpg">
           <img src="https://static-tw.bzmgcn.com/scomic/demo/004.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/005.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/006.jpg">
+          <script>
+            ["https://static-tw.baozimh.com/scomic/demo/003.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/004.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/005.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/006.jpg?t=retry"]
+          </script>
+          <a id="next-chapter" href="/comic/chapter/demo/0_7_3.html">Next page</a>
+        </body></html>
+      ''',
+        '$thirdPage':
+            '''
+        <html><body>
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/005.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/006.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/007.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/008.jpg">
+          <script>
+            ["https://static-tw.baozimh.com/scomic/demo/005.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/006.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/007.jpg?t=retry",
+             "https://static-tw.baozimh.com/scomic/demo/008.jpg?t=retry"]
+          </script>
           <a rel="next" href="$firstPage">Next page</a>
         </body></html>
       ''',
@@ -58,15 +92,101 @@ void main() {
         MangaChapter(title: 'Chapter 7', url: '$firstPage'),
       );
 
-      expect(requests, [firstPage, secondPage]);
+      expect(requests, [firstPage, secondPage, thirdPage]);
       expect(images, [
         'https://static-tw.bzmgcn.com/scomic/demo/001.jpg',
         'https://static-tw.bzmgcn.com/scomic/demo/002.jpg',
         'https://static-tw.bzmgcn.com/scomic/demo/003.jpg',
         'https://static-tw.bzmgcn.com/scomic/demo/004.jpg',
+        'https://static-tw.bzmgcn.com/scomic/demo/005.jpg',
+        'https://static-tw.bzmgcn.com/scomic/demo/006.jpg',
+        'https://static-tw.bzmgcn.com/scomic/demo/007.jpg',
+        'https://static-tw.bzmgcn.com/scomic/demo/008.jpg',
       ]);
     },
   );
+
+  test('keeps one copy for a normal single-page chapter', () async {
+    final page = Uri.parse(
+      'https://reader.example/comic/chapter/demo/0_8.html',
+    );
+    final requests = <Uri>[];
+    final service = _serviceWithFixtures({
+      '$page': '''
+        <html><body>
+          <amp-img src="https://static-tw.bzmgcn.com/scomic/demo/008.jpg"></amp-img>
+          <button on="tap:AMP.setState({src: 'https://static-tw.baozimh.com/scomic/demo/008.jpg?t=' + random()})">Retry</button>
+        </body></html>
+      ''',
+    }, requests);
+
+    final images = await service.fetchChapterImages(
+      MangaChapter(title: 'Chapter 8', url: '$page'),
+    );
+
+    expect(requests, [page]);
+    expect(images, ['https://static-tw.bzmgcn.com/scomic/demo/008.jpg']);
+  });
+
+  test('collapses three DOM passes for a normal single-page chapter', () async {
+    final page = Uri.parse(
+      'https://reader.example/comic/chapter/demo/0_9.html',
+    );
+    final requests = <Uri>[];
+    final service = _serviceWithFixtures({
+      '$page': '''
+        <html><body>
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/009-1.jpg">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/009-2.jpg">
+          <amp-img src="https://static-tw.bzmgcn.com/scomic/demo/009-1.jpg?t=retry-1"></amp-img>
+          <amp-img src="https://static-tw.bzmgcn.com/scomic/demo/009-2.jpg?t=retry-1"></amp-img>
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/009-1.jpg?t=retry-2">
+          <img src="https://static-tw.bzmgcn.com/scomic/demo/009-2.jpg?t=retry-2">
+        </body></html>
+      ''',
+    }, requests);
+
+    final images = await service.fetchChapterImages(
+      MangaChapter(title: 'Chapter 9', url: '$page'),
+    );
+
+    expect(requests, [page]);
+    expect(images, [
+      'https://static-tw.bzmgcn.com/scomic/demo/009-1.jpg',
+      'https://static-tw.bzmgcn.com/scomic/demo/009-2.jpg',
+    ]);
+  });
+
+  test('stops when a false next page replays the same chapter', () async {
+    final firstPage = Uri.parse(
+      'https://reader.example/comic/chapter/demo/0_10.html',
+    );
+    final falseSecondPage = Uri.parse(
+      'https://reader.example/comic/chapter/demo/0_10.html?page=2',
+    );
+    final requests = <Uri>[];
+    final body = '''
+      <html><body>
+        <img src="https://static-tw.bzmgcn.com/scomic/demo/010-1.jpg">
+        <img src="https://static-tw.bzmgcn.com/scomic/demo/010-2.jpg">
+        <a rel="next" href="?page=2">Next page</a>
+      </body></html>
+    ''';
+    final service = _serviceWithFixtures({
+      '$firstPage': body,
+      '$falseSecondPage': body,
+    }, requests);
+
+    final images = await service.fetchChapterImages(
+      MangaChapter(title: 'Chapter 10', url: '$firstPage'),
+    );
+
+    expect(requests, [firstPage, falseSecondPage]);
+    expect(images, [
+      'https://static-tw.bzmgcn.com/scomic/demo/010-1.jpg',
+      'https://static-tw.bzmgcn.com/scomic/demo/010-2.jpg',
+    ]);
+  });
 
   test('does not follow a next link that belongs to another chapter', () async {
     final firstPage = Uri.parse(
@@ -131,7 +251,7 @@ void main() {
 
     final prefs = await SharedPreferences.getInstance();
     final currentCacheKey =
-        'manga_chapter_images_cache_v3_${base64Url.encode(utf8.encode('$firstPage'))}';
+        'manga_chapter_images_cache_v4_${base64Url.encode(utf8.encode('$firstPage'))}';
     expect(requests, [firstPage, secondPage]);
     expect(prefs.containsKey(currentCacheKey), isFalse);
   });
@@ -184,7 +304,7 @@ void main() {
 
     final prefs = await SharedPreferences.getInstance();
     final currentCacheKey =
-        'manga_chapter_images_cache_v3_${base64Url.encode(utf8.encode('$firstPage'))}';
+        'manga_chapter_images_cache_v4_${base64Url.encode(utf8.encode('$firstPage'))}';
     expect(requests, [firstPage, secondPage]);
     expect(prefs.containsKey(currentCacheKey), isFalse);
   });
@@ -223,7 +343,7 @@ void main() {
 
     final prefs = await SharedPreferences.getInstance();
     final currentCacheKey =
-        'manga_chapter_images_cache_v3_${base64Url.encode(utf8.encode('$firstPage'))}';
+        'manga_chapter_images_cache_v4_${base64Url.encode(utf8.encode('$firstPage'))}';
     expect(requests, [firstPage, secondPage]);
     expect(prefs.containsKey(currentCacheKey), isFalse);
   });

@@ -76,24 +76,82 @@ Map<String, String> mangaImageHeaders({
 
 List<String> normalizeMangaChapterImageSequence(Iterable<String> images) {
   final urls = <String>[];
+  final sourceUrls = <String>[];
   for (final rawUrl in images) {
     final url = normalizeMangaImageUrl(rawUrl);
     if (url.isEmpty) continue;
     urls.add(url);
+    sourceUrls.add(rawUrl.trim());
   }
 
-  if (urls.length < 6 || urls.length.isOdd) return urls;
-  final half = urls.length ~/ 2;
-  for (var index = 0; index < half; index++) {
-    if (_mangaImageIdentity(urls[index]) !=
-        _mangaImageIdentity(urls[index + half])) {
-      return urls;
+  if (urls.length < 2) return urls;
+
+  for (final repeatCount in const [3, 2]) {
+    if (repeatCount > urls.length) continue;
+    if (urls.length % repeatCount != 0) continue;
+    final blockLength = urls.length ~/ repeatCount;
+    var matches = true;
+    for (var index = blockLength; index < urls.length; index++) {
+      if (mangaImageIdentity(urls[index]) !=
+          mangaImageIdentity(urls[index % blockLength])) {
+        matches = false;
+        break;
+      }
     }
+    if (!matches) continue;
+
+    var everyPassUsesAlternateRepresentations = true;
+    for (var pass = 1; pass < repeatCount; pass++) {
+      for (var index = 0; index < blockLength; index++) {
+        if (sourceUrls[(pass * blockLength) + index] == sourceUrls[index]) {
+          everyPassUsesAlternateRepresentations = false;
+          break;
+        }
+      }
+      if (!everyPassUsesAlternateRepresentations) break;
+    }
+    if (!everyPassUsesAlternateRepresentations) continue;
+    return urls.sublist(0, blockLength);
   }
-  return urls.sublist(0, half);
+  return urls;
 }
 
-String _mangaImageIdentity(String url) {
+int appendMangaChapterImagePage(
+  List<String> chapterImages,
+  Iterable<String> rawPageImages,
+) {
+  final pageImages = normalizeMangaChapterImageSequence(rawPageImages);
+  if (pageImages.isEmpty) return 0;
+  if (chapterImages.isEmpty) {
+    chapterImages.addAll(pageImages);
+    return pageImages.length;
+  }
+
+  var overlap = chapterImages.length < pageImages.length
+      ? chapterImages.length
+      : pageImages.length;
+  while (overlap > 0) {
+    var matches = true;
+    final chapterStart = chapterImages.length - overlap;
+    for (var index = 0; index < overlap; index++) {
+      if (mangaImageIdentity(chapterImages[chapterStart + index]) !=
+          mangaImageIdentity(pageImages[index])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) break;
+    overlap -= 1;
+  }
+
+  final trimmedOverlap = overlap == pageImages.length || overlap >= 2
+      ? overlap
+      : 0;
+  chapterImages.addAll(pageImages.skip(trimmedOverlap));
+  return pageImages.length - trimmedOverlap;
+}
+
+String mangaImageIdentity(String url) {
   final uri = Uri.tryParse(url);
   if (uri == null) return url;
   return Uri.decodeComponent(uri.path).toLowerCase();

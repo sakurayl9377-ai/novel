@@ -39,7 +39,7 @@ class MangaService {
   static const String _homeHtmlCacheKey = 'manga_home_html_cache_v1';
   static const String _homeHtmlCacheTimeKey = 'manga_home_html_cache_time_v1';
   static const String _chapterImagesCachePrefix =
-      'manga_chapter_images_cache_v3_';
+      'manga_chapter_images_cache_v4_';
   static const Duration _homeCacheTtl = Duration(hours: 4);
   static const Duration _chapterImagesCacheTtl = Duration(days: 7);
   static const int _maxChapterImageCacheEntries = 80;
@@ -322,11 +322,12 @@ class MangaService {
       chapterIdentity = chapterIdentity.merge(responseIdentity);
       final baseUri = _responseSiteUri(response);
       final document = html_parser.parse(_decodeBody(response));
-      final pageImages = _BaoziDetailParser(
+      final rawPageImages = _BaoziDetailParser(
         baseUri,
       ).parseDirectImageUrls(document);
-      if (pageImages.isEmpty) throw Exception('chapter images not found');
-      images.addAll(pageImages);
+      if (rawPageImages.isEmpty) throw Exception('chapter images not found');
+      final addedImages = appendMangaChapterImagePage(images, rawPageImages);
+      if (addedImages == 0) return _completeChapterImages(uri, images);
 
       Uri? nextUri;
       for (final href in _nextChapterPageHrefs(document)) {
@@ -1031,6 +1032,7 @@ class _BaoziDetailParser {
       urls.add(url);
     }
 
+    final seenIdentities = urls.map(mangaImageIdentity).toSet();
     final html = document.outerHtml;
     final pattern = RegExp(
       r'''https?:\/\/[^'"<>\s]+?\.(?:jpg|jpeg|png|webp)(?:\?[^'"<>\s]*)?''',
@@ -1038,7 +1040,11 @@ class _BaoziDetailParser {
     );
     for (final match in pattern.allMatches(html)) {
       final url = _absoluteAssetUrl(match.group(0) ?? '');
-      if (!_looksLikePageImage(url) || !seen.add(url)) continue;
+      if (!_looksLikePageImage(url) ||
+          !seen.add(url) ||
+          !seenIdentities.add(mangaImageIdentity(url))) {
+        continue;
+      }
       urls.add(url);
     }
     return urls;
