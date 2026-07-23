@@ -13,7 +13,7 @@ process.env.ADMIN_USERNAME = 'modao-test-admin';
 process.env.ADMIN_PASSWORD = 'modao-test-admin-password';
 process.env.MODAO_LAUNCH_URL = 'modao://launch';
 process.env.MODAO_SSO_SHARED_SECRET = 'modao-test-sso-secret';
-process.env.MODAO_SSO_TTL_SECONDS = '60';
+process.env.MODAO_SSO_TTL_SECONDS = '600';
 process.env.MODAO_PAYMENT_CATALOG_JSON = JSON.stringify({
   schemaVersion: 2,
   conversion: '10_SAKURA_COINS_EQUAL_1_CNY',
@@ -72,7 +72,7 @@ test('Modao SSO tickets are isolated, short-lived, and single-use', async () => 
     assert.equal(issued.statusCode, 200);
     assert.equal(issued.headers['cache-control'], 'no-store');
     const payload = issued.json();
-    assert.equal(payload.expiresIn, 60);
+    assert.equal(payload.expiresIn, 600);
     assert.ok(payload.ticket.length >= 40);
     assert.equal(
       new URL(payload.launchUrl).searchParams.get('ticket'),

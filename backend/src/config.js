@@ -96,9 +96,11 @@ export const config = {
   ),
   modaoLaunchUrl: env('MODAO_LAUNCH_URL'),
   modaoSsoSharedSecret: env('MODAO_SSO_SHARED_SECRET'),
+  // The native game can spend more than a minute loading packaged resources
+  // before its JavaScript bridge is ready to redeem the one-time ticket.
   modaoSsoTtlSeconds: Math.max(
-    1,
-    Math.min(60, Math.trunc(envNumber('MODAO_SSO_TTL_SECONDS', 60))),
+    60,
+    Math.min(900, Math.trunc(envNumber('MODAO_SSO_TTL_SECONDS', 600))),
   ),
   modaoPaymentCatalogFile: env('MODAO_PAYMENT_CATALOG_FILE'),
   modaoPaymentCatalogJson: env('MODAO_PAYMENT_CATALOG_JSON'),
