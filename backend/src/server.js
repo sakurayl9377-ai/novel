@@ -17,6 +17,7 @@ import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
 import { adminGrowthRuleRoutes } from './routes-admin-growth-rules.js';
+import { adminGameControlRoutes } from './routes-admin-game-control.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
 import { adminNotificationRoutes } from './routes-admin-notifications.js';
 import { adminRaceRoutes } from './routes-admin-race.js';
@@ -27,6 +28,7 @@ import { appReleaseUploadRoutes } from './routes-app-release-upload.js';
 import { authRoutes } from './routes-auth.js';
 import { contentRoutes } from './routes-content.js';
 import { gameRoutes } from './routes-game.js';
+import { gameCatalogRoutes } from './routes-game-catalog.js';
 import { growthRoutes } from './routes-growth.js';
 import { speechRoutes } from './routes-speech.js';
 import { telemetryRoutes } from './routes-telemetry.js';
@@ -107,6 +109,7 @@ export async function buildServer() {
     async (api) => {
       api.register(authRoutes);
       api.register(contentRoutes);
+      api.register(gameCatalogRoutes);
       api.register(gameRoutes);
       api.register(growthRoutes);
       api.register(speechRoutes);
@@ -117,6 +120,7 @@ export async function buildServer() {
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
       api.register(adminGrowthRuleRoutes);
+      api.register(adminGameControlRoutes);
       api.register(adminOperationsRoutes);
       api.register(adminNotificationRoutes);
       api.register(adminRaceRoutes);

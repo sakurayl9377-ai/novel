@@ -76,14 +76,18 @@ helper_target="/usr/local/sbin/novel-mihomo-control"
 updater_target="/usr/local/libexec/mihomo-update-subscription"
 deploy_script_target="/usr/local/sbin/novel-backend-deploy"
 app_release_target="/usr/local/sbin/novel-app-release-deploy"
+game_helper_target="/usr/local/sbin/novel-game-service-control"
 helper_backup="$work_dir/novel-mihomo-control.previous"
 updater_backup="$work_dir/mihomo-update-subscription.previous"
 deploy_script_backup="$work_dir/novel-backend-deploy.previous"
 app_release_backup="$work_dir/novel-app-release-deploy.previous"
+game_helper_backup="$work_dir/novel-game-service-control.previous"
 sudoers_path="/etc/sudoers.d/${app_user}-novel-mihomo-control"
 sudoers_backup="$work_dir/mihomo-sudoers.previous"
 app_release_sudoers_path="/etc/sudoers.d/${app_user}-novel-app-release"
 app_release_sudoers_backup="$work_dir/app-release-sudoers.previous"
+game_sudoers_path="/etc/sudoers.d/${app_user}-novel-game-service-control"
+game_sudoers_backup="$work_dir/game-service-sudoers.previous"
 sudoers_next="${sudoers_path}.next.$$"
 helper_next="$(dirname "$helper_target")/.novel-mihomo-control.next.$$"
 updater_next="$(dirname "$updater_target")/.mihomo-update-subscription.next.$$"
@@ -92,10 +96,12 @@ app_release_next="$(dirname "$app_release_target")/.novel-app-release-deploy.nex
 sudoers_restore="${sudoers_path}.restore.$$"
 app_release_sudoers_next="${app_release_sudoers_path}.next.$$"
 app_release_sudoers_restore="${app_release_sudoers_path}.restore.$$"
+game_sudoers_restore="${game_sudoers_path}.restore.$$"
 helper_restore="$(dirname "$helper_target")/.novel-mihomo-control.restore.$$"
 updater_restore="$(dirname "$updater_target")/.mihomo-update-subscription.restore.$$"
 deploy_script_restore="$(dirname "$deploy_script_target")/.novel-backend-deploy.restore.$$"
 app_release_restore="$(dirname "$app_release_target")/.novel-app-release-deploy.restore.$$"
+game_helper_restore="$(dirname "$game_helper_target")/.novel-game-service-control.restore.$$"
 switched=false
 tools_installed=false
 committed=false
@@ -114,10 +120,12 @@ cleanup() {
     "$sudoers_restore" \
     "$app_release_sudoers_next" \
     "$app_release_sudoers_restore" \
+    "$game_sudoers_restore" \
     "$helper_restore" \
     "$updater_restore" \
     "$deploy_script_restore" \
-    "$app_release_restore"
+    "$app_release_restore" \
+    "$game_helper_restore"
 }
 
 remove_retired_video_releases() {
@@ -200,6 +208,21 @@ restore_tools() {
   else
     rm -f "$app_release_sudoers_path" || restore_status=1
   fi
+  if [[ -f "$game_helper_backup" ]]; then
+    install -o root -g root -m 0755 "$game_helper_backup" "$game_helper_restore" \
+      && mv -Tf "$game_helper_restore" "$game_helper_target" \
+      || restore_status=1
+  else
+    rm -f "$game_helper_target" || restore_status=1
+  fi
+  if [[ -f "$game_sudoers_backup" ]]; then
+    install -o root -g root -m 0440 "$game_sudoers_backup" "$game_sudoers_restore" \
+      && visudo -cf "$game_sudoers_restore" >/dev/null \
+      && mv -Tf "$game_sudoers_restore" "$game_sudoers_path" \
+      || restore_status=1
+  else
+    rm -f "$game_sudoers_path" || restore_status=1
+  fi
   return "$restore_status"
 }
 
@@ -263,9 +286,11 @@ sudo -u "$app_user" "${runtime_env[@]}" "$npm_bin" run security --prefix "$stage
 python_cache="$work_dir/python-cache"
 PYTHONPYCACHEPREFIX="$python_cache" python3 -m py_compile "$staged_dir"/scripts/*.py
 PYTHONPYCACHEPREFIX="$python_cache" python3 "$staged_dir/scripts/test_mihomo_subscription_update.py"
+PYTHONPYCACHEPREFIX="$python_cache" python3 "$staged_dir/scripts/test_game_service_control.py"
 /bin/bash -n \
   "$staged_dir/scripts/deploy-production.sh" \
   "$staged_dir/scripts/deploy-app-release.sh" \
+  "$staged_dir/scripts/install-game-service-control.sh" \
   "$staged_dir/scripts/bootstrap-production-deploy.sh" \
   "$staged_dir/scripts/migrate-production-layout.sh" \
   "$staged_dir/scripts/audit-production.sh" \
@@ -300,6 +325,9 @@ chown -R "$app_user:$app_user" "$new_release"
 [[ -f "$new_release/scripts/mihomo-subscription-update.py" ]] || fail "mihomo_updater_missing"
 [[ -f "$new_release/scripts/deploy-production.sh" ]] || fail "deploy_script_missing"
 [[ -f "$new_release/scripts/deploy-app-release.sh" ]] || fail "app_release_helper_missing"
+[[ -f "$new_release/scripts/game-service-control.py" ]] || fail "game_control_helper_missing"
+[[ -f "$new_release/scripts/install-game-service-control.sh" ]] \
+  || fail "game_control_installer_missing"
 [[ -f "$new_release/scripts/sanitize-retired-video-database.js" ]] || fail "database_sanitizer_missing"
 [[ -f "$helper_target" ]] && cp -a "$helper_target" "$helper_backup"
 [[ -f "$updater_target" ]] && cp -a "$updater_target" "$updater_backup"
@@ -307,6 +335,16 @@ chown -R "$app_user:$app_user" "$new_release"
 [[ -f "$app_release_target" ]] && cp -a "$app_release_target" "$app_release_backup"
 [[ -f "$sudoers_path" ]] && cp -a "$sudoers_path" "$sudoers_backup"
 [[ -f "$app_release_sudoers_path" ]] && cp -a "$app_release_sudoers_path" "$app_release_sudoers_backup"
+if [[ -e "$game_helper_target" || -L "$game_helper_target" ]]; then
+  [[ -f "$game_helper_target" && ! -L "$game_helper_target" ]] \
+    || fail "game_control_helper_target_invalid"
+  cp -a "$game_helper_target" "$game_helper_backup"
+fi
+if [[ -e "$game_sudoers_path" || -L "$game_sudoers_path" ]]; then
+  [[ -f "$game_sudoers_path" && ! -L "$game_sudoers_path" ]] \
+    || fail "game_control_sudoers_target_invalid"
+  cp -a "$game_sudoers_path" "$game_sudoers_backup"
+fi
 tools_installed=true
 install -d -m 0755 -o root -g root "$(dirname "$updater_target")"
 install -o root -g root -m 0755 "$new_release/scripts/mihomo-admin-control.py" "$helper_next"
@@ -327,6 +365,11 @@ mv -Tf "$deploy_script_next" "$deploy_script_target"
 mv -Tf "$sudoers_next" "$sudoers_path"
 mv -Tf "$app_release_next" "$app_release_target"
 mv -Tf "$app_release_sudoers_next" "$app_release_sudoers_path"
+NOVEL_BACKEND_USER="$app_user" \
+  NOVEL_GAME_CONTROL_SOURCE="$new_release/scripts/game-service-control.py" \
+  NOVEL_GAME_CONTROL_TARGET="$game_helper_target" \
+  NOVEL_GAME_CONTROL_SUDOERS="$game_sudoers_path" \
+  /bin/bash "$new_release/scripts/install-game-service-control.sh"
 
 rm -f "${app_link}.next"
 ln -s "$new_release" "${app_link}.next"

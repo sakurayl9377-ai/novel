@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:novel_app/services/modao_game_service.dart';
+import 'package:novel_app/services/modao_parallel_downloader.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -177,31 +179,52 @@ void main() {
     'passes static parts and 2 GiB size to Android without narrowing',
     () async {
       const channel = MethodChannel('test/modao-download-parts');
+      final manifest = ModaoGameManifest.fromJson(
+        manifestJson(parts: partsJson()),
+      );
       MethodCall? startCall;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
+            if (call.method == 'getDownloadState') {
+              return {
+                'status': 'none',
+                'downloadedBytes': 0,
+                'totalBytes': 0,
+                'localPath': '',
+                'reason': '',
+              };
+            }
             startCall = call;
             return {
-              'status': 'queued',
-              'downloadedBytes': 0,
+              'artifactKey': manifest.artifactKey,
+              'releaseKey': 'release-1',
+              'finalPath': r'C:\games\modao-116-aaaaaaaaaaaa.apk',
               'totalBytes': 2147483648,
-              'localPath': r'C:\games\modao.apk',
-              'reason': '',
+              'transport': 'app_http',
+              'parts': [
+                for (final part in manifest.parts)
+                  {
+                    'index': part.index,
+                    'path': 'C:\\games\\${part.fileName}',
+                    'sizeBytes': part.sizeBytes,
+                    'sha256': part.sha256,
+                  },
+              ],
             };
           });
       addTearDown(() {
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(channel, null);
       });
-      final service = ModaoGameService(platformChannel: channel);
-      final manifest = ModaoGameManifest.fromJson(
-        manifestJson(parts: partsJson()),
+      final service = ModaoGameService(
+        platformChannel: channel,
+        parallelDownloader: _NoopModaoParallelDownloader(),
       );
 
       final state = await service.startDownload(manifest, allowMetered: true);
 
       expect(state.totalBytes, 2147483648);
-      expect(startCall?.method, 'startDownload');
+      expect(startCall?.method, 'prepareAppDownload');
       final arguments = startCall!.arguments as Map;
       expect(arguments['sizeBytes'], 2147483648);
       expect(arguments['sha256'], sha256);
@@ -209,6 +232,102 @@ void main() {
       final sentParts = arguments['parts'] as List;
       expect(sentParts, hasLength(5));
       expect((sentParts.last as Map)['sizeBytes'], greaterThan(400000000));
+    },
+  );
+
+  test(
+    'pauses an unmetered download on cellular and resumes it on Wi-Fi',
+    () async {
+      const channel = MethodChannel('test/modao-network-policy');
+      final manifest = ModaoGameManifest.fromJson(
+        manifestJson(parts: partsJson()),
+      );
+      final downloader = _PolicyModaoParallelDownloader();
+      var prepared = false;
+      var metered = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            switch (call.method) {
+              case 'getDownloadState':
+                if (!prepared) {
+                  return {
+                    'status': 'none',
+                    'downloadedBytes': 0,
+                    'totalBytes': 0,
+                    'localPath': '',
+                    'reason': '',
+                  };
+                }
+                return {
+                  'status': 'failed',
+                  'downloadedBytes': 16,
+                  'totalBytes': manifest.sizeBytes,
+                  'localPath': r'C:\games\modao-116-aaaaaaaaaaaa.apk',
+                  'reason': 'interrupted',
+                  'segmented': true,
+                  'partCount': manifest.parts.length,
+                  'retainedBytes': 16,
+                  'transport': 'app_http',
+                  'artifactKey': manifest.artifactKey,
+                  'releaseKey': 'policy-release',
+                };
+              case 'prepareAppDownload':
+                prepared = true;
+                return {
+                  'artifactKey': manifest.artifactKey,
+                  'releaseKey': 'policy-release',
+                  'finalPath': r'C:\games\modao-116-aaaaaaaaaaaa.apk',
+                  'totalBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'parts': [
+                    for (final part in manifest.parts)
+                      {
+                        'index': part.index,
+                        'path': 'C:\\games\\${part.fileName}',
+                        'sizeBytes': part.sizeBytes,
+                        'sha256': part.sha256,
+                      },
+                  ],
+                };
+              case 'getDeviceEnvironment':
+                return {
+                  'freeBytes': 10 * 1024 * 1024 * 1024,
+                  'networkType': metered ? 'cellular' : 'wifi',
+                  'connected': true,
+                  'validated': true,
+                  'metered': metered,
+                };
+              case 'clearDownload':
+                return true;
+            }
+            fail('Unexpected platform call: ${call.method}');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final service = ModaoGameService(
+        platformChannel: channel,
+        parallelDownloader: downloader,
+        networkPolicyPollInterval: const Duration(milliseconds: 10),
+      );
+
+      await service.startDownload(manifest, allowMetered: false);
+      expect(downloader.startCalls, 1);
+
+      metered = true;
+      await _waitUntil(() => downloader.pauseCalls == 1);
+      expect(downloader.current?.status, ModaoParallelDownloadStatus.paused);
+      expect(downloader.current?.downloadedBytes, 16);
+
+      metered = false;
+      await _waitUntil(() => downloader.startCalls == 2);
+      expect(
+        downloader.current?.status,
+        ModaoParallelDownloadStatus.downloading,
+      );
+
+      await service.clearDownload();
     },
   );
 
@@ -222,6 +341,9 @@ void main() {
       'segmented': true,
       'partCount': 5,
       'retainedBytes': 1600000000,
+      'transport': 'app_http',
+      'artifactKey': 'artifact',
+      'releaseKey': 'release',
     });
 
     expect(state.segmented, isTrue);
@@ -229,6 +351,23 @@ void main() {
     expect(state.downloadedBytes, 3000000000);
     expect(state.totalBytes, 4000000000);
     expect(state.retainedBytes, 1600000000);
+    expect(state.transport, 'app_http');
+    expect(state.releaseKey, 'release');
+  });
+
+  test('native cleanup commits cleared state before deleting artifacts', () {
+    final source = File(
+      'android/app/src/main/kotlin/com/novel/novel_app/MainActivity.kt',
+    ).readAsStringSync();
+    const guard =
+        'if (!preferences.edit().clear().commit()) {\n'
+        '            throw IllegalStateException('
+        '"Unable to clear game download state")';
+    final guardIndex = source.replaceAll('\r\n', '\n').indexOf(guard);
+    final deleteIndex = source.indexOf('downloadIds.forEach { downloadId ->');
+
+    expect(guardIndex, greaterThanOrEqualTo(0));
+    expect(deleteIndex, greaterThan(guardIndex));
   });
 
   test('normalizes and checks the installed signing certificate', () async {
@@ -546,4 +685,113 @@ void main() {
       returnsNormally,
     );
   });
+}
+
+class _NoopModaoParallelDownloader extends ModaoParallelDownloader {
+  @override
+  ModaoParallelDownloadSnapshot? snapshot(
+    String artifactKey, {
+    required String releaseKey,
+  }) => null;
+
+  @override
+  Future<ModaoParallelDownloadSnapshot> start(
+    ModaoParallelDownloadPlan plan, {
+    Future<void> Function()? onPartsReady,
+  }) async {
+    return ModaoParallelDownloadSnapshot(
+      artifactKey: plan.artifactKey,
+      releaseKey: plan.releaseKey,
+      status: ModaoParallelDownloadStatus.downloading,
+      downloadedBytes: 0,
+      totalBytes: plan.totalBytes,
+      partCount: plan.parts.length,
+    );
+  }
+
+  @override
+  Future<void> cancel(String artifactKey, {required String releaseKey}) async {}
+
+  @override
+  Future<void> cancelAllExcept({
+    required String artifactKey,
+    required String releaseKey,
+  }) async {}
+
+  @override
+  void forget(String artifactKey, {required String releaseKey}) {}
+}
+
+class _PolicyModaoParallelDownloader extends ModaoParallelDownloader {
+  ModaoParallelDownloadSnapshot? current;
+  int startCalls = 0;
+  int pauseCalls = 0;
+
+  @override
+  ModaoParallelDownloadSnapshot? snapshot(
+    String artifactKey, {
+    required String releaseKey,
+  }) => current?.artifactKey == artifactKey && current?.releaseKey == releaseKey
+      ? current
+      : null;
+
+  @override
+  Future<ModaoParallelDownloadSnapshot> start(
+    ModaoParallelDownloadPlan plan, {
+    Future<void> Function()? onPartsReady,
+  }) async {
+    startCalls++;
+    current = ModaoParallelDownloadSnapshot(
+      artifactKey: plan.artifactKey,
+      releaseKey: plan.releaseKey,
+      status: ModaoParallelDownloadStatus.downloading,
+      downloadedBytes: 16,
+      totalBytes: plan.totalBytes,
+      partCount: plan.parts.length,
+    );
+    return current!;
+  }
+
+  @override
+  Future<void> pause(
+    String artifactKey, {
+    required String releaseKey,
+    required String reason,
+  }) async {
+    pauseCalls++;
+    final before = current!;
+    current = ModaoParallelDownloadSnapshot(
+      artifactKey: before.artifactKey,
+      releaseKey: before.releaseKey,
+      status: ModaoParallelDownloadStatus.paused,
+      downloadedBytes: before.downloadedBytes,
+      totalBytes: before.totalBytes,
+      partCount: before.partCount,
+      reason: reason,
+    );
+  }
+
+  @override
+  Future<void> cancel(String artifactKey, {required String releaseKey}) async {
+    current = null;
+  }
+
+  @override
+  Future<void> cancelAllExcept({
+    required String artifactKey,
+    required String releaseKey,
+  }) async {}
+
+  @override
+  void forget(String artifactKey, {required String releaseKey}) {}
+}
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 2));
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Timed out waiting for asynchronous state');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
 }

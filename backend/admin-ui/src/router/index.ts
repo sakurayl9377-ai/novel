@@ -18,6 +18,7 @@ const AnalyticsView = () => import('@/views/AnalyticsView.vue');
 const AuditView = () => import('@/views/AuditView.vue');
 const VersionsView = () => import('@/views/VersionsView.vue');
 const ReleasesView = () => import('@/views/ReleasesView.vue');
+const GamesView = () => import('@/views/GamesView.vue');
 const ProxyView = () => import('@/views/ProxyView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
@@ -210,6 +211,17 @@ export const router = createRouter({
           meta: {
             title: '版本与设备',
             hint: '版本覆盖、设备上报与升级滞后',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'games',
+          name: 'games',
+          component: GamesView,
+          meta: {
+            title: '游戏管理',
+            hint: '游戏中心展示与服务器运行状态控制',
             requiresAuth: true,
             requiresAdmin: true,
           },

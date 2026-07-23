@@ -72,7 +72,19 @@ class _ModaoGameScreenState extends State<ModaoGameScreen>
       final manifest = await _service.fetchManifest();
       final installed = await _service.getInstalledGame();
       var download = await _service.getDownloadState();
-      if (_requiresSegmentedDownloadMigration(download, manifest)) {
+      if (_canMigrateDownloadManager(download, manifest)) {
+        download = await _migrateDownloadManager(
+          download,
+          manifest,
+          promptForMetered: true,
+        );
+      } else if (_canResumeAppHttpDownload(download, manifest)) {
+        download = await _resumeAppHttpDownload(
+          download,
+          manifest,
+          promptForMetered: true,
+        );
+      } else if (_requiresSegmentedDownloadMigration(download, manifest)) {
         await _service.clearDownload();
         download = const ModaoDownloadState.none();
       }
@@ -126,7 +138,19 @@ class _ModaoGameScreenState extends State<ModaoGameScreen>
     try {
       final installed = await _service.getInstalledGame();
       var download = await _service.getDownloadState();
-      if (_requiresSegmentedDownloadMigration(download, manifest)) {
+      if (_canMigrateDownloadManager(download, manifest)) {
+        download = await _migrateDownloadManager(
+          download,
+          manifest,
+          promptForMetered: false,
+        );
+      } else if (_canResumeAppHttpDownload(download, manifest)) {
+        download = await _resumeAppHttpDownload(
+          download,
+          manifest,
+          promptForMetered: false,
+        );
+      } else if (_requiresSegmentedDownloadMigration(download, manifest)) {
         await _service.clearDownload();
         download = const ModaoDownloadState.none();
       }
@@ -440,7 +464,116 @@ class _ModaoGameScreenState extends State<ModaoGameScreen>
         download.status == ModaoDownloadStatus.completed) {
       return false;
     }
-    return !download.segmented || download.partCount != manifest.parts.length;
+    return download.transport != 'app_http' ||
+        !download.segmented ||
+        download.partCount != manifest.parts.length;
+  }
+
+  bool _canMigrateDownloadManager(
+    ModaoDownloadState download,
+    ModaoGameManifest manifest,
+  ) {
+    return manifest.parts.isNotEmpty &&
+        download.status != ModaoDownloadStatus.none &&
+        download.status != ModaoDownloadStatus.completed &&
+        download.transport == 'download_manager' &&
+        download.segmented &&
+        download.partCount == manifest.parts.length &&
+        (download.artifactKey.isEmpty ||
+            download.artifactKey == manifest.artifactKey) &&
+        !_downloadBelongsToAnotherVersion(download, manifest);
+  }
+
+  bool _canResumeAppHttpDownload(
+    ModaoDownloadState download,
+    ModaoGameManifest manifest,
+  ) {
+    return manifest.parts.isNotEmpty &&
+        download.downloadedBytes > 0 &&
+        download.status != ModaoDownloadStatus.none &&
+        download.status != ModaoDownloadStatus.completed &&
+        download.status != ModaoDownloadStatus.merging &&
+        download.transport == 'app_http' &&
+        download.segmented &&
+        download.partCount == manifest.parts.length &&
+        download.artifactKey == manifest.artifactKey &&
+        !_downloadBelongsToAnotherVersion(download, manifest);
+  }
+
+  Future<ModaoDownloadState> _resumeAppHttpDownload(
+    ModaoDownloadState current,
+    ModaoGameManifest manifest, {
+    required bool promptForMetered,
+  }) async {
+    final ModaoDeviceEnvironment environment;
+    try {
+      environment = await _service.getDeviceEnvironment();
+    } catch (_) {
+      return current;
+    }
+    if (!environment.connected || !environment.validated) return current;
+    var allowMetered = false;
+    if (environment.metered) {
+      if (!promptForMetered || !mounted) return current;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('使用移动网络继续下载？'),
+          content: Text('游戏安装包约 ${_formatBytes(manifest.sizeBytes)}。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('暂不继续'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('继续下载'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return current;
+      allowMetered = true;
+    }
+    return _service.startDownload(manifest, allowMetered: allowMetered);
+  }
+
+  Future<ModaoDownloadState> _migrateDownloadManager(
+    ModaoDownloadState current,
+    ModaoGameManifest manifest, {
+    required bool promptForMetered,
+  }) async {
+    final ModaoDeviceEnvironment environment;
+    try {
+      environment = await _service.getDeviceEnvironment();
+    } catch (_) {
+      return current;
+    }
+    if (!environment.connected || !environment.validated) return current;
+    var allowMetered = false;
+    if (environment.metered) {
+      if (!promptForMetered || !mounted) return current;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('使用移动网络继续下载？'),
+          content: Text('游戏安装包约 ${_formatBytes(manifest.sizeBytes)}。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('暂不迁移'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('继续下载'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return current;
+      allowMetered = true;
+    }
+    return _service.startDownload(manifest, allowMetered: allowMetered);
   }
 
   @override

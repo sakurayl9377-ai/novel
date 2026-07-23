@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../design/app_tokens.dart';
 import '../providers/interaction_auth_provider.dart';
+import '../services/game_catalog_service.dart';
 import '../utils/auth_gate.dart';
 import 'bailian_game_screen.dart';
 import 'bailian_orders_screen.dart';
@@ -10,17 +13,25 @@ import 'horse_race_game_screen.dart';
 import 'modao_game_screen.dart';
 
 /// The home for the app's lightweight entertainment experiences.
-class GameCenterScreen extends StatelessWidget {
+class GameCenterScreen extends StatefulWidget {
   const GameCenterScreen({
     super.key,
     this.horseRaceDestinationBuilder,
     this.onHorseRaceTap,
     this.onBailianTap,
     this.onModaoTap,
+    this.catalogService,
   });
 
   static const Key scrollKey = ValueKey<String>('game-center-scroll');
   static const Key gridKey = ValueKey<String>('game-center-grid');
+  static const Key loadingKey = ValueKey<String>('game-center-loading');
+  static const Key staleNoticeKey = ValueKey<String>(
+    'game-center-stale-notice',
+  );
+  static const Key emptyKey = ValueKey<String>('game-center-empty');
+  static const Key retryKey = ValueKey<String>('game-center-retry');
+  static const Key emptyRetryKey = ValueKey<String>('game-center-empty-retry');
   static const Key horseRaceEntryKey = ValueKey<String>(
     'game-entry-horse-race',
   );
@@ -32,9 +43,74 @@ class GameCenterScreen extends StatelessWidget {
   final VoidCallback? onHorseRaceTap;
   final VoidCallback? onBailianTap;
   final VoidCallback? onModaoTap;
+  final GameCatalogService? catalogService;
+
+  @override
+  State<GameCenterScreen> createState() => _GameCenterScreenState();
+}
+
+class _GameCenterScreenState extends State<GameCenterScreen>
+    with WidgetsBindingObserver {
+  late GameCatalogService _catalogService;
+  List<String> _gameIds = const <String>[];
+  GameCatalogSource? _catalogSource;
+  bool _loading = true;
+  int _requestSerial = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _catalogService = widget.catalogService ?? GameCatalogService();
+    unawaited(_refreshCatalog());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _requestSerial += 1;
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshCatalog());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant GameCenterScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.catalogService == widget.catalogService) return;
+    _catalogService = widget.catalogService ?? GameCatalogService();
+    _gameIds = const <String>[];
+    _catalogSource = null;
+    _loading = true;
+    unawaited(_refreshCatalog());
+  }
+
+  Future<void> _refreshCatalog() async {
+    final requestSerial = ++_requestSerial;
+    if (!_loading && mounted) {
+      setState(() => _loading = true);
+    }
+
+    final snapshot = await _catalogService.load();
+    if (!mounted || requestSerial != _requestSerial) return;
+    setState(() {
+      _gameIds = snapshot.gameIds;
+      _catalogSource = snapshot.source;
+      _loading = false;
+    });
+  }
 
   void _open(BuildContext context, WidgetBuilder builder) {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: builder));
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: builder)).whenComplete(() {
+      if (mounted) unawaited(_refreshCatalog());
+    });
   }
 
   Future<void> _openBailian(BuildContext context) async {
@@ -76,8 +152,58 @@ class GameCenterScreen extends StatelessWidget {
     _open(context, (_) => BailianOrdersScreen(token: token));
   }
 
+  Widget? _entryFor(BuildContext context, String gameId) {
+    return switch (gameId) {
+      'horse-race' => _GameEntryCard(
+        key: GameCenterScreen.horseRaceEntryKey,
+        eyebrow: '实时竞技',
+        title: '樱花赛马',
+        description: '挑选你的幸运赛马，在短局竞速中感受冲线时刻。',
+        actionLabel: '前往赛场',
+        icon: Icons.emoji_events_rounded,
+        colors: const [Color(0xFF146B73), Color(0xFF174D77), Color(0xFF262E65)],
+        accent: const Color(0xFFFFD979),
+        onTap:
+            widget.onHorseRaceTap ??
+            () => _open(
+              context,
+              widget.horseRaceDestinationBuilder ??
+                  (_) => const HorseRaceGameScreen(),
+            ),
+      ),
+      'bailian' => _GameEntryCard(
+        key: GameCenterScreen.bailianEntryKey,
+        eyebrow: '单点登录',
+        title: '百练英雄',
+        description: '养成英雄、挑战关卡，阅读任务奖励也将可同步到游戏。',
+        actionLabel: '进入游戏',
+        icon: Icons.shield_rounded,
+        colors: const [Color(0xFF8A4B18), Color(0xFF57361D), Color(0xFF252239)],
+        accent: const Color(0xFFFFD27A),
+        onTap: widget.onBailianTap ?? () => _openBailian(context),
+      ),
+      'modao' => _GameEntryCard(
+        key: GameCenterScreen.modaoEntryKey,
+        eyebrow: '玄幻冒险',
+        title: '魔道修仙',
+        description: '踏入修真世界，探索天地机缘，开启属于你的仙途。',
+        actionLabel: '查看游戏',
+        icon: Icons.forest_rounded,
+        colors: const [Color(0xFF1F654E), Color(0xFF29463F), Color(0xFF24253A)],
+        accent: const Color(0xFF9BE2BE),
+        onTap: widget.onModaoTap ?? () => _openModao(context),
+      ),
+      _ => null,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
+    final entries = _gameIds
+        .map((gameId) => _entryFor(context, gameId))
+        .whereType<Widget>()
+        .toList(growable: false);
+
     return Scaffold(
       backgroundColor: const Color(0xFF0C0D1A),
       appBar: AppBar(
@@ -92,7 +218,7 @@ class GameCenterScreen extends StatelessWidget {
         ),
         actions: [
           IconButton(
-            key: ordersEntryKey,
+            key: GameCenterScreen.ordersEntryKey,
             tooltip: '我的订单',
             onPressed: () => _openOrders(context),
             icon: const Icon(Icons.receipt_long_outlined),
@@ -102,113 +228,173 @@ class GameCenterScreen extends StatelessWidget {
       body: LayoutBuilder(
         builder: (context, constraints) {
           final columns = constraints.maxWidth >= 720 ? 2 : 1;
-          return CustomScrollView(
-            key: scrollKey,
-            physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics(),
-            ),
-            slivers: [
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppTokens.spaceLg,
-                  AppTokens.spaceSm,
-                  AppTokens.spaceLg,
-                  AppTokens.spaceLg,
-                ),
-                sliver: SliverToBoxAdapter(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 1080),
-                      child: const _GameCenterHero(),
+          return RefreshIndicator(
+            onRefresh: _refreshCatalog,
+            color: const Color(0xFFFF8FBE),
+            backgroundColor: const Color(0xFF222337),
+            child: CustomScrollView(
+              key: GameCenterScreen.scrollKey,
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
+              ),
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTokens.spaceLg,
+                    AppTokens.spaceSm,
+                    AppTokens.spaceLg,
+                    AppTokens.spaceLg,
+                  ),
+                  sliver: SliverToBoxAdapter(
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1080),
+                        child: const _GameCenterHero(),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(20, 4, 20, 12),
-                  child: _SectionTitle(),
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(20, 4, 20, 12),
+                    child: _SectionTitle(),
+                  ),
                 ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
-                sliver: SliverLayoutBuilder(
-                  builder: (context, sliverConstraints) {
-                    final horizontalInset =
-                        (sliverConstraints.crossAxisExtent - 1080) / 2;
-                    return SliverPadding(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: horizontalInset > 0 ? horizontalInset : 0,
+                if (_loading)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+                      child: LinearProgressIndicator(
+                        key: GameCenterScreen.loadingKey,
+                        minHeight: 2,
+                        color: Color(0xFFFF8FBE),
+                        backgroundColor: Color(0xFF292A3D),
                       ),
-                      sliver: SliverGrid(
-                        key: gridKey,
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: columns,
-                          mainAxisExtent: columns == 1 ? 218 : 236,
-                          mainAxisSpacing: 14,
-                          crossAxisSpacing: 14,
-                        ),
-                        delegate: SliverChildListDelegate.fixed([
-                          _GameEntryCard(
-                            key: horseRaceEntryKey,
-                            eyebrow: '实时竞技',
-                            title: '樱花赛马',
-                            description: '挑选你的幸运赛马，在短局竞速中感受冲线时刻。',
-                            actionLabel: '前往赛场',
-                            icon: Icons.emoji_events_rounded,
-                            colors: const [
-                              Color(0xFF146B73),
-                              Color(0xFF174D77),
-                              Color(0xFF262E65),
-                            ],
-                            accent: const Color(0xFFFFD979),
-                            onTap:
-                                onHorseRaceTap ??
-                                () => _open(
-                                  context,
-                                  horseRaceDestinationBuilder ??
-                                      (_) => const HorseRaceGameScreen(),
+                    ),
+                  )
+                else if (_catalogSource != null &&
+                    _catalogSource != GameCatalogSource.network)
+                  SliverToBoxAdapter(
+                    child: _CatalogNotice(
+                      source: _catalogSource!,
+                      onRetry: _refreshCatalog,
+                    ),
+                  ),
+                if (entries.isNotEmpty)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
+                    sliver: SliverLayoutBuilder(
+                      builder: (context, sliverConstraints) {
+                        final horizontalInset =
+                            (sliverConstraints.crossAxisExtent - 1080) / 2;
+                        return SliverPadding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: horizontalInset > 0
+                                ? horizontalInset
+                                : 0,
+                          ),
+                          sliver: SliverGrid(
+                            key: GameCenterScreen.gridKey,
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: columns,
+                                  mainAxisExtent: columns == 1 ? 218 : 236,
+                                  mainAxisSpacing: 14,
+                                  crossAxisSpacing: 14,
                                 ),
+                            delegate: SliverChildListDelegate.fixed(entries),
                           ),
-                          _GameEntryCard(
-                            key: bailianEntryKey,
-                            eyebrow: '单点登录',
-                            title: '百练英雄',
-                            description: '养成英雄、挑战关卡，阅读任务奖励也将可同步到游戏。',
-                            actionLabel: '进入游戏',
-                            icon: Icons.shield_rounded,
-                            colors: const [
-                              Color(0xFF8A4B18),
-                              Color(0xFF57361D),
-                              Color(0xFF252239),
-                            ],
-                            accent: const Color(0xFFFFD27A),
-                            onTap: onBailianTap ?? () => _openBailian(context),
-                          ),
-                          _GameEntryCard(
-                            key: modaoEntryKey,
-                            eyebrow: '玄幻冒险',
-                            title: '魔道修仙',
-                            description: '踏入修真世界，探索天地机缘，开启属于你的仙途。',
-                            actionLabel: '查看游戏',
-                            icon: Icons.forest_rounded,
-                            colors: const [
-                              Color(0xFF1F654E),
-                              Color(0xFF29463F),
-                              Color(0xFF24253A),
-                            ],
-                            accent: const Color(0xFF9BE2BE),
-                            onTap: onModaoTap ?? () => _openModao(context),
-                          ),
-                        ]),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
+                        );
+                      },
+                    ),
+                  )
+                else if (!_loading)
+                  SliverToBoxAdapter(
+                    child: _EmptyCatalog(onRetry: _refreshCatalog),
+                  ),
+              ],
+            ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _CatalogNotice extends StatelessWidget {
+  const _CatalogNotice({required this.source, required this.onRetry});
+
+  final GameCatalogSource source;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: GameCenterScreen.staleNoticeKey,
+      margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C1D2C),
+        borderRadius: BorderRadius.circular(AppTokens.radiusSm),
+        border: Border.all(color: const Color(0x3349C6B0)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off_rounded, color: Color(0xFF7ED9C7)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              source == GameCatalogSource.cache
+                  ? '目录暂未更新，正在显示上次可用内容'
+                  : '目录暂不可用，正在显示安全默认内容',
+              style: const TextStyle(color: Color(0xFFC6C7D4), fontSize: 12),
+            ),
+          ),
+          TextButton(
+            key: GameCenterScreen.retryKey,
+            onPressed: onRetry,
+            child: const Text('重试'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyCatalog extends StatelessWidget {
+  const _EmptyCatalog({required this.onRetry});
+
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: GameCenterScreen.emptyKey,
+      padding: const EdgeInsets.fromLTRB(24, 30, 24, 56),
+      child: Column(
+        children: [
+          const Icon(
+            Icons.sports_esports_outlined,
+            color: Color(0xFF6F7085),
+            size: 42,
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            '暂时没有开放中的游戏',
+            style: TextStyle(
+              color: Color(0xFFC6C7D4),
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            key: GameCenterScreen.emptyRetryKey,
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('重新加载'),
+          ),
+        ],
       ),
     );
   }

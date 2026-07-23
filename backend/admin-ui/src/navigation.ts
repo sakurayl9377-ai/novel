@@ -12,6 +12,7 @@ import {
   Goods,
   Grid,
   Histogram,
+  Management,
   MagicStick,
   Monitor,
   Opportunity,
@@ -79,6 +80,7 @@ export const navigationGroups: NavigationGroup[] = [
     key: 'system',
     label: '系统',
     items: [
+      { label: '游戏管理', route: 'games', icon: Management, adminOnly: true },
       { label: '质量分析', route: 'analytics', icon: DataAnalysis, adminOnly: true, legacy: true },
       { label: '版本与设备', route: 'versions', icon: Monitor, adminOnly: true, legacy: true },
       { label: '发布管理', route: 'releases', icon: Files, adminOnly: true, legacy: true },

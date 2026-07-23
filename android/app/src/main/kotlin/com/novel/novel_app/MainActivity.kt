@@ -43,6 +43,7 @@ import java.util.concurrent.Executors
 class MainActivity : AudioServiceActivity() {
     private companion object {
         val modaoMergeCoordinatorLock = Any()
+        val modaoDownloadStateLock = Any()
         val modaoIoExecutor = Executors.newSingleThreadExecutor()
 
         @Volatile
@@ -61,7 +62,10 @@ class MainActivity : AudioServiceActivity() {
     private val modaoDownloadIdKey = "download_id"
     private val modaoDownloadPathKey = "download_path"
     private val modaoDownloadSchemaKey = "schema"
-    private val modaoDownloadSchema = 3
+    private val modaoDownloadSchema = 4
+    private val modaoDownloadTransportKey = "transport"
+    private val modaoDownloadManagerTransport = "download_manager"
+    private val modaoAppHttpTransport = "app_http"
     private val modaoDownloadReleaseKey = "release_key"
     private val modaoDownloadArtifactKey = "artifact_key"
     private val modaoDownloadTotalKey = "total_bytes"
@@ -96,6 +100,7 @@ class MainActivity : AudioServiceActivity() {
         val totalBytes: Long,
         val apkSha256: String,
         val parts: List<ModaoDownloadPart>,
+        val transport: String = "download_manager",
     )
 
     private data class ModaoPartSnapshot(
@@ -180,6 +185,52 @@ class MainActivity : AudioServiceActivity() {
                 }
                 "getDeviceEnvironment" -> result.success(gameDeviceEnvironment())
                 "getDownloadState" -> result.success(gameDownloadState())
+                "finalizeAppDownload" -> {
+                    val releaseKey = call.argument<String>("releaseKey").orEmpty()
+                    val artifactKey = call.argument<String>("artifactKey").orEmpty()
+                    synchronized(modaoDownloadStateLock) {
+                        val current = loadModaoDownload()
+                        if (releaseKey.isBlank() ||
+                            artifactKey.isBlank() ||
+                            current?.transport != modaoAppHttpTransport ||
+                            current.releaseKey != releaseKey ||
+                            current.artifactKey != artifactKey
+                        ) {
+                            result.error(
+                                "STALE_DOWNLOAD",
+                                "Game download release is no longer current",
+                                null,
+                            )
+                        } else {
+                            result.success(gameDownloadState())
+                        }
+                    }
+                }
+                "prepareAppDownload" -> {
+                    modaoIoExecutor.execute {
+                        try {
+                            val url = call.argument<String>("url").orEmpty()
+                            val fileName = call.argument<String>("fileName").orEmpty()
+                            val sizeBytes = call.argument<Number>("sizeBytes")?.toLong() ?: 0L
+                            val sha256 = call.argument<String>("sha256").orEmpty()
+                            val parts = parseModaoDownloadParts(
+                                call.argument<List<*>>("parts").orEmpty(),
+                            )
+                            val plan = prepareAppGameDownload(
+                                url,
+                                fileName,
+                                sizeBytes,
+                                sha256,
+                                parts,
+                            )
+                            runOnUiThread { result.success(plan) }
+                        } catch (error: Exception) {
+                            runOnUiThread {
+                                result.error("DOWNLOAD_FAILED", error.message, null)
+                            }
+                        }
+                    }
+                }
                 "startDownload" -> {
                     try {
                         val url = call.argument<String>("url").orEmpty()
@@ -205,8 +256,8 @@ class MainActivity : AudioServiceActivity() {
                     }
                 }
                 "clearDownload" -> {
-                    clearGameDownload()
-                    result.success(null)
+                    val releaseKey = call.argument<String>("releaseKey")
+                    result.success(clearGameDownload(releaseKey))
                 }
                 "inspectApk" -> {
                     val path = call.argument<String>("path")
@@ -872,18 +923,104 @@ class MainActivity : AudioServiceActivity() {
         )
     }
 
-    private fun startGameDownload(
+    private fun prepareAppGameDownload(
         url: String,
         fileName: String,
         sizeBytes: Long,
         sha256: String,
         requestedParts: List<ModaoDownloadPart>,
-        allowMetered: Boolean,
+    ): Map<String, Any?> = synchronized(modaoDownloadStateLock) {
+        prepareAppGameDownloadLocked(
+            url,
+            fileName,
+            sizeBytes,
+            sha256,
+            requestedParts,
+        )
+    }
+
+    private fun prepareAppGameDownloadLocked(
+        url: String,
+        fileName: String,
+        sizeBytes: Long,
+        sha256: String,
+        requestedParts: List<ModaoDownloadPart>,
     ): Map<String, Any?> {
-        if (requestedParts.isEmpty()) {
-            return startLegacyGameDownload(url, fileName, allowMetered)
-        }
         val normalizedSha256 = sha256.lowercase()
+        validateModaoSegmentedDownload(
+            url,
+            fileName,
+            sizeBytes,
+            normalizedSha256,
+            requestedParts,
+        )
+        val artifactKey =
+            "$fileName:$normalizedSha256:${modaoPartsFingerprint(requestedParts)}"
+        val preferences = getSharedPreferences(
+            modaoDownloadPreferences,
+            Context.MODE_PRIVATE,
+        )
+        val existing = loadModaoDownload()
+        val reusableAppDownload = existing?.artifactKey == artifactKey &&
+            existing.transport == modaoAppHttpTransport &&
+            preferences.getString(modaoDownloadErrorKey, null).orEmpty().isEmpty() &&
+            preferences.getInt(modaoDownloadMergeIndexKey, 0) == 0 &&
+            !preferences.getBoolean(modaoDownloadMergingKey, false) &&
+            !File("${existing.finalPath}.merge").exists() &&
+            !File(existing.finalPath).exists()
+
+        if (existing?.artifactKey == artifactKey &&
+            existing.transport == modaoDownloadManagerTransport
+        ) {
+            migrateDownloadManagerParts(existing, requestedParts)
+        } else if (!reusableAppDownload) {
+            clearGameDownload()
+        }
+
+        val destination = File(gameDownloadDirectory(), fileName)
+        if (!reusableAppDownload) {
+            if (destination.exists() && !destination.delete()) {
+                throw IllegalStateException("Unable to replace previous game download")
+            }
+            File("${destination.absolutePath}.merge").delete()
+        }
+        val record = ModaoDownloadRecord(
+            releaseKey = "$artifactKey:${UUID.randomUUID()}",
+            artifactKey = artifactKey,
+            fileName = fileName,
+            finalPath = destination.absolutePath,
+            totalBytes = sizeBytes,
+            apkSha256 = normalizedSha256,
+            parts = requestedParts.map { it.copy(downloadId = -1L) },
+            transport = modaoAppHttpTransport,
+        )
+        if (!persistModaoDownload(record)) {
+            throw IllegalStateException("Unable to save game download state")
+        }
+        return mapOf(
+            "artifactKey" to record.artifactKey,
+            "releaseKey" to record.releaseKey,
+            "finalPath" to record.finalPath,
+            "totalBytes" to record.totalBytes,
+            "transport" to record.transport,
+            "parts" to record.parts.map { part ->
+                mapOf(
+                    "index" to part.index,
+                    "path" to gameDownloadPartFile(part.fileName).absolutePath,
+                    "sizeBytes" to part.sizeBytes,
+                    "sha256" to part.sha256,
+                )
+            },
+        )
+    }
+
+    private fun validateModaoSegmentedDownload(
+        url: String,
+        fileName: String,
+        sizeBytes: Long,
+        normalizedSha256: String,
+        requestedParts: List<ModaoDownloadPart>,
+    ) {
         if (!isTrustedGameDownloadUrl(url) ||
             !Regex("^modao-[0-9]+-[0-9a-f]{12}\\.apk$").matches(fileName) ||
             sizeBytes <= 0L ||
@@ -908,6 +1045,98 @@ class MainActivity : AudioServiceActivity() {
         if (requestedParts.sumOf { it.sizeBytes } != sizeBytes) {
             throw IllegalArgumentException("Game download part size mismatch")
         }
+    }
+
+    private fun migrateDownloadManagerParts(
+        existing: ModaoDownloadRecord,
+        requestedParts: List<ModaoDownloadPart>,
+    ) {
+        val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val protectedFiles = mutableListOf<File>()
+        requestedParts.forEach { part ->
+            val source = gameDownloadPartFile(part.fileName)
+            val partial = gameDownloadPartPartialFile(part.fileName)
+            if (source.exists() && !partial.exists()) {
+                if (!source.renameTo(partial)) {
+                    throw IllegalStateException("Unable to preserve game download progress")
+                }
+            }
+            protectedFiles.add(partial)
+            protectedFiles.add(source)
+        }
+
+        removeOwnedModaoDownloadsForFiles(
+            manager,
+            requestedParts.mapTo(mutableSetOf()) { it.fileName },
+            existing.parts.mapTo(mutableSetOf()) { it.downloadId },
+        )
+        waitForModaoPartWritersToSettle(protectedFiles)
+
+        requestedParts.forEach { part ->
+            val source = gameDownloadPartFile(part.fileName)
+            val partial = gameDownloadPartPartialFile(part.fileName)
+            if (source.exists()) {
+                val sourceLength = source.length()
+                val partialLength = partial.takeIf(File::exists)?.length() ?: -1L
+                if (sourceLength in 0..part.sizeBytes && sourceLength > partialLength) {
+                    if (partial.exists() && !partial.delete()) {
+                        throw IllegalStateException("Unable to replace preserved game part")
+                    }
+                    if (!source.renameTo(partial)) {
+                        throw IllegalStateException("Unable to preserve game download progress")
+                    }
+                } else if (!source.delete()) {
+                    throw IllegalStateException("Unable to remove stale game download part")
+                }
+            }
+            if (partial.exists() && partial.length() > part.sizeBytes) {
+                if (!partial.delete()) {
+                    throw IllegalStateException("Unable to remove invalid game download part")
+                }
+            }
+        }
+    }
+
+    private fun waitForModaoPartWritersToSettle(files: List<File>) {
+        var previous = files.map { file ->
+            file.takeIf(File::exists)?.let { "${it.length()}:${it.lastModified()}" }.orEmpty()
+        }
+        var stableSamples = 0
+        repeat(20) {
+            Thread.sleep(100L)
+            val current = files.map { file ->
+                file.takeIf(File::exists)?.let { "${it.length()}:${it.lastModified()}" }.orEmpty()
+            }
+            if (current == previous) {
+                stableSamples++
+                if (stableSamples >= 3) return
+            } else {
+                stableSamples = 0
+                previous = current
+            }
+        }
+        throw IllegalStateException("Previous game download did not stop")
+    }
+
+    private fun startGameDownload(
+        url: String,
+        fileName: String,
+        sizeBytes: Long,
+        sha256: String,
+        requestedParts: List<ModaoDownloadPart>,
+        allowMetered: Boolean,
+    ): Map<String, Any?> {
+        if (requestedParts.isEmpty()) {
+            return startLegacyGameDownload(url, fileName, allowMetered)
+        }
+        val normalizedSha256 = sha256.lowercase()
+        validateModaoSegmentedDownload(
+            url,
+            fileName,
+            sizeBytes,
+            normalizedSha256,
+            requestedParts,
+        )
 
         val artifactKey =
             "$fileName:$normalizedSha256:${modaoPartsFingerprint(requestedParts)}"
@@ -988,7 +1217,11 @@ class MainActivity : AudioServiceActivity() {
     ): Map<String, Any?> {
         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val retryIndexes = existing.parts.mapNotNull { part ->
-            val snapshot = queryModaoPart(manager, part)
+            val snapshot = if (existing.transport == modaoAppHttpTransport) {
+                queryAppHttpModaoPart(part)
+            } else {
+                queryModaoPart(manager, part)
+            }
             if (snapshot.status == DownloadManager.STATUS_SUCCESSFUL) null else part.index
         }.toSet()
         if (retryIndexes.isEmpty()) return gameDownloadState()
@@ -1103,6 +1336,7 @@ class MainActivity : AudioServiceActivity() {
             .putLong(modaoDownloadTotalKey, record.totalBytes)
             .putString(modaoDownloadShaKey, record.apkSha256)
             .putInt(modaoDownloadPartCountKey, record.parts.size)
+            .putString(modaoDownloadTransportKey, record.transport)
             .putInt(modaoDownloadMergeIndexKey, 0)
             .putBoolean(modaoDownloadMergingKey, false)
             .putString(modaoDownloadErrorKey, "")
@@ -1123,8 +1357,17 @@ class MainActivity : AudioServiceActivity() {
             modaoDownloadPreferences,
             Context.MODE_PRIVATE,
         )
-        if (preferences.getInt(modaoDownloadSchemaKey, 0) != modaoDownloadSchema) {
+        val schema = preferences.getInt(modaoDownloadSchemaKey, 0)
+        if (schema != 3 && schema != modaoDownloadSchema) {
             return null
+        }
+        val transport = if (schema == 3) {
+            modaoDownloadManagerTransport
+        } else {
+            preferences.getString(
+                modaoDownloadTransportKey,
+                modaoDownloadManagerTransport,
+            ).orEmpty()
         }
         val releaseKey = preferences.getString(modaoDownloadReleaseKey, null).orEmpty()
         val artifactKey = preferences.getString(modaoDownloadArtifactKey, null).orEmpty()
@@ -1136,6 +1379,7 @@ class MainActivity : AudioServiceActivity() {
         if (releaseKey.isBlank() ||
             artifactKey.isBlank() ||
             finalPath.isBlank() ||
+            transport !in setOf(modaoDownloadManagerTransport, modaoAppHttpTransport) ||
             !Regex("^modao-[0-9]+-[0-9a-f]{12}\\.apk$").matches(fileName) ||
             totalBytes <= 0L ||
             !Regex("^[0-9a-f]{64}$").matches(apkSha256) ||
@@ -1156,7 +1400,8 @@ class MainActivity : AudioServiceActivity() {
         }
         if (parts.any { part ->
                 part.sizeBytes <= 0L ||
-                    part.downloadId <= 0L ||
+                    (transport == modaoDownloadManagerTransport && part.downloadId <= 0L) ||
+                    (transport == modaoAppHttpTransport && part.downloadId != -1L) ||
                     !Regex("^[0-9a-f]{64}$").matches(part.sha256)
             } || parts.sumOf { it.sizeBytes } != totalBytes
         ) {
@@ -1170,6 +1415,7 @@ class MainActivity : AudioServiceActivity() {
             totalBytes = totalBytes,
             apkSha256 = apkSha256,
             parts = parts,
+            transport = transport,
         )
     }
 
@@ -1225,6 +1471,9 @@ class MainActivity : AudioServiceActivity() {
                     localPath = record.finalPath,
                     partCount = record.parts.size,
                     retainedBytes = record.totalBytes,
+                    transport = record.transport,
+                    artifactKey = record.artifactKey,
+                    releaseKey = record.releaseKey,
                 )
             } else {
                 modaoDownloadState(
@@ -1234,6 +1483,9 @@ class MainActivity : AudioServiceActivity() {
                     localPath = record.finalPath,
                     reason = "游戏安装包大小无效，请重新下载",
                     partCount = record.parts.size,
+                    transport = record.transport,
+                    artifactKey = record.artifactKey,
+                    releaseKey = record.releaseKey,
                 )
             }
         }
@@ -1250,6 +1502,9 @@ class MainActivity : AudioServiceActivity() {
                 localPath = record.finalPath,
                 reason = storedError,
                 partCount = record.parts.size,
+                transport = record.transport,
+                artifactKey = record.artifactKey,
+                releaseKey = record.releaseKey,
             )
         }
         val mergeIndex = preferences
@@ -1270,6 +1525,9 @@ class MainActivity : AudioServiceActivity() {
                 reason = "正在合并安装包",
                 partCount = record.parts.size,
                 retainedBytes = checkpointBytes,
+                transport = record.transport,
+                artifactKey = record.artifactKey,
+                releaseKey = record.releaseKey,
             )
         }
         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -1285,7 +1543,11 @@ class MainActivity : AudioServiceActivity() {
                 downloadedBytes += part.sizeBytes
                 return@forEach
             }
-            val snapshot = queryModaoPart(manager, part)
+            val snapshot = if (record.transport == modaoAppHttpTransport) {
+                queryAppHttpModaoPart(part)
+            } else {
+                queryModaoPart(manager, part)
+            }
             downloadedBytes += snapshot.downloadedBytes.coerceIn(0L, part.sizeBytes)
             when (snapshot.status) {
                 DownloadManager.STATUS_SUCCESSFUL -> retainedBytes += part.sizeBytes
@@ -1316,6 +1578,9 @@ class MainActivity : AudioServiceActivity() {
                 localPath = record.finalPath,
                 reason = "正在合并安装包",
                 partCount = record.parts.size,
+                transport = record.transport,
+                artifactKey = record.artifactKey,
+                releaseKey = record.releaseKey,
             )
         }
         val status = when {
@@ -1337,6 +1602,30 @@ class MainActivity : AudioServiceActivity() {
             },
             partCount = record.parts.size,
             retainedBytes = retainedBytes,
+            transport = record.transport,
+            artifactKey = record.artifactKey,
+            releaseKey = record.releaseKey,
+        )
+    }
+
+    private fun queryAppHttpModaoPart(part: ModaoDownloadPart): ModaoPartSnapshot {
+        val finalFile = gameDownloadPartFile(part.fileName)
+        if (finalFile.exists() && finalFile.length() == part.sizeBytes) {
+            return ModaoPartSnapshot(
+                DownloadManager.STATUS_SUCCESSFUL,
+                part.sizeBytes,
+                0,
+            )
+        }
+        val partialFile = gameDownloadPartPartialFile(part.fileName)
+        val retained = maxOf(
+            finalFile.takeIf(File::exists)?.length() ?: 0L,
+            partialFile.takeIf(File::exists)?.length() ?: 0L,
+        ).coerceIn(0L, part.sizeBytes)
+        return ModaoPartSnapshot(
+            DownloadManager.STATUS_FAILED,
+            retained,
+            DownloadManager.ERROR_FILE_ERROR,
         )
     }
 
@@ -1396,6 +1685,9 @@ class MainActivity : AudioServiceActivity() {
         reason: String = "",
         partCount: Int,
         retainedBytes: Long = 0L,
+        transport: String,
+        artifactKey: String,
+        releaseKey: String,
     ): Map<String, Any?> {
         return mapOf(
             "status" to status,
@@ -1406,6 +1698,9 @@ class MainActivity : AudioServiceActivity() {
             "segmented" to true,
             "partCount" to partCount,
             "retainedBytes" to retainedBytes,
+            "transport" to transport,
+            "artifactKey" to artifactKey,
+            "releaseKey" to releaseKey,
         )
     }
 
@@ -1498,6 +1793,28 @@ class MainActivity : AudioServiceActivity() {
                 output.setLength(checkpoint)
                 output.fd.sync()
             }
+            val fullDigest = MessageDigest.getInstance("SHA-256")
+            if (checkpoint > 0L) {
+                mergeFile.inputStream().buffered(1024 * 1024).use { input ->
+                    val buffer = ByteArray(1024 * 1024)
+                    var remaining = checkpoint
+                    while (remaining > 0L) {
+                        ensureModaoReleaseIsCurrent(record.releaseKey)
+                        val count = input.read(
+                            buffer,
+                            0,
+                            minOf(buffer.size.toLong(), remaining).toInt(),
+                        )
+                        if (count < 0) {
+                            throw IllegalStateException("Merge checkpoint is incomplete")
+                        }
+                        if (count > 0) {
+                            fullDigest.update(buffer, 0, count)
+                            remaining -= count
+                        }
+                    }
+                }
+            }
             record.parts.take(mergeIndex).forEach { completedPart ->
                 val stalePart = gameDownloadPartFile(completedPart.fileName)
                 if (stalePart.exists() && !stalePart.delete()) {
@@ -1521,6 +1838,7 @@ class MainActivity : AudioServiceActivity() {
                         if (count < 0) break
                         if (count > 0) {
                             digest.update(buffer, 0, count)
+                            fullDigest.update(buffer, 0, count)
                             output.write(buffer, 0, count)
                         }
                     }
@@ -1550,6 +1868,12 @@ class MainActivity : AudioServiceActivity() {
                 throw IllegalStateException("Merged game APK size mismatch")
             }
             output.fd.sync()
+            val actualApkSha256 = fullDigest.digest().joinToString("") { byte ->
+                "%02x".format(byte.toInt() and 0xff)
+            }
+            if (actualApkSha256 != record.apkSha256) {
+                throw IllegalStateException("Merged game APK checksum mismatch")
+            }
         }
         ensureModaoReleaseIsCurrent(record.releaseKey)
         if (destination.exists() && !destination.delete()) {
@@ -1601,6 +1925,9 @@ class MainActivity : AudioServiceActivity() {
                 "reason" to "",
                 "segmented" to false,
                 "partCount" to 0,
+                "transport" to modaoDownloadManagerTransport,
+                "artifactKey" to "",
+                "releaseKey" to "",
             )
         }
         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -1646,6 +1973,9 @@ class MainActivity : AudioServiceActivity() {
                     "reason" to downloadReason(status, reason),
                     "segmented" to false,
                     "partCount" to 0,
+                    "transport" to modaoDownloadManagerTransport,
+                    "artifactKey" to "",
+                    "releaseKey" to "",
                 )
             }
         }
@@ -1659,6 +1989,9 @@ class MainActivity : AudioServiceActivity() {
                 "reason" to "",
                 "segmented" to false,
                 "partCount" to 0,
+                "transport" to modaoDownloadManagerTransport,
+                "artifactKey" to "",
+                "releaseKey" to "",
             )
         } else {
             mapOf(
@@ -1669,6 +2002,9 @@ class MainActivity : AudioServiceActivity() {
                 "reason" to "下载任务不存在",
                 "segmented" to false,
                 "partCount" to 0,
+                "transport" to modaoDownloadManagerTransport,
+                "artifactKey" to "",
+                "releaseKey" to "",
             )
         }
     }
@@ -1754,15 +2090,27 @@ class MainActivity : AudioServiceActivity() {
         if (candidate.parentFile != root) return false
         return Regex("^modao-[0-9]+-[0-9a-f]{12}\\.apk(?:\\.merge)?$")
             .matches(candidate.name) ||
-            Regex("^modao-[0-9]+-[0-9a-f]{12}\\.part-[0-9]{3}\\.apk$")
+            Regex("^modao-[0-9]+-[0-9a-f]{12}\\.part-[0-9]{3}\\.apk(?:\\.download)?$")
                 .matches(candidate.name)
     }
 
-    private fun clearGameDownload() {
+    private fun clearGameDownload(
+        expectedReleaseKey: String? = null,
+    ): Boolean = synchronized(modaoDownloadStateLock) {
+        clearGameDownloadLocked(expectedReleaseKey)
+    }
+
+    private fun clearGameDownloadLocked(expectedReleaseKey: String?): Boolean {
         val preferences = getSharedPreferences(
             modaoDownloadPreferences,
             Context.MODE_PRIVATE,
         )
+        val expected = expectedReleaseKey?.takeIf(String::isNotBlank)
+        if (expected != null &&
+            preferences.getString(modaoDownloadReleaseKey, null) != expected
+        ) {
+            return false
+        }
         val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val downloadIds = mutableSetOf<Long>()
         preferences.getLong(modaoDownloadIdKey, -1L)
@@ -1779,7 +2127,10 @@ class MainActivity : AudioServiceActivity() {
                 ?.let(downloadIds::add)
             try {
                 val partName = preferences.getString("${prefix}file", null).orEmpty()
-                if (partName.isNotEmpty()) partFiles.add(gameDownloadPartFile(partName))
+                if (partName.isNotEmpty()) {
+                    partFiles.add(gameDownloadPartFile(partName))
+                    partFiles.add(gameDownloadPartPartialFile(partName))
+                }
             } catch (_: Exception) {
                 // Ignore malformed stale state while clearing all trusted paths.
             }
@@ -1796,7 +2147,9 @@ class MainActivity : AudioServiceActivity() {
             .filter(::isOwnedModaoArtifactFile)
             .toMutableList()
         artifactFiles.addAll(orphanDownloads.map { it.file })
-        preferences.edit().clear().commit()
+        if (!preferences.edit().clear().commit()) {
+            throw IllegalStateException("Unable to clear game download state")
+        }
         downloadIds.forEach { downloadId ->
             try {
                 manager.remove(downloadId)
@@ -1814,6 +2167,7 @@ class MainActivity : AudioServiceActivity() {
                 // Best-effort cleanup of a stale or already removed destination.
             }
         }
+        return true
     }
 
     private fun inspectGameApk(path: String): Map<String, Any?> {
@@ -1864,6 +2218,17 @@ class MainActivity : AudioServiceActivity() {
             throw SecurityException("Game download part is outside the download directory")
         }
         return file
+    }
+
+    private fun gameDownloadPartPartialFile(fileName: String): File {
+        val partFile = gameDownloadPartFile(fileName)
+        val partialFile = File("${partFile.absolutePath}.download").canonicalFile
+        if (partialFile.parentFile != partFile.parentFile ||
+            partialFile.name != "${partFile.name}.download"
+        ) {
+            throw SecurityException("Invalid partial game download part path")
+        }
+        return partialFile
     }
 
     private fun sha256Hex(file: File): String {

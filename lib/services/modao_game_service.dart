@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
 import 'interaction_auth_service.dart';
+import 'modao_parallel_downloader.dart';
 
 class ModaoGameException implements Exception {
   const ModaoGameException(this.message);
@@ -45,6 +48,22 @@ class ModaoGameManifest {
 
   String get downloadFileName =>
       'modao-$versionCode-${sha256.substring(0, 12)}.apk';
+
+  String get artifactKey {
+    final fingerprintInput = StringBuffer();
+    for (final part in parts) {
+      fingerprintInput
+        ..writeln(part.index)
+        ..writeln(part.url)
+        ..writeln(part.fileName)
+        ..writeln(part.sizeBytes)
+        ..writeln(part.sha256);
+    }
+    final fingerprint = crypto.sha256
+        .convert(utf8.encode(fingerprintInput.toString()))
+        .toString();
+    return '$downloadFileName:$sha256:$fingerprint';
+  }
 
   factory ModaoGameManifest.fromJson(Map<String, dynamic> json) {
     final apkUrl = Uri.tryParse(
@@ -215,6 +234,9 @@ class ModaoDownloadState {
     this.segmented = false,
     this.partCount = 0,
     this.retainedBytes = 0,
+    this.transport = '',
+    this.artifactKey = '',
+    this.releaseKey = '',
   });
 
   const ModaoDownloadState.none()
@@ -225,7 +247,10 @@ class ModaoDownloadState {
       reason = '',
       segmented = false,
       partCount = 0,
-      retainedBytes = 0;
+      retainedBytes = 0,
+      transport = '',
+      artifactKey = '',
+      releaseKey = '';
 
   final ModaoDownloadStatus status;
   final int downloadedBytes;
@@ -235,6 +260,9 @@ class ModaoDownloadState {
   final bool segmented;
   final int partCount;
   final int retainedBytes;
+  final String transport;
+  final String artifactKey;
+  final String releaseKey;
 
   bool get isActive =>
       status == ModaoDownloadStatus.queued ||
@@ -254,6 +282,9 @@ class ModaoDownloadState {
       partCount: int.tryParse(value['partCount']?.toString() ?? '') ?? 0,
       retainedBytes:
           int.tryParse(value['retainedBytes']?.toString() ?? '') ?? 0,
+      transport: value['transport']?.toString() ?? '',
+      artifactKey: value['artifactKey']?.toString() ?? '',
+      releaseKey: value['releaseKey']?.toString() ?? '',
     );
   }
 }
@@ -416,8 +447,14 @@ class ModaoGameService {
     this.httpClient,
     MethodChannel? platformChannel,
     Uuid? uuid,
+    ModaoParallelDownloader? parallelDownloader,
+    this.networkPolicyPollInterval = const Duration(seconds: 1),
   }) : _platformChannel = platformChannel ?? _defaultPlatformChannel,
-       _uuid = uuid ?? const Uuid();
+       _uuid = uuid ?? const Uuid(),
+       _parallelDownloader =
+           parallelDownloader ??
+           ModaoParallelDownloader(httpClient: httpClient),
+       assert(networkPolicyPollInterval > Duration.zero);
 
   static const String manifestUrl =
       'https://novel.kxhub.xyz/games/modao/manifest.json';
@@ -430,10 +467,19 @@ class ModaoGameService {
   static const MethodChannel _defaultPlatformChannel = MethodChannel(
     'com.novel.novel_app/modao_game',
   );
+  static final Map<String, Future<ModaoDownloadState>> _activeDownloadStarts =
+      {};
 
   final http.Client? httpClient;
   final MethodChannel _platformChannel;
   final Uuid _uuid;
+  final ModaoParallelDownloader _parallelDownloader;
+  final Duration networkPolicyPollInterval;
+  String _lastArtifactKey = '';
+  String _lastReleaseKey = '';
+  Timer? _networkPolicyTimer;
+  bool _networkPolicyChecking = false;
+  _ManagedModaoDownload? _managedDownload;
 
   Future<ModaoGameManifest> fetchManifest() async {
     final uri = Uri.parse(manifestUrl).replace(
@@ -520,12 +566,24 @@ class ModaoGameService {
   }
 
   Future<ModaoDownloadState> getDownloadState() async {
-    final value = await _platformChannel.invokeMapMethod<Object?, Object?>(
-      'getDownloadState',
-    );
-    return value == null
-        ? const ModaoDownloadState.none()
-        : ModaoDownloadState.fromPlatform(value);
+    final native = await _nativeDownloadState();
+    final artifactKey = native.artifactKey.isNotEmpty
+        ? native.artifactKey
+        : _lastArtifactKey;
+    final releaseKey = native.releaseKey.isNotEmpty
+        ? native.releaseKey
+        : _lastReleaseKey;
+    final snapshot = artifactKey.isEmpty || releaseKey.isEmpty
+        ? null
+        : _parallelDownloader.snapshot(artifactKey, releaseKey: releaseKey);
+    if (snapshot != null &&
+        snapshot.releaseKey == native.releaseKey &&
+        (snapshot.status == ModaoParallelDownloadStatus.downloading ||
+            snapshot.status == ModaoParallelDownloadStatus.paused ||
+            snapshot.status == ModaoParallelDownloadStatus.failed)) {
+      return _downloadStateFromSnapshot(snapshot, native);
+    }
+    return native;
   }
 
   Future<ModaoDownloadState> startDownload(
@@ -533,8 +591,65 @@ class ModaoGameService {
     required bool allowMetered,
   }) async {
     _validateManifest(manifest);
+    final key = manifest.artifactKey;
+    final existing = _activeDownloadStarts[key];
+    if (existing != null) return existing;
+    final future = _startDownloadInternal(manifest, allowMetered: allowMetered);
+    _activeDownloadStarts[key] = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_activeDownloadStarts[key], future)) {
+        _activeDownloadStarts.remove(key);
+      }
+    }
+  }
+
+  Future<ModaoDownloadState> _startDownloadInternal(
+    ModaoGameManifest manifest, {
+    required bool allowMetered,
+  }) async {
+    if (manifest.parts.isEmpty) {
+      throw const ModaoGameException('游戏分包信息无效，请刷新后重试');
+    }
+    final expectedArtifactKey = manifest.artifactKey;
+    final nativeBeforePrepare = await _nativeDownloadState();
+    final currentSnapshot =
+        nativeBeforePrepare.artifactKey.isEmpty ||
+            nativeBeforePrepare.releaseKey.isEmpty
+        ? null
+        : _parallelDownloader.snapshot(
+            nativeBeforePrepare.artifactKey,
+            releaseKey: nativeBeforePrepare.releaseKey,
+          );
+    if (nativeBeforePrepare.artifactKey == expectedArtifactKey &&
+        currentSnapshot?.status == ModaoParallelDownloadStatus.downloading) {
+      _lastArtifactKey = nativeBeforePrepare.artifactKey;
+      _lastReleaseKey = nativeBeforePrepare.releaseKey;
+      return _downloadStateFromSnapshot(currentSnapshot!, nativeBeforePrepare);
+    }
+    final managedBeforePrepare = _managedDownload;
+    if (nativeBeforePrepare.artifactKey == expectedArtifactKey &&
+        currentSnapshot?.status == ModaoParallelDownloadStatus.paused &&
+        managedBeforePrepare != null &&
+        managedBeforePrepare.plan.releaseKey ==
+            nativeBeforePrepare.releaseKey) {
+      final managed = allowMetered && !managedBeforePrepare.allowMetered
+          ? managedBeforePrepare.copyWith(allowMetered: true)
+          : managedBeforePrepare;
+      _managedDownload = managed;
+      final resumed = await _startManagedDownload(managed);
+      _startNetworkPolicyMonitor(managed);
+      return _downloadStateFromSnapshot(resumed, nativeBeforePrepare);
+    }
+    if (currentSnapshot?.isActive == true) {
+      await _parallelDownloader.cancel(
+        nativeBeforePrepare.artifactKey,
+        releaseKey: nativeBeforePrepare.releaseKey,
+      );
+    }
     final value = await _platformChannel
-        .invokeMapMethod<Object?, Object?>('startDownload', {
+        .invokeMapMethod<Object?, Object?>('prepareAppDownload', {
           'url': manifest.apkUrl.toString(),
           'fileName': manifest.downloadFileName,
           'sizeBytes': manifest.sizeBytes,
@@ -547,11 +662,213 @@ class ModaoGameService {
     if (value == null) {
       throw const ModaoGameException('游戏下载启动失败');
     }
-    return ModaoDownloadState.fromPlatform(value);
+    final nativePlan = _NativeModaoDownloadPlan.fromPlatform(value, manifest);
+    await _parallelDownloader.cancelAllExcept(
+      artifactKey: nativePlan.artifactKey,
+      releaseKey: nativePlan.releaseKey,
+    );
+    _lastArtifactKey = nativePlan.artifactKey;
+    _lastReleaseKey = nativePlan.releaseKey;
+    final plan = ModaoParallelDownloadPlan(
+      artifactKey: nativePlan.artifactKey,
+      releaseKey: nativePlan.releaseKey,
+      totalBytes: manifest.sizeBytes,
+      parts: [
+        for (var index = 0; index < manifest.parts.length; index++)
+          ModaoPartDownloadTarget(
+            index: index,
+            url: manifest.parts[index].url,
+            path: nativePlan.partPaths[index],
+            sizeBytes: manifest.parts[index].sizeBytes,
+            sha256: manifest.parts[index].sha256,
+          ),
+      ],
+    );
+    final managed = _ManagedModaoDownload(
+      nativePlan: nativePlan,
+      plan: plan,
+      allowMetered: allowMetered,
+    );
+    _managedDownload = managed;
+    final snapshot = await _startManagedDownload(managed);
+    _startNetworkPolicyMonitor(managed);
+    return _downloadStateFromSnapshot(
+      snapshot,
+      ModaoDownloadState(
+        status: ModaoDownloadStatus.downloading,
+        downloadedBytes: 0,
+        totalBytes: manifest.sizeBytes,
+        localPath: nativePlan.finalPath,
+        reason: '',
+        segmented: true,
+        partCount: manifest.parts.length,
+        transport: 'app_http',
+        artifactKey: nativePlan.artifactKey,
+        releaseKey: nativePlan.releaseKey,
+      ),
+    );
   }
 
-  Future<void> clearDownload() =>
-      _platformChannel.invokeMethod<void>('clearDownload');
+  Future<void> clearDownload() async {
+    final starts = _activeDownloadStarts.values.toList(growable: false);
+    for (final start in starts) {
+      try {
+        await start;
+      } catch (_) {
+        // A failed prepare has no active writer to settle.
+      }
+    }
+    final native = await _nativeDownloadState();
+    final artifactKey = native.artifactKey.isNotEmpty
+        ? native.artifactKey
+        : _lastArtifactKey;
+    final releaseKey = native.releaseKey.isNotEmpty
+        ? native.releaseKey
+        : _lastReleaseKey;
+    _stopNetworkPolicyMonitor();
+    _managedDownload = null;
+    if (artifactKey.isNotEmpty && releaseKey.isNotEmpty) {
+      await _parallelDownloader.cancel(artifactKey, releaseKey: releaseKey);
+    }
+    final cleared = await _platformChannel.invokeMethod<bool>(
+      'clearDownload',
+      releaseKey.isEmpty ? null : {'releaseKey': releaseKey},
+    );
+    if (cleared == false) return;
+    if (artifactKey.isNotEmpty && releaseKey.isNotEmpty) {
+      _parallelDownloader.forget(artifactKey, releaseKey: releaseKey);
+    }
+    if (_lastArtifactKey == artifactKey && _lastReleaseKey == releaseKey) {
+      _lastArtifactKey = '';
+      _lastReleaseKey = '';
+    }
+  }
+
+  Future<ModaoDownloadState> _nativeDownloadState() async {
+    final value = await _platformChannel.invokeMapMethod<Object?, Object?>(
+      'getDownloadState',
+    );
+    return value == null
+        ? const ModaoDownloadState.none()
+        : ModaoDownloadState.fromPlatform(value);
+  }
+
+  ModaoDownloadState _downloadStateFromSnapshot(
+    ModaoParallelDownloadSnapshot snapshot,
+    ModaoDownloadState native,
+  ) {
+    return ModaoDownloadState(
+      status: switch (snapshot.status) {
+        ModaoParallelDownloadStatus.paused => ModaoDownloadStatus.paused,
+        ModaoParallelDownloadStatus.failed => ModaoDownloadStatus.failed,
+        _ => ModaoDownloadStatus.downloading,
+      },
+      downloadedBytes: snapshot.downloadedBytes,
+      totalBytes: snapshot.totalBytes,
+      localPath: native.localPath,
+      reason: snapshot.reason,
+      segmented: true,
+      partCount: snapshot.partCount,
+      retainedBytes: snapshot.downloadedBytes,
+      transport: 'app_http',
+      artifactKey: snapshot.artifactKey,
+      releaseKey: snapshot.releaseKey,
+    );
+  }
+
+  Future<ModaoParallelDownloadSnapshot> _startManagedDownload(
+    _ManagedModaoDownload managed,
+  ) {
+    return _parallelDownloader.start(
+      managed.plan,
+      onPartsReady: () => _finalizeManagedDownload(managed),
+    );
+  }
+
+  Future<void> _finalizeManagedDownload(_ManagedModaoDownload managed) async {
+    final nativePlan = managed.nativePlan;
+    final finalized = await _platformChannel.invokeMapMethod<Object?, Object?>(
+      'finalizeAppDownload',
+      {
+        'releaseKey': nativePlan.releaseKey,
+        'artifactKey': nativePlan.artifactKey,
+      },
+    );
+    if (finalized == null) {
+      throw const ModaoGameException('游戏安装包合并启动失败');
+    }
+    final state = ModaoDownloadState.fromPlatform(finalized);
+    if (state.releaseKey != nativePlan.releaseKey ||
+        state.artifactKey != nativePlan.artifactKey ||
+        state.transport != 'app_http' ||
+        (state.status != ModaoDownloadStatus.merging &&
+            state.status != ModaoDownloadStatus.completed)) {
+      throw const ModaoGameException('游戏安装包合并状态无效');
+    }
+  }
+
+  void _startNetworkPolicyMonitor(_ManagedModaoDownload managed) {
+    _stopNetworkPolicyMonitor();
+    if (managed.allowMetered) return;
+    _networkPolicyTimer = Timer.periodic(
+      networkPolicyPollInterval,
+      (_) => unawaited(_enforceNetworkPolicy(managed)),
+    );
+  }
+
+  void _stopNetworkPolicyMonitor() {
+    _networkPolicyTimer?.cancel();
+    _networkPolicyTimer = null;
+  }
+
+  Future<void> _enforceNetworkPolicy(_ManagedModaoDownload managed) async {
+    if (_networkPolicyChecking || !identical(_managedDownload, managed)) {
+      return;
+    }
+    final before = _parallelDownloader.snapshot(
+      managed.plan.artifactKey,
+      releaseKey: managed.plan.releaseKey,
+    );
+    if (before == null ||
+        before.status == ModaoParallelDownloadStatus.completed ||
+        before.status == ModaoParallelDownloadStatus.failed ||
+        before.status == ModaoParallelDownloadStatus.cancelled) {
+      if (identical(_managedDownload, managed)) {
+        _stopNetworkPolicyMonitor();
+      }
+      return;
+    }
+
+    _networkPolicyChecking = true;
+    try {
+      final environment = await getDeviceEnvironment();
+      if (!identical(_managedDownload, managed)) return;
+      final current = _parallelDownloader.snapshot(
+        managed.plan.artifactKey,
+        releaseKey: managed.plan.releaseKey,
+      );
+      if (current == null) return;
+      final networkAllowed =
+          environment.connected &&
+          environment.validated &&
+          (!environment.metered || managed.allowMetered);
+      if (current.status == ModaoParallelDownloadStatus.downloading &&
+          !networkAllowed) {
+        await _parallelDownloader.pause(
+          managed.plan.artifactKey,
+          releaseKey: managed.plan.releaseKey,
+          reason: environment.metered ? '已暂停，等待 Wi-Fi 网络' : '已暂停，等待网络恢复',
+        );
+      } else if (current.status == ModaoParallelDownloadStatus.paused &&
+          networkAllowed) {
+        await _startManagedDownload(managed);
+      }
+    } catch (_) {
+      // A transient platform query failure must not destroy resumable parts.
+    } finally {
+      _networkPolicyChecking = false;
+    }
+  }
 
   Future<void> verifyDownloadedApk(
     ModaoGameManifest manifest,
@@ -925,6 +1242,95 @@ class ModaoGameService {
       uri.fragment.isEmpty &&
       uri.path.startsWith('/games/modao/') &&
       RegExp(r'\.part-[0-9]{3}\.apk$').hasMatch(uri.path.toLowerCase());
+}
+
+class _NativeModaoDownloadPlan {
+  const _NativeModaoDownloadPlan({
+    required this.artifactKey,
+    required this.releaseKey,
+    required this.finalPath,
+    required this.partPaths,
+  });
+
+  final String artifactKey;
+  final String releaseKey;
+  final String finalPath;
+  final List<String> partPaths;
+
+  factory _NativeModaoDownloadPlan.fromPlatform(
+    Map<Object?, Object?> value,
+    ModaoGameManifest manifest,
+  ) {
+    final artifactKey = value['artifactKey']?.toString() ?? '';
+    final releaseKey = value['releaseKey']?.toString() ?? '';
+    final finalPath = value['finalPath']?.toString() ?? '';
+    final totalBytes = int.tryParse(value['totalBytes']?.toString() ?? '') ?? 0;
+    final rawParts = value['parts'];
+    if (artifactKey != manifest.artifactKey ||
+        releaseKey.isEmpty ||
+        releaseKey.length > 512 ||
+        value['transport']?.toString() != 'app_http' ||
+        totalBytes != manifest.sizeBytes ||
+        finalPath.isEmpty ||
+        _fileName(finalPath) != manifest.downloadFileName ||
+        rawParts is! List ||
+        rawParts.length != manifest.parts.length) {
+      throw const ModaoGameException('游戏本地下载计划无效');
+    }
+
+    final paths = <String>[];
+    final seen = <String>{};
+    for (var index = 0; index < rawParts.length; index++) {
+      final raw = rawParts[index];
+      if (raw is! Map) {
+        throw const ModaoGameException('游戏本地下载计划无效');
+      }
+      final item = raw.cast<Object?, Object?>();
+      final path = item['path']?.toString() ?? '';
+      final part = manifest.parts[index];
+      if (int.tryParse(item['index']?.toString() ?? '') != index ||
+          int.tryParse(item['sizeBytes']?.toString() ?? '') != part.sizeBytes ||
+          _normalizeFingerprint(item['sha256']) != part.sha256 ||
+          path.isEmpty ||
+          _fileName(path) != part.fileName ||
+          !seen.add(path)) {
+        throw const ModaoGameException('游戏本地下载计划无效');
+      }
+      paths.add(path);
+    }
+    return _NativeModaoDownloadPlan(
+      artifactKey: artifactKey,
+      releaseKey: releaseKey,
+      finalPath: finalPath,
+      partPaths: paths,
+    );
+  }
+
+  static String _fileName(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final separator = normalized.lastIndexOf('/');
+    return separator < 0 ? normalized : normalized.substring(separator + 1);
+  }
+}
+
+class _ManagedModaoDownload {
+  const _ManagedModaoDownload({
+    required this.nativePlan,
+    required this.plan,
+    required this.allowMetered,
+  });
+
+  final _NativeModaoDownloadPlan nativePlan;
+  final ModaoParallelDownloadPlan plan;
+  final bool allowMetered;
+
+  _ManagedModaoDownload copyWith({required bool allowMetered}) {
+    return _ManagedModaoDownload(
+      nativePlan: nativePlan,
+      plan: plan,
+      allowMetered: allowMetered,
+    );
+  }
 }
 
 String _normalizeFingerprint(Object? value) =>

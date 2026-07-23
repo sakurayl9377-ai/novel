@@ -8,6 +8,7 @@ describe('role-aware navigation', () => {
     expect(routes).toContain('dashboard');
     expect(routes).toContain('settings');
     expect(routes).toContain('proxy');
+    expect(routes).toContain('games');
     expect(routes).toContain('ai-novels');
     expect(
       visibleNavigation('admin')

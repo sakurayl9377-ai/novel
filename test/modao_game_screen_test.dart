@@ -115,6 +115,117 @@ class _CompletedLegacyDownloadService extends _LegacyDownloadMigrationService {
   }
 }
 
+class _DownloadManagerMigrationService extends _LegacyDownloadMigrationService {
+  _DownloadManagerMigrationService({this.metered = false});
+
+  final bool metered;
+  int startCalls = 0;
+
+  @override
+  Future<ModaoDownloadState> getDownloadState() async {
+    final manifest = await fetchManifest();
+    return ModaoDownloadState(
+      status: ModaoDownloadStatus.downloading,
+      downloadedBytes: 3 * 1024 * 1024,
+      totalBytes: 200 * 1024 * 1024,
+      localPath: r'C:\games\modao-2023981000-aaaaaaaaaaaa.apk',
+      reason: '',
+      segmented: true,
+      partCount: 5,
+      transport: 'download_manager',
+      artifactKey: manifest.artifactKey,
+      releaseKey: 'legacy-release',
+    );
+  }
+
+  @override
+  Future<ModaoDeviceEnvironment> getDeviceEnvironment() async {
+    return ModaoDeviceEnvironment(
+      freeBytes: 10 * 1024 * 1024 * 1024,
+      networkType: metered ? 'cellular' : 'wifi',
+      connected: true,
+      validated: true,
+      metered: metered,
+    );
+  }
+
+  @override
+  Future<ModaoDownloadState> startDownload(
+    ModaoGameManifest manifest, {
+    required bool allowMetered,
+  }) async {
+    startCalls++;
+    expect(allowMetered, metered);
+    return ModaoDownloadState(
+      status: ModaoDownloadStatus.downloading,
+      downloadedBytes: 3 * 1024 * 1024,
+      totalBytes: manifest.sizeBytes,
+      localPath: r'C:\games\modao-2023981000-aaaaaaaaaaaa.apk',
+      reason: '',
+      segmented: true,
+      partCount: manifest.parts.length,
+      transport: 'app_http',
+      artifactKey: manifest.artifactKey,
+      releaseKey: 'app-http-release',
+    );
+  }
+}
+
+class _AppHttpRecoveryService extends _LegacyDownloadMigrationService {
+  int startCalls = 0;
+
+  @override
+  Future<ModaoDownloadState> getDownloadState() async {
+    final manifest = await fetchManifest();
+    return ModaoDownloadState(
+      status: ModaoDownloadStatus.failed,
+      downloadedBytes: 3 * 1024 * 1024,
+      totalBytes: manifest.sizeBytes,
+      localPath: r'C:\games\modao-2023981000-aaaaaaaaaaaa.apk',
+      reason: '游戏下载已中断',
+      segmented: true,
+      partCount: manifest.parts.length,
+      retainedBytes: 3 * 1024 * 1024,
+      transport: 'app_http',
+      artifactKey: manifest.artifactKey,
+      releaseKey: 'interrupted-release',
+    );
+  }
+
+  @override
+  Future<ModaoDeviceEnvironment> getDeviceEnvironment() async {
+    return const ModaoDeviceEnvironment(
+      freeBytes: 10 * 1024 * 1024 * 1024,
+      networkType: 'wifi',
+      connected: true,
+      validated: true,
+      metered: false,
+    );
+  }
+
+  @override
+  Future<ModaoDownloadState> startDownload(
+    ModaoGameManifest manifest, {
+    required bool allowMetered,
+  }) async {
+    startCalls++;
+    expect(allowMetered, isFalse);
+    return ModaoDownloadState(
+      status: ModaoDownloadStatus.downloading,
+      downloadedBytes: 3 * 1024 * 1024,
+      totalBytes: manifest.sizeBytes,
+      localPath: r'C:\games\modao-2023981000-aaaaaaaaaaaa.apk',
+      reason: '',
+      segmented: true,
+      partCount: manifest.parts.length,
+      retainedBytes: 3 * 1024 * 1024,
+      transport: 'app_http',
+      artifactKey: manifest.artifactKey,
+      releaseKey: 'resumed-release',
+    );
+  }
+}
+
 class _MergingGameService extends _FakeModaoGameService {
   @override
   Future<ModaoDownloadState> getDownloadState() async {
@@ -214,6 +325,62 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('下载中'), findsNothing);
+  });
+
+  testWidgets('migrates a matching DownloadManager task without clearing it', (
+    tester,
+  ) async {
+    final service = _DownloadManagerMigrationService();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ModaoGameScreen(token: 'token', service: service),
+      ),
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+
+    expect(service.startCalls, 1);
+    expect(service.clearCalls, 0);
+  });
+
+  testWidgets('keeps the old task when metered migration is declined', (
+    tester,
+  ) async {
+    final service = _DownloadManagerMigrationService(metered: true);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ModaoGameScreen(token: 'token', service: service),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(find.text('使用移动网络继续下载？'), findsOneWidget);
+
+    await tester.tap(find.text('暂不迁移'));
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+
+    expect(service.startCalls, 0);
+    expect(service.clearCalls, 0);
+  });
+
+  testWidgets('cold start resumes matching app HTTP partials on Wi-Fi', (
+    tester,
+  ) async {
+    final service = _AppHttpRecoveryService();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ModaoGameScreen(token: 'token', service: service),
+      ),
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 10));
+
+    expect(service.startCalls, 1);
+    expect(service.clearCalls, 0);
+    expect(find.textContaining('下载中'), findsWidgets);
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
   });
 
   testWidgets('keeps and verifies a completed legacy APK', (tester) async {
