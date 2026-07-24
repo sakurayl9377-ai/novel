@@ -25,6 +25,28 @@ void main() {
     expect(enter, contains('await _restoreSystemUi();'));
   });
 
+  test('fullscreen temporarily forces landscape and releases it on exit', () {
+    final enter = _methodSource(screen, 'Future<void> _enterManagedFullScreen');
+    final restore = _methodSource(screen, 'Future<void> _restoreSystemUi');
+    final cleanupOwner = enter.indexOf('try {');
+    final orientationRequest = enter.indexOf(
+      'await SystemChrome.setPreferredOrientations',
+    );
+    final staleEntryGuard = enter.indexOf('if (!mounted', orientationRequest);
+    final cleanup = enter.lastIndexOf('await _restoreSystemUi();');
+
+    expect(enter, contains('DeviceOrientation.landscapeLeft'));
+    expect(enter, contains('DeviceOrientation.landscapeRight'));
+    expect(enter, isNot(contains('isAutoRotationEnabled')));
+    expect(enter, contains('_managedFullScreenForcedOrientation = true;'));
+    expect(restore, contains('setPreferredOrientations(const [])'));
+    expect(restore, contains('_managedFullScreenForcedOrientation = false;'));
+    expect(cleanupOwner, greaterThanOrEqualTo(0));
+    expect(orientationRequest, greaterThan(cleanupOwner));
+    expect(staleEntryGuard, greaterThan(orientationRequest));
+    expect(cleanup, greaterThan(staleEntryGuard));
+  });
+
   test('inline can only enter and fullscreen can only exit', () {
     expect(screen, contains('onFullScreenPressed: forceFullScreenLayout'));
     expect(screen, contains('? (_) => _requestManagedFullScreenExit()'));

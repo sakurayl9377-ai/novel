@@ -21,17 +21,6 @@ class PlayerPlatformService {
     }
   }
 
-  static Future<bool> isAutoRotationEnabled() async {
-    if (!_supportsNativePlayerActions) return false;
-    try {
-      return await _channel.invokeMethod<bool>('isAutoRotationEnabled') ??
-          false;
-    } on Exception {
-      // A failed lookup must preserve the user's rotation lock.
-      return false;
-    }
-  }
-
   static Future<bool> enterPictureInPicture({
     int aspectWidth = 16,
     int aspectHeight = 9,

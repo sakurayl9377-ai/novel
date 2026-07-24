@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import '../services/player_platform_service.dart';
-
 class PlayerFullscreenCoordinator extends ChangeNotifier {
   bool _isFullscreen = false;
   bool _transitioning = false;
@@ -18,13 +16,11 @@ class PlayerFullscreenCoordinator extends ChangeNotifier {
     _transitioning = true;
     _resumeAfterTransition = wasPlaying;
     notifyListeners();
-    if (await PlayerPlatformService.isAutoRotationEnabled()) {
-      await SystemChrome.setPreferredOrientations(const [
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-      _forcedOrientation = true;
-    }
+    await SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    _forcedOrientation = true;
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _isFullscreen = true;
     _transitioning = false;

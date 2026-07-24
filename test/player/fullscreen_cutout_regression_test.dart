@@ -42,9 +42,7 @@ void main() {
   });
 
   test('video stays complete while controls fill the physical viewport', () {
-    final player = _readNormalized(
-      'lib/screens/anime_player_screen.dart',
-    );
+    final player = _readNormalized('lib/screens/anime_player_screen.dart');
 
     expect(player, contains('fit: BoxFit.contain'));
     expect(player, contains('Positioned.fill(child: controlsBuilder())'));
@@ -54,10 +52,25 @@ void main() {
     );
   });
 
-  test('inline player restores a clear standalone black title app bar', () {
-    final player = _readNormalized(
-      'lib/screens/anime_player_screen.dart',
+  test('fullscreen never changes the Android auto-rotation setting', () {
+    final activity = _readNormalized(
+      'android/app/src/main/kotlin/com/novel/novel_app/MainActivity.kt',
     );
+    final manifest = _readNormalized(
+      'android/app/src/main/AndroidManifest.xml',
+    );
+    final platformService = _readNormalized(
+      'lib/services/player_platform_service.dart',
+    );
+
+    expect(activity, isNot(contains('ACCELEROMETER_ROTATION')));
+    expect(activity, isNot(contains('Settings.System.put')));
+    expect(manifest, isNot(contains('android.permission.WRITE_SETTINGS')));
+    expect(platformService, isNot(contains('isAutoRotationEnabled')));
+  });
+
+  test('inline player restores a clear standalone black title app bar', () {
+    final player = _readNormalized('lib/screens/anime_player_screen.dart');
 
     expect(
       player,

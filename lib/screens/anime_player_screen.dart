@@ -1115,23 +1115,21 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
         _fullScreenGuard.expire(DateTime.now().millisecondsSinceEpoch);
       },
     );
-    if (await PlayerPlatformService.isAutoRotationEnabled()) {
+    try {
       await SystemChrome.setPreferredOrientations(const [
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
       _managedFullScreenForcedOrientation = true;
-    }
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    await PlayerPlatformService.setFullscreenSystemUi(true);
-    if (!mounted ||
-        !_managedFullScreenActive ||
-        fullScreenEpoch != _managedFullScreenEpoch) {
-      return;
-    }
-    _scheduleFullScreenTransitionFinish();
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      await PlayerPlatformService.setFullscreenSystemUi(true);
+      if (!mounted ||
+          !_managedFullScreenActive ||
+          fullScreenEpoch != _managedFullScreenEpoch) {
+        return;
+      }
+      _scheduleFullScreenTransitionFinish();
 
-    try {
       _managedFullScreenRouteVisible = true;
       await Navigator.of(context, rootNavigator: true).push<void>(
         PageRouteBuilder<void>(
