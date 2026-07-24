@@ -403,15 +403,6 @@ class MainActivity : AudioServiceActivity() {
                             packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE),
                     )
                 }
-                "isAutoRotationEnabled" -> {
-                    result.success(
-                        Settings.System.getInt(
-                            contentResolver,
-                            Settings.System.ACCELEROMETER_ROTATION,
-                            0,
-                        ) == 1,
-                    )
-                }
                 "enterPictureInPicture" -> {
                     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
                         !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
