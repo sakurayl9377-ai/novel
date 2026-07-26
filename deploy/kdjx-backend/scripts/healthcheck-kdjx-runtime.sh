@@ -19,6 +19,15 @@ require_tcp() {
         || fail "loopback TCP port is unavailable: $port"
 }
 
+require_udp_listener() {
+    local port="$1"
+    local listeners
+    command -v ss >/dev/null 2>&1 || fail "ss is unavailable"
+    listeners="$(ss --udp --listening --numeric --no-header "sport = :$port" 2>/dev/null)" \
+        || fail "failed to inspect UDP listeners for port: $port"
+    [[ -n "$listeners" ]] || fail "UDP port is unavailable: $port"
+}
+
 require_http_status() {
     local expected="$1"
     local method="$2"
@@ -69,9 +78,10 @@ for service in \
     require_active "$service"
 done
 
-for port in 27159 4150 4160 4161 18080 16666 28879; do
+for port in 2113 27159 4150 4160 4161 18080 16666; do
     require_tcp "$port"
 done
+require_udp_listener 32888
 
 curl --fail --silent --show-error --compressed http://127.0.0.1:18080/servers >/dev/null
 curl --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/servers >/dev/null

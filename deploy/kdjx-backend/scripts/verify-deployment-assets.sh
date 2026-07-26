@@ -852,7 +852,16 @@ grep -Fq 'kdjx-game@1.service' "$root_dir/systemd/kdjx-login.service"
 grep -Fq 'kdjx-game@1.service' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "'game.cn.1'" "$root_dir/scripts/generate-runtime-config.py"
 grep -Fq '28879' "$root_dir/scripts/generate-runtime-config.py"
-grep -Fq '28879' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'for port in 2113 27159 4150 4160 4161 18080 16666; do' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'ss --udp --listening --numeric --no-header "sport = :$port"' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'require_udp_listener 32888' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+! grep -Fq '28879' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq -- '-address=0.0.0.0:32888' \
+    "$root_dir/systemd/kdjx-online-fight-forward.service"
+grep -Fq -- '-metrics-address=127.0.0.1:2113' \
+    "$root_dir/systemd/kdjx-online-fight-forward.service"
 for topology_asset in \
     "$root_dir/scripts/generate-runtime-config.py" \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh" \
