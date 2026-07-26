@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import 'interaction_auth_service.dart';
+import 'modao_parallel_downloader.dart';
 
 class KdjxGameException implements Exception {
   const KdjxGameException(this.message);
@@ -207,6 +208,7 @@ enum KdjxDownloadStatus {
   none,
   queued,
   downloading,
+  merging,
   paused,
   completed,
   failed;
@@ -228,6 +230,12 @@ class KdjxDownloadState {
     required this.reason,
     required this.sourceUrl,
     required this.sourceIndex,
+    this.segmented = false,
+    this.partCount = 0,
+    this.retainedBytes = 0,
+    this.transport = '',
+    this.artifactKey = '',
+    this.releaseKey = '',
   });
 
   const KdjxDownloadState.none()
@@ -237,7 +245,13 @@ class KdjxDownloadState {
       localPath = '',
       reason = '',
       sourceUrl = '',
-      sourceIndex = 0;
+      sourceIndex = 0,
+      segmented = false,
+      partCount = 0,
+      retainedBytes = 0,
+      transport = '',
+      artifactKey = '',
+      releaseKey = '';
 
   final KdjxDownloadStatus status;
   final int downloadedBytes;
@@ -246,10 +260,17 @@ class KdjxDownloadState {
   final String reason;
   final String sourceUrl;
   final int sourceIndex;
+  final bool segmented;
+  final int partCount;
+  final int retainedBytes;
+  final String transport;
+  final String artifactKey;
+  final String releaseKey;
 
   bool get isActive =>
       status == KdjxDownloadStatus.queued ||
       status == KdjxDownloadStatus.downloading ||
+      status == KdjxDownloadStatus.merging ||
       status == KdjxDownloadStatus.paused;
 
   factory KdjxDownloadState.fromPlatform(Map<Object?, Object?> value) {
@@ -262,6 +283,13 @@ class KdjxDownloadState {
       reason: value['reason']?.toString() ?? '',
       sourceUrl: value['sourceUrl']?.toString() ?? '',
       sourceIndex: int.tryParse(value['sourceIndex']?.toString() ?? '') ?? 0,
+      segmented: value['segmented'] == true,
+      partCount: int.tryParse(value['partCount']?.toString() ?? '') ?? 0,
+      retainedBytes:
+          int.tryParse(value['retainedBytes']?.toString() ?? '') ?? 0,
+      transport: value['transport']?.toString() ?? '',
+      artifactKey: value['artifactKey']?.toString() ?? '',
+      releaseKey: value['releaseKey']?.toString() ?? '',
     );
   }
 }
@@ -535,7 +563,10 @@ class KdjxGameService {
     String? expectedSigningCertificateSha256,
     Set<String>? trustedDownloadHosts,
     String? apiBaseUrl,
-  }) : _platformChannel = platformChannel ?? _defaultPlatformChannel,
+    ModaoParallelDownloader? parallelDownloader,
+    this.networkPolicyPollInterval = const Duration(seconds: 1),
+  }) : assert(networkPolicyPollInterval > Duration.zero),
+       _platformChannel = platformChannel ?? _defaultPlatformChannel,
        _expectedSigningCertificateSha256 = _normalizeFingerprint(
          expectedSigningCertificateSha256 ?? _buildSigningCertificateSha256,
        ),
@@ -544,7 +575,13 @@ class KdjxGameService {
        ),
        _apiBaseUri = _validatedApiBaseUri(
          apiBaseUrl ?? InteractionAuthService.baseUrl,
-       );
+       ),
+       _parallelDownloader =
+           parallelDownloader ??
+           ModaoParallelDownloader(
+             httpClient: httpClient,
+             sessionNamespace: 'kdjx',
+           );
 
   static const String manifestUrl =
       'https://novel.kxhub.xyz/games/kdjx/manifest.json';
@@ -562,12 +599,21 @@ class KdjxGameService {
   static const MethodChannel _defaultPlatformChannel = MethodChannel(
     'com.novel.novel_app/kdjx_game',
   );
+  static final Map<String, Future<KdjxDownloadState>> _activeDownloadStarts =
+      {};
 
   final http.Client? httpClient;
   final MethodChannel _platformChannel;
   final String _expectedSigningCertificateSha256;
   final Set<String> _trustedDownloadHosts;
   final Uri _apiBaseUri;
+  final ModaoParallelDownloader _parallelDownloader;
+  final Duration networkPolicyPollInterval;
+  String _lastArtifactKey = '';
+  String _lastReleaseKey = '';
+  Timer? _networkPolicyTimer;
+  bool _networkPolicyChecking = false;
+  _ManagedKdjxDownload? _managedDownload;
 
   Future<KdjxGameManifest> fetchManifest() async {
     final uri = Uri.parse(manifestUrl).replace(
@@ -644,20 +690,92 @@ class KdjxGameService {
   }
 
   Future<KdjxDownloadState> getDownloadState() async {
-    final value = await _platformChannel.invokeMapMethod<Object?, Object?>(
-      'getDownloadState',
-    );
-    return value == null
-        ? const KdjxDownloadState.none()
-        : KdjxDownloadState.fromPlatform(value);
+    final native = await _nativeDownloadState();
+    if (native.status == KdjxDownloadStatus.merging) return native;
+    final artifactKey = native.artifactKey.isNotEmpty
+        ? native.artifactKey
+        : _lastArtifactKey;
+    final releaseKey = native.releaseKey.isNotEmpty
+        ? native.releaseKey
+        : _lastReleaseKey;
+    final snapshot = artifactKey.isEmpty || releaseKey.isEmpty
+        ? null
+        : _parallelDownloader.snapshot(artifactKey, releaseKey: releaseKey);
+    if (snapshot != null &&
+        snapshot.releaseKey == native.releaseKey &&
+        (snapshot.status == ModaoParallelDownloadStatus.downloading ||
+            snapshot.status == ModaoParallelDownloadStatus.paused ||
+            snapshot.status == ModaoParallelDownloadStatus.failed)) {
+      return _downloadStateFromSnapshot(snapshot, native);
+    }
+    return native;
   }
 
   Future<KdjxDownloadState> startDownload(
     KdjxGameManifest manifest, {
     required bool allowMetered,
     int preferredSourceIndex = 0,
+  }) {
+    final key = manifest.sha256;
+    final existing = _activeDownloadStarts[key];
+    if (existing != null) return existing;
+    final future = _startDownloadInternal(
+      manifest,
+      allowMetered: allowMetered,
+      preferredSourceIndex: preferredSourceIndex,
+    );
+    _activeDownloadStarts[key] = future;
+    return future.whenComplete(() {
+      if (identical(_activeDownloadStarts[key], future)) {
+        _activeDownloadStarts.remove(key);
+      }
+    });
+  }
+
+  Future<KdjxDownloadState> _startDownloadInternal(
+    KdjxGameManifest manifest, {
+    required bool allowMetered,
+    int preferredSourceIndex = 0,
   }) async {
     _validateManifest(manifest);
+    if (manifest.parts.length != 5) {
+      throw const KdjxGameException('游戏分包信息无效，请刷新后重试');
+    }
+    final nativeBeforePrepare = await _nativeDownloadState();
+    final currentSnapshot =
+        nativeBeforePrepare.artifactKey.isEmpty ||
+            nativeBeforePrepare.releaseKey.isEmpty
+        ? null
+        : _parallelDownloader.snapshot(
+            nativeBeforePrepare.artifactKey,
+            releaseKey: nativeBeforePrepare.releaseKey,
+          );
+    if (nativeBeforePrepare.artifactKey == manifest.sha256 &&
+        currentSnapshot?.status == ModaoParallelDownloadStatus.downloading) {
+      _lastArtifactKey = nativeBeforePrepare.artifactKey;
+      _lastReleaseKey = nativeBeforePrepare.releaseKey;
+      return _downloadStateFromSnapshot(currentSnapshot!, nativeBeforePrepare);
+    }
+    final managedBeforePrepare = _managedDownload;
+    if (nativeBeforePrepare.artifactKey == manifest.sha256 &&
+        currentSnapshot?.status == ModaoParallelDownloadStatus.paused &&
+        managedBeforePrepare != null &&
+        managedBeforePrepare.plan.releaseKey ==
+            nativeBeforePrepare.releaseKey) {
+      final managed = allowMetered && !managedBeforePrepare.allowMetered
+          ? managedBeforePrepare.copyWith(allowMetered: true)
+          : managedBeforePrepare;
+      _managedDownload = managed;
+      final resumed = await _startManagedDownload(managed);
+      _startNetworkPolicyMonitor(managed);
+      return _downloadStateFromSnapshot(resumed, nativeBeforePrepare);
+    }
+    if (currentSnapshot?.isActive == true) {
+      await _parallelDownloader.cancel(
+        nativeBeforePrepare.artifactKey,
+        releaseKey: nativeBeforePrepare.releaseKey,
+      );
+    }
     if (preferredSourceIndex < 0 ||
         (manifest.apkUrls.isNotEmpty &&
             preferredSourceIndex >= manifest.apkUrls.length)) {
@@ -667,7 +785,7 @@ class KdjxGameService {
         ? ''
         : manifest.apkUrls[preferredSourceIndex].toString();
     final value = await _platformChannel
-        .invokeMapMethod<Object?, Object?>('startDownload', {
+        .invokeMapMethod<Object?, Object?>('prepareAppDownload', {
           'url': fallbackUrl,
           'urls': manifest.apkUrls.map((url) => url.toString()).toList(),
           'parts': manifest.parts.map((part) => part.toJson()).toList(),
@@ -675,12 +793,60 @@ class KdjxGameService {
           'signingCertificateSha256': manifest.signingCertificateSha256,
           'sourceIndex': preferredSourceIndex,
           'fileName': manifest.downloadFileName,
+          'sizeBytes': manifest.sizeBytes,
+          'sha256': manifest.sha256,
           'allowMetered': allowMetered,
         });
     if (value == null) {
       throw const KdjxGameException('游戏下载启动失败');
     }
-    return KdjxDownloadState.fromPlatform(value);
+    final nativePlan = _NativeKdjxDownloadPlan.fromPlatform(value, manifest);
+    await _parallelDownloader.cancelAllExcept(
+      artifactKey: nativePlan.artifactKey,
+      releaseKey: nativePlan.releaseKey,
+    );
+    _lastArtifactKey = nativePlan.artifactKey;
+    _lastReleaseKey = nativePlan.releaseKey;
+    final plan = ModaoParallelDownloadPlan(
+      artifactKey: nativePlan.artifactKey,
+      releaseKey: nativePlan.releaseKey,
+      totalBytes: manifest.sizeBytes,
+      parts: [
+        for (var index = 0; index < manifest.parts.length; index++)
+          ModaoPartDownloadTarget(
+            index: index,
+            url: manifest.parts[index].url,
+            path: nativePlan.partPaths[index],
+            sizeBytes: manifest.parts[index].sizeBytes,
+            sha256: manifest.parts[index].sha256,
+          ),
+      ],
+    );
+    final managed = _ManagedKdjxDownload(
+      nativePlan: nativePlan,
+      plan: plan,
+      allowMetered: allowMetered,
+    );
+    _managedDownload = managed;
+    final snapshot = await _startManagedDownload(managed);
+    _startNetworkPolicyMonitor(managed);
+    return _downloadStateFromSnapshot(
+      snapshot,
+      KdjxDownloadState(
+        status: KdjxDownloadStatus.downloading,
+        downloadedBytes: 0,
+        totalBytes: manifest.sizeBytes,
+        localPath: nativePlan.finalPath,
+        reason: '',
+        sourceUrl: manifest.parts.first.url.toString(),
+        sourceIndex: preferredSourceIndex,
+        segmented: true,
+        partCount: manifest.parts.length,
+        transport: 'app_http',
+        artifactKey: nativePlan.artifactKey,
+        releaseKey: nativePlan.releaseKey,
+      ),
+    );
   }
 
   int nextDownloadSourceIndex(
@@ -691,8 +857,173 @@ class KdjxGameService {
     return (state.sourceIndex + 1) % manifest.apkUrls.length;
   }
 
-  Future<void> clearDownload() =>
-      _platformChannel.invokeMethod<void>('clearDownload');
+  Future<void> clearDownload() async {
+    final cancelled = await _platformChannel.invokeMethod<bool>(
+      'cancelDownloadWork',
+    );
+    if (cancelled == false) {
+      throw const KdjxGameException('无法停止游戏下载任务');
+    }
+    final starts = _activeDownloadStarts.values.toList(growable: false);
+    for (final start in starts) {
+      try {
+        await start;
+      } catch (_) {
+        // A failed prepare has no active writer to settle.
+      }
+    }
+    final native = await _nativeDownloadState();
+    final artifactKey = native.artifactKey.isNotEmpty
+        ? native.artifactKey
+        : _lastArtifactKey;
+    final releaseKey = native.releaseKey.isNotEmpty
+        ? native.releaseKey
+        : _lastReleaseKey;
+    _stopNetworkPolicyMonitor();
+    _managedDownload = null;
+    if (artifactKey.isNotEmpty && releaseKey.isNotEmpty) {
+      await _parallelDownloader.cancel(artifactKey, releaseKey: releaseKey);
+    }
+    final cleared = await _platformChannel.invokeMethod<bool>('clearDownload');
+    if (cleared == false) {
+      throw const KdjxGameException('无法清理游戏下载文件');
+    }
+    if (artifactKey.isNotEmpty && releaseKey.isNotEmpty) {
+      _parallelDownloader.forget(artifactKey, releaseKey: releaseKey);
+    }
+    if (_lastArtifactKey == artifactKey && _lastReleaseKey == releaseKey) {
+      _lastArtifactKey = '';
+      _lastReleaseKey = '';
+    }
+  }
+
+  Future<KdjxDownloadState> _nativeDownloadState() async {
+    final value = await _platformChannel.invokeMapMethod<Object?, Object?>(
+      'getDownloadState',
+    );
+    return value == null
+        ? const KdjxDownloadState.none()
+        : KdjxDownloadState.fromPlatform(value);
+  }
+
+  KdjxDownloadState _downloadStateFromSnapshot(
+    ModaoParallelDownloadSnapshot snapshot,
+    KdjxDownloadState native,
+  ) {
+    return KdjxDownloadState(
+      status: switch (snapshot.status) {
+        ModaoParallelDownloadStatus.paused => KdjxDownloadStatus.paused,
+        ModaoParallelDownloadStatus.failed => KdjxDownloadStatus.failed,
+        _ => KdjxDownloadStatus.downloading,
+      },
+      downloadedBytes: snapshot.downloadedBytes,
+      totalBytes: snapshot.totalBytes,
+      localPath: native.localPath,
+      reason: snapshot.reason,
+      sourceUrl: native.sourceUrl,
+      sourceIndex: native.sourceIndex,
+      segmented: true,
+      partCount: snapshot.partCount,
+      retainedBytes: snapshot.downloadedBytes,
+      transport: 'app_http',
+      artifactKey: snapshot.artifactKey,
+      releaseKey: snapshot.releaseKey,
+    );
+  }
+
+  Future<ModaoParallelDownloadSnapshot> _startManagedDownload(
+    _ManagedKdjxDownload managed,
+  ) {
+    return _parallelDownloader.start(
+      managed.plan,
+      onPartsReady: () => _finalizeManagedDownload(managed),
+    );
+  }
+
+  Future<void> _finalizeManagedDownload(_ManagedKdjxDownload managed) async {
+    final nativePlan = managed.nativePlan;
+    final finalized = await _platformChannel.invokeMapMethod<Object?, Object?>(
+      'finalizeAppDownload',
+      {
+        'artifactKey': nativePlan.artifactKey,
+        'releaseKey': nativePlan.releaseKey,
+      },
+    );
+    if (finalized == null) {
+      throw const KdjxGameException('游戏安装包合并失败');
+    }
+    final state = KdjxDownloadState.fromPlatform(finalized);
+    if (state.artifactKey != nativePlan.artifactKey ||
+        state.releaseKey != nativePlan.releaseKey ||
+        state.transport != 'app_http' ||
+        (state.status != KdjxDownloadStatus.merging &&
+            state.status != KdjxDownloadStatus.completed)) {
+      throw const KdjxGameException('游戏安装包合并状态无效');
+    }
+  }
+
+  void _startNetworkPolicyMonitor(_ManagedKdjxDownload managed) {
+    _stopNetworkPolicyMonitor();
+    if (managed.allowMetered) return;
+    _networkPolicyTimer = Timer.periodic(
+      networkPolicyPollInterval,
+      (_) => unawaited(_enforceNetworkPolicy(managed)),
+    );
+  }
+
+  void _stopNetworkPolicyMonitor() {
+    _networkPolicyTimer?.cancel();
+    _networkPolicyTimer = null;
+  }
+
+  Future<void> _enforceNetworkPolicy(_ManagedKdjxDownload managed) async {
+    if (_networkPolicyChecking || !identical(_managedDownload, managed)) {
+      return;
+    }
+    final before = _parallelDownloader.snapshot(
+      managed.plan.artifactKey,
+      releaseKey: managed.plan.releaseKey,
+    );
+    if (before == null ||
+        before.status == ModaoParallelDownloadStatus.completed ||
+        before.status == ModaoParallelDownloadStatus.failed ||
+        before.status == ModaoParallelDownloadStatus.cancelled) {
+      if (identical(_managedDownload, managed)) {
+        _stopNetworkPolicyMonitor();
+      }
+      return;
+    }
+
+    _networkPolicyChecking = true;
+    try {
+      final environment = await getDeviceEnvironment();
+      if (!identical(_managedDownload, managed)) return;
+      final current = _parallelDownloader.snapshot(
+        managed.plan.artifactKey,
+        releaseKey: managed.plan.releaseKey,
+      );
+      if (current == null) return;
+      final networkAllowed =
+          environment.connected &&
+          environment.validated &&
+          (!environment.metered || managed.allowMetered);
+      if (current.status == ModaoParallelDownloadStatus.downloading &&
+          !networkAllowed) {
+        await _parallelDownloader.pause(
+          managed.plan.artifactKey,
+          releaseKey: managed.plan.releaseKey,
+          reason: environment.metered ? '已暂停，等待 Wi-Fi 网络' : '已暂停，等待网络恢复',
+        );
+      } else if (current.status == ModaoParallelDownloadStatus.paused &&
+          networkAllowed) {
+        await _startManagedDownload(managed);
+      }
+    } catch (_) {
+      // A transient platform query failure must not destroy resumable parts.
+    } finally {
+      _networkPolicyChecking = false;
+    }
+  }
 
   Future<void> verifyDownloadedApk(
     KdjxGameManifest manifest,
@@ -1053,7 +1384,6 @@ class KdjxGameService {
               '${manifest.sha256.substring(0, 12)}.apk';
 
   bool _areTrustedParts(KdjxGameManifest manifest) {
-    if (manifest.parts.isEmpty) return true;
     if (manifest.parts.length != 5) return false;
     var total = 0;
     for (var index = 0; index < manifest.parts.length; index++) {
@@ -1116,6 +1446,93 @@ class KdjxGameService {
       );
     }
     return uri;
+  }
+}
+
+class _NativeKdjxDownloadPlan {
+  const _NativeKdjxDownloadPlan({
+    required this.artifactKey,
+    required this.releaseKey,
+    required this.finalPath,
+    required this.partPaths,
+  });
+
+  final String artifactKey;
+  final String releaseKey;
+  final String finalPath;
+  final List<String> partPaths;
+
+  factory _NativeKdjxDownloadPlan.fromPlatform(
+    Map<Object?, Object?> value,
+    KdjxGameManifest manifest,
+  ) {
+    final artifactKey = _normalizeFingerprint(value['artifactKey']);
+    final releaseKey = _normalizeFingerprint(value['releaseKey']);
+    final finalPath = value['finalPath']?.toString().trim() ?? '';
+    final totalBytes = int.tryParse(value['totalBytes']?.toString() ?? '') ?? 0;
+    final transport = value['transport']?.toString() ?? '';
+    final rawParts = value['parts'];
+    if (artifactKey != manifest.sha256 ||
+        !_isSha256(releaseKey) ||
+        finalPath.isEmpty ||
+        !finalPath
+            .replaceAll('\\', '/')
+            .endsWith('/${manifest.downloadFileName}') ||
+        totalBytes != manifest.sizeBytes ||
+        transport != 'app_http' ||
+        rawParts is! List ||
+        rawParts.length != manifest.parts.length) {
+      throw const KdjxGameException('游戏下载计划无效');
+    }
+    final paths = <String>[];
+    final seenPaths = <String>{};
+    for (var index = 0; index < rawParts.length; index++) {
+      final raw = rawParts[index];
+      if (raw is! Map) {
+        throw const KdjxGameException('游戏下载计划无效');
+      }
+      final expected = manifest.parts[index];
+      final actualIndex = int.tryParse(raw['index']?.toString() ?? '') ?? -1;
+      final path = raw['path']?.toString().trim() ?? '';
+      final sizeBytes = int.tryParse(raw['sizeBytes']?.toString() ?? '') ?? 0;
+      final sha256 = _normalizeFingerprint(raw['sha256']);
+      final expectedFileName = 'part-${index.toString().padLeft(3, '0')}';
+      if (actualIndex != index ||
+          path.isEmpty ||
+          !path.replaceAll('\\', '/').endsWith('/$expectedFileName') ||
+          !seenPaths.add(path) ||
+          sizeBytes != expected.sizeBytes ||
+          sha256 != expected.sha256) {
+        throw const KdjxGameException('游戏下载计划无效');
+      }
+      paths.add(path);
+    }
+    return _NativeKdjxDownloadPlan(
+      artifactKey: artifactKey,
+      releaseKey: releaseKey,
+      finalPath: finalPath,
+      partPaths: List<String>.unmodifiable(paths),
+    );
+  }
+}
+
+class _ManagedKdjxDownload {
+  const _ManagedKdjxDownload({
+    required this.nativePlan,
+    required this.plan,
+    required this.allowMetered,
+  });
+
+  final _NativeKdjxDownloadPlan nativePlan;
+  final ModaoParallelDownloadPlan plan;
+  final bool allowMetered;
+
+  _ManagedKdjxDownload copyWith({required bool allowMetered}) {
+    return _ManagedKdjxDownload(
+      nativePlan: nativePlan,
+      plan: plan,
+      allowMetered: allowMetered,
+    );
   }
 }
 

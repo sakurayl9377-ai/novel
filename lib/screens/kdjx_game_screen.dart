@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -28,8 +29,12 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
   bool _loading = true;
   bool _busy = false;
   bool _downloadVerified = false;
+  bool _polling = false;
   String _busyLabel = '';
   String? _error;
+  DateTime? _speedSampleAt;
+  int _speedSampleBytes = 0;
+  double _bytesPerSecond = 0;
 
   @override
   void initState() {
@@ -97,10 +102,15 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
 
   void _syncDownloadPoller() {
     if (_download.isActive) {
-      _downloadPoller ??= Timer.periodic(
-        const Duration(seconds: 1),
-        (_) => unawaited(_pollDownload()),
-      );
+      if (_downloadPoller == null) {
+        _bytesPerSecond = 0;
+        _speedSampleAt = DateTime.now();
+        _speedSampleBytes = _download.downloadedBytes;
+        _downloadPoller = Timer.periodic(
+          const Duration(seconds: 1),
+          (_) => unawaited(_pollDownload()),
+        );
+      }
     } else {
       _downloadPoller?.cancel();
       _downloadPoller = null;
@@ -108,9 +118,11 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
   }
 
   Future<void> _pollDownload() async {
-    if (_busy) return;
+    if (_busy || _polling) return;
+    _polling = true;
     try {
       final next = await _service.getDownloadState();
+      _updateSpeed(next.downloadedBytes);
       if (!mounted) return;
       setState(() => _download = next);
       if (next.status == KdjxDownloadStatus.completed) {
@@ -127,7 +139,26 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = _messageFor(error));
+    } finally {
+      _polling = false;
     }
+  }
+
+  void _updateSpeed(int downloadedBytes) {
+    final now = DateTime.now();
+    final previous = _speedSampleAt;
+    if (previous != null) {
+      final seconds = now.difference(previous).inMilliseconds / 1000;
+      if (seconds > 0) {
+        final current =
+            math.max(0, downloadedBytes - _speedSampleBytes) / seconds;
+        _bytesPerSecond = _bytesPerSecond == 0
+            ? current
+            : (_bytesPerSecond * 0.65) + (current * 0.35);
+      }
+    }
+    _speedSampleAt = now;
+    _speedSampleBytes = downloadedBytes;
   }
 
   Future<void> _verifyCompletedDownload() async {
@@ -204,9 +235,6 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
           if (mounted) setState(() => _busy = false);
           return;
         }
-      }
-      if (_download.status != KdjxDownloadStatus.none) {
-        await _service.clearDownload();
       }
       final download = await _service.startDownload(
         manifest,
@@ -351,8 +379,11 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
     final trustedInstalled = _installed.isTrustedFor(manifest);
     final currentInstalled = _installed.isCurrentFor(manifest);
     final signatureConflict = _installed.installed && !trustedInstalled;
-    final progress = _download.totalBytes > 0
-        ? (_download.downloadedBytes / _download.totalBytes).clamp(0.0, 1.0)
+    final progressTotal = _download.totalBytes > 0
+        ? _download.totalBytes
+        : manifest.sizeBytes;
+    final progress = progressTotal > 0
+        ? (_download.downloadedBytes / progressTotal).clamp(0.0, 1.0)
         : null;
 
     return Column(
@@ -432,6 +463,13 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
             _downloadLabel(),
             textAlign: TextAlign.center,
             style: const TextStyle(color: Color(0xFFB8C2CE), fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${_formatBytes(_download.downloadedBytes)} / '
+            '${_formatBytes(progressTotal)}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFF7F8B98), fontSize: 12),
           ),
         ],
         const SizedBox(height: 18),
@@ -545,7 +583,11 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
     return switch (_download.status) {
       KdjxDownloadStatus.queued => '等待分片下载',
       KdjxDownloadStatus.downloading =>
-        '已下载 ${_formatBytes(_download.downloadedBytes)} / ${_formatBytes(_download.totalBytes)}',
+        _bytesPerSecond > 0
+            ? '下载中 · ${_formatBytes(_bytesPerSecond.round())}/s'
+                  '${_remainingTimeLabel()}'
+            : '下载中 · 正在估算速度和剩余时间',
+      KdjxDownloadStatus.merging => '正在校验并合并安装包',
       KdjxDownloadStatus.paused =>
         _download.reason.isEmpty ? '下载已暂停' : _download.reason,
       KdjxDownloadStatus.completed =>
@@ -553,6 +595,16 @@ class _KdjxGameScreenState extends State<KdjxGameScreen>
       KdjxDownloadStatus.failed => '下载失败',
       KdjxDownloadStatus.none => '',
     };
+  }
+
+  String _remainingTimeLabel() {
+    final remainingBytes = math.max(
+      0,
+      _download.totalBytes - _download.downloadedBytes,
+    );
+    if (remainingBytes <= 0 || _bytesPerSecond <= 0) return '';
+    final eta = formatKdjxDownloadEta(remainingBytes / _bytesPerSecond);
+    return eta.isEmpty ? '' : ' · 预计剩余 $eta';
   }
 }
 
@@ -676,4 +728,15 @@ String _formatBytes(int bytes) {
   }
   final precision = value >= 100 || unit == 0 ? 0 : 1;
   return '${value.toStringAsFixed(precision)} ${units[unit]}';
+}
+
+String formatKdjxDownloadEta(double seconds) {
+  if (!seconds.isFinite || seconds <= 0) return '';
+  final rounded = seconds.ceil();
+  if (rounded < 60) return '$rounded秒';
+  final minutes = (rounded / 60).ceil();
+  if (minutes < 60) return '$minutes分钟';
+  final hours = minutes ~/ 60;
+  final remainingMinutes = minutes % 60;
+  return remainingMinutes == 0 ? '$hours小时' : '$hours小时$remainingMinutes分钟';
 }

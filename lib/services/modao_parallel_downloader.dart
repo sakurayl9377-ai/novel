@@ -70,6 +70,7 @@ class ModaoParallelDownloadSnapshot {
 class ModaoParallelDownloader {
   ModaoParallelDownloader({
     this.httpClient,
+    this.sessionNamespace = 'modao',
     this.requestAttempts = 5,
     this.requestHeaderTimeout = const Duration(seconds: 20),
     this.responseIdleTimeout = const Duration(seconds: 30),
@@ -77,7 +78,9 @@ class ModaoParallelDownloader {
     this.slowPartWindow = const Duration(seconds: 15),
     this.minimumHealthyPartBytesPerSecond = 160 * 1024,
     this.minimumSlowPartRemainingBytes = 2 * 1024 * 1024,
-  }) : assert(requestAttempts > 0),
+  }) : assert(sessionNamespace.trim().isNotEmpty),
+       assert(!sessionNamespace.contains('\u0000')),
+       assert(requestAttempts > 0),
        assert(requestHeaderTimeout > Duration.zero),
        assert(responseIdleTimeout > Duration.zero),
        assert(requestAbortSettleTimeout > Duration.zero),
@@ -88,6 +91,7 @@ class ModaoParallelDownloader {
   static final Map<String, _ModaoDownloadSession> _sessions = {};
 
   final http.Client? httpClient;
+  final String sessionNamespace;
   final int requestAttempts;
   final Duration requestHeaderTimeout;
   final Duration responseIdleTimeout;
@@ -158,8 +162,12 @@ class ModaoParallelDownloader {
     required String releaseKey,
   }) async {
     final keepKey = _sessionKey(artifactKey, releaseKey);
+    final namespacePrefix = '$sessionNamespace\u0000';
     final staleEntries = _sessions.entries
-        .where((entry) => entry.key != keepKey)
+        .where(
+          (entry) =>
+              entry.key.startsWith(namespacePrefix) && entry.key != keepKey,
+        )
         .map((entry) => MapEntry(entry.key, entry.value))
         .toList(growable: false);
 
@@ -192,7 +200,7 @@ class ModaoParallelDownloader {
   }
 
   String _sessionKey(String artifactKey, String releaseKey) =>
-      '$artifactKey\u0000$releaseKey';
+      '$sessionNamespace\u0000$artifactKey\u0000$releaseKey';
 
   Future<void> _runSession(
     _ModaoDownloadSession session, {

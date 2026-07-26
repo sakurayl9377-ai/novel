@@ -616,6 +616,71 @@ void main() {
       );
     },
   );
+
+  test('session namespaces isolate different game downloads', () async {
+    final payloads = [
+      Uint8List.fromList(List.generate(16, (index) => index + 1)),
+      Uint8List.fromList(List.generate(16, (index) => index + 30)),
+    ];
+    final kdjxPlan = _plan(
+      directory,
+      payloads,
+      suffix: 'namespace-kdjx',
+      artifactKey: 'shared-artifact',
+      releaseKey: 'shared-release',
+    );
+    final modaoPlan = _plan(
+      directory,
+      payloads,
+      suffix: 'namespace-modao',
+      artifactKey: 'shared-artifact',
+      releaseKey: 'shared-release',
+    );
+    final kdjxStarted = Completer<void>();
+    final releaseKdjx = Completer<void>();
+    var kdjxRequests = 0;
+    final kdjxDownloader = ModaoParallelDownloader(
+      sessionNamespace: 'kdjx',
+      httpClient: _CallbackClient((request) async {
+        kdjxRequests++;
+        if (kdjxRequests == payloads.length) kdjxStarted.complete();
+        await releaseKdjx.future;
+        return _rangeResponse(request, payloads[_partIndex(request)]);
+      }),
+    );
+    final modaoDownloader = ModaoParallelDownloader(
+      sessionNamespace: 'modao',
+      httpClient: _CallbackClient((request) async {
+        return _rangeResponse(request, payloads[_partIndex(request)]);
+      }),
+    );
+
+    await kdjxDownloader.start(kdjxPlan);
+    await kdjxStarted.future;
+    await modaoDownloader.start(modaoPlan);
+    await modaoDownloader.cancelAllExcept(
+      artifactKey: modaoPlan.artifactKey,
+      releaseKey: modaoPlan.releaseKey,
+    );
+    final modaoCompleted = await modaoDownloader.waitForCompletion(
+      modaoPlan.artifactKey,
+      releaseKey: modaoPlan.releaseKey,
+    );
+
+    expect(modaoCompleted.status, ModaoParallelDownloadStatus.completed);
+    expect(
+      kdjxDownloader
+          .snapshot(kdjxPlan.artifactKey, releaseKey: kdjxPlan.releaseKey)
+          ?.status,
+      ModaoParallelDownloadStatus.downloading,
+    );
+    releaseKdjx.complete();
+    final kdjxCompleted = await kdjxDownloader.waitForCompletion(
+      kdjxPlan.artifactKey,
+      releaseKey: kdjxPlan.releaseKey,
+    );
+    expect(kdjxCompleted.status, ModaoParallelDownloadStatus.completed);
+  });
 }
 
 ModaoParallelDownloadPlan _plan(

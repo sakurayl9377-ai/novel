@@ -1,11 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:novel_app/services/kdjx_game_service.dart';
+import 'package:novel_app/services/modao_parallel_downloader.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -87,43 +90,459 @@ void main() {
     expect(manifest.downloadFileName, 'kdjx-3-aaaaaaaaaaaa.apk');
   });
 
-  test('passes part hashes and whole-APK fallback to Android', () async {
-    const channel = MethodChannel('test/kdjx-parts');
-    MethodCall? captured;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-          captured = call;
-          return {
-            'status': 'queued',
-            'sourceIndex': 0,
-            'sourceUrl': (call.arguments as Map)['url'],
-          };
-        });
-    addTearDown(() {
+  test(
+    'uses the shared parallel range downloader and native finalize',
+    () async {
+      const channel = MethodChannel('test/kdjx-parts');
+      final directory = Directory.systemTemp.createTempSync(
+        'kdjx_parallel_adapter_',
+      );
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final payloads = [
+        for (var index = 0; index < 5; index++)
+          List<int>.filled(100, index + 1),
+      ];
+      final json = manifestJson();
+      for (var index = 0; index < payloads.length; index++) {
+        (json['parts'] as List)[index]['sha256'] = crypto.sha256
+            .convert(payloads[index])
+            .toString();
+      }
+      final manifest = KdjxGameManifest.fromJson(json);
+      const releaseKey =
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+      final finalPath = File(
+        '${directory.path}${Platform.pathSeparator}${manifest.downloadFileName}',
+      ).path;
+      MethodCall? prepareCall;
+      var prepared = false;
+      var finalized = false;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-    });
-    final service = serviceWith(channel: channel);
-    final manifest = KdjxGameManifest.fromJson(manifestJson());
+          .setMockMethodCallHandler(channel, (call) async {
+            switch (call.method) {
+              case 'getDownloadState':
+                if (!prepared) {
+                  return {
+                    'status': 'none',
+                    'downloadedBytes': 0,
+                    'totalBytes': 0,
+                    'localPath': '',
+                  };
+                }
+                return {
+                  'status': finalized ? 'completed' : 'downloading',
+                  'downloadedBytes': finalized ? manifest.sizeBytes : 0,
+                  'totalBytes': manifest.sizeBytes,
+                  'localPath': finalPath,
+                  'sourceUrl': manifest.parts.first.url.toString(),
+                  'sourceIndex': 0,
+                  'segmented': true,
+                  'partCount': manifest.parts.length,
+                  'transport': 'app_http',
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                };
+              case 'prepareAppDownload':
+                prepareCall = call;
+                prepared = true;
+                return {
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                  'finalPath': finalPath,
+                  'totalBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'parts': [
+                    for (final part in manifest.parts)
+                      {
+                        'index': part.index,
+                        'path': File(
+                          '${directory.path}${Platform.pathSeparator}'
+                          'part-${part.index.toString().padLeft(3, '0')}',
+                        ).path,
+                        'sizeBytes': part.sizeBytes,
+                        'sha256': part.sha256,
+                      },
+                  ],
+                };
+              case 'finalizeAppDownload':
+                finalized = true;
+                return {
+                  'status': 'completed',
+                  'downloadedBytes': manifest.sizeBytes,
+                  'totalBytes': manifest.sizeBytes,
+                  'localPath': finalPath,
+                  'sourceUrl': manifest.parts.first.url.toString(),
+                  'sourceIndex': 0,
+                  'segmented': true,
+                  'partCount': manifest.parts.length,
+                  'retainedBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                };
+              case 'cancelDownloadWork':
+                return true;
+              case 'clearDownload':
+                prepared = false;
+                finalized = false;
+                return true;
+            }
+            fail('Unexpected platform call: ${call.method}');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final ranges = <String>[];
+      final service = serviceWith(
+        channel: channel,
+        client: MockClient((request) async {
+          final match = RegExp(
+            r'\.part-(\d{3})\.apk$',
+          ).firstMatch(request.url.path);
+          final index = int.parse(match!.group(1)!);
+          expect(
+            request.headers['User-Agent'],
+            contains('Mozilla/5.0 (Linux; Android 14)'),
+          );
+          expect(request.headers['Accept-Encoding'], 'identity');
+          ranges.add(request.headers['Range']!);
+          return http.Response.bytes(
+            payloads[index],
+            206,
+            headers: {
+              'content-range': 'bytes 0-99/100',
+              'content-length': '100',
+            },
+            request: request,
+          );
+        }),
+      );
 
-    final state = await service.startDownload(manifest, allowMetered: false);
+      final state = await service.startDownload(manifest, allowMetered: false);
+      for (var attempt = 0; attempt < 100 && !finalized; attempt++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
 
-    expect(state.status, KdjxDownloadStatus.queued);
-    expect(captured?.method, 'startDownload');
-    final arguments = captured?.arguments as Map;
-    expect(arguments['url'], endsWith('kdjx-3-aaaaaaaaaaaa.apk'));
-    expect(arguments['trustedDownloadHosts'], ['novel.kxhub.xyz']);
-    expect(arguments['signingCertificateSha256'], signingSha);
-    expect(arguments['parts'], hasLength(5));
-    expect((arguments['parts'] as List).first, {
-      'index': 0,
-      'url':
-          'https://novel.kxhub.xyz/games/kdjx/'
-          'kdjx-3-aaaaaaaaaaaa.part-000.apk',
-      'sizeBytes': 100,
-      'sha256': '1' * 64,
-    });
-  });
+      expect(state.status, KdjxDownloadStatus.downloading);
+      expect(finalized, isTrue);
+      expect(ranges, hasLength(5));
+      expect(ranges.toSet(), {'bytes=0-99'});
+      expect(prepareCall?.method, 'prepareAppDownload');
+      final arguments = prepareCall?.arguments as Map;
+      expect(arguments['url'], endsWith('kdjx-3-aaaaaaaaaaaa.apk'));
+      expect(arguments['trustedDownloadHosts'], ['novel.kxhub.xyz']);
+      expect(arguments['signingCertificateSha256'], signingSha);
+      expect(arguments['sizeBytes'], manifest.sizeBytes);
+      expect(arguments['sha256'], manifest.sha256);
+      expect(arguments['parts'], hasLength(5));
+      expect((arguments['parts'] as List).first, {
+        'index': 0,
+        'url':
+            'https://novel.kxhub.xyz/games/kdjx/'
+            'kdjx-3-aaaaaaaaaaaa.part-000.apk',
+        'sizeBytes': 100,
+        'sha256': manifest.parts.first.sha256,
+      });
+      expect(
+        (await service.getDownloadState()).status,
+        KdjxDownloadStatus.completed,
+      );
+      await service.clearDownload();
+    },
+  );
+
+  test(
+    'cancels native work before waiting for the parallel session to clear',
+    () async {
+      const channel = MethodChannel('test/kdjx-clear-order');
+      final directory = Directory.systemTemp.createTempSync(
+        'kdjx_clear_order_',
+      );
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final events = <String>[];
+      final downloader = _BlockingParallelDownloader(events);
+      final manifest = KdjxGameManifest.fromJson(manifestJson());
+      const releaseKey =
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+      var prepared = false;
+      final nativeCancelObserved = Completer<void>();
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            switch (call.method) {
+              case 'getDownloadState':
+                if (!prepared) return const {'status': 'none'};
+                return {
+                  'status': 'downloading',
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                };
+              case 'prepareAppDownload':
+                prepared = true;
+                events.add('native:prepare');
+                return {
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                  'finalPath': File(
+                    '${directory.path}${Platform.pathSeparator}'
+                    '${manifest.downloadFileName}',
+                  ).path,
+                  'totalBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'parts': [
+                    for (final part in manifest.parts)
+                      {
+                        'index': part.index,
+                        'path': File(
+                          '${directory.path}${Platform.pathSeparator}'
+                          'part-${part.index.toString().padLeft(3, '0')}',
+                        ).path,
+                        'sizeBytes': part.sizeBytes,
+                        'sha256': part.sha256,
+                      },
+                  ],
+                };
+              case 'cancelDownloadWork':
+                events.add('native:cancel-work');
+                if (!nativeCancelObserved.isCompleted) {
+                  nativeCancelObserved.complete();
+                }
+                return true;
+              case 'clearDownload':
+                events.add('native:clear');
+                return true;
+            }
+            fail('Unexpected platform call: ${call.method}');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final service = KdjxGameService(
+        platformChannel: channel,
+        expectedSigningCertificateSha256: signingSha,
+        parallelDownloader: downloader,
+      );
+
+      final start = service.startDownload(manifest, allowMetered: false);
+      await downloader.startObserved.future;
+      final clear = service.clearDownload();
+      try {
+        await nativeCancelObserved.future.timeout(const Duration(seconds: 1));
+        expect(events, isNot(contains('native:clear')));
+      } finally {
+        downloader.releaseStart();
+      }
+      await start;
+      await clear;
+
+      expect(events, [
+        'native:prepare',
+        'parallel:start',
+        'native:cancel-work',
+        'parallel:cancel',
+        'native:clear',
+      ]);
+    },
+  );
+
+  test(
+    'pauses an unmetered download on cellular and resumes it on Wi-Fi',
+    () async {
+      const channel = MethodChannel('test/kdjx-network-policy');
+      final manifest = KdjxGameManifest.fromJson(manifestJson());
+      const releaseKey =
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+      final downloader = _PolicyParallelDownloader();
+      var prepared = false;
+      var prepareCalls = 0;
+      var metered = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            switch (call.method) {
+              case 'getDownloadState':
+                if (!prepared) return const {'status': 'none'};
+                return {
+                  'status': 'downloading',
+                  'downloadedBytes': 16,
+                  'totalBytes': manifest.sizeBytes,
+                  'localPath': r'C:\games\kdjx-3-aaaaaaaaaaaa.apk',
+                  'reason': '',
+                  'segmented': true,
+                  'partCount': manifest.parts.length,
+                  'retainedBytes': 16,
+                  'transport': 'app_http',
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                };
+              case 'prepareAppDownload':
+                prepared = true;
+                prepareCalls++;
+                return {
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                  'finalPath': r'C:\games\kdjx-3-aaaaaaaaaaaa.apk',
+                  'totalBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'parts': [
+                    for (final part in manifest.parts)
+                      {
+                        'index': part.index,
+                        'path':
+                            'C:\\games\\part-'
+                            '${part.index.toString().padLeft(3, '0')}',
+                        'sizeBytes': part.sizeBytes,
+                        'sha256': part.sha256,
+                      },
+                  ],
+                };
+              case 'getDeviceEnvironment':
+                return {
+                  'freeBytes': 10 * 1024 * 1024 * 1024,
+                  'networkType': metered ? 'cellular' : 'wifi',
+                  'connected': true,
+                  'validated': true,
+                  'metered': metered,
+                };
+              case 'cancelDownloadWork':
+                return true;
+              case 'clearDownload':
+                return true;
+            }
+            fail('Unexpected platform call: ${call.method}');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final service = KdjxGameService(
+        platformChannel: channel,
+        expectedSigningCertificateSha256: signingSha,
+        parallelDownloader: downloader,
+        networkPolicyPollInterval: const Duration(milliseconds: 10),
+      );
+
+      await service.startDownload(manifest, allowMetered: false);
+      expect(downloader.startCalls, 1);
+      expect(prepareCalls, 1);
+
+      metered = true;
+      await _waitUntil(() => downloader.pauseCalls == 1);
+      expect(downloader.current?.status, ModaoParallelDownloadStatus.paused);
+      expect(downloader.current?.downloadedBytes, 16);
+
+      metered = false;
+      await _waitUntil(() => downloader.startCalls == 2);
+      expect(
+        downloader.current?.status,
+        ModaoParallelDownloadStatus.downloading,
+      );
+      expect(downloader.current?.downloadedBytes, 16);
+      expect(prepareCalls, 1);
+
+      await service.clearDownload();
+    },
+  );
+
+  test(
+    'a paused unmetered download can be upgraded to allow mobile data',
+    () async {
+      const channel = MethodChannel('test/kdjx-network-upgrade');
+      final manifest = KdjxGameManifest.fromJson(manifestJson());
+      const releaseKey =
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+      final downloader = _PolicyParallelDownloader();
+      var prepared = false;
+      var prepareCalls = 0;
+      var metered = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            switch (call.method) {
+              case 'getDownloadState':
+                if (!prepared) return const {'status': 'none'};
+                return {
+                  'status': 'downloading',
+                  'downloadedBytes': 16,
+                  'totalBytes': manifest.sizeBytes,
+                  'localPath': r'C:\games\kdjx-3-aaaaaaaaaaaa.apk',
+                  'reason': '',
+                  'segmented': true,
+                  'partCount': manifest.parts.length,
+                  'retainedBytes': 16,
+                  'transport': 'app_http',
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                };
+              case 'prepareAppDownload':
+                prepared = true;
+                prepareCalls++;
+                return {
+                  'artifactKey': manifest.sha256,
+                  'releaseKey': releaseKey,
+                  'finalPath': r'C:\games\kdjx-3-aaaaaaaaaaaa.apk',
+                  'totalBytes': manifest.sizeBytes,
+                  'transport': 'app_http',
+                  'parts': [
+                    for (final part in manifest.parts)
+                      {
+                        'index': part.index,
+                        'path':
+                            'C:\\games\\part-'
+                            '${part.index.toString().padLeft(3, '0')}',
+                        'sizeBytes': part.sizeBytes,
+                        'sha256': part.sha256,
+                      },
+                  ],
+                };
+              case 'getDeviceEnvironment':
+                return {
+                  'freeBytes': 10 * 1024 * 1024 * 1024,
+                  'networkType': metered ? 'cellular' : 'wifi',
+                  'connected': true,
+                  'validated': true,
+                  'metered': metered,
+                };
+              case 'cancelDownloadWork':
+                return true;
+              case 'clearDownload':
+                return true;
+            }
+            fail('Unexpected platform call: ${call.method}');
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+      final service = KdjxGameService(
+        platformChannel: channel,
+        expectedSigningCertificateSha256: signingSha,
+        parallelDownloader: downloader,
+        networkPolicyPollInterval: const Duration(milliseconds: 10),
+      );
+
+      await service.startDownload(manifest, allowMetered: false);
+      metered = true;
+      await _waitUntil(() => downloader.pauseCalls == 1);
+
+      final resumed = await service.startDownload(manifest, allowMetered: true);
+
+      expect(resumed.status, KdjxDownloadStatus.downloading);
+      expect(downloader.startCalls, 2);
+      expect(downloader.current?.downloadedBytes, 16);
+      expect(prepareCalls, 1);
+
+      // Metered stays on; the upgraded download must not be paused again.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(downloader.pauseCalls, 1);
+      expect(
+        downloader.current?.status,
+        ModaoParallelDownloadStatus.downloading,
+      );
+
+      await service.clearDownload();
+    },
+  );
 
   test('rejects mirrors and raw IP download hosts', () {
     expect(
@@ -652,4 +1071,225 @@ void main() {
     expect(source, isNot(contains('lateinit var kdjxGameBridge')));
     expect(source, isNot(contains('kdjxGameBridge = KdjxGameBridge(this)')));
   });
+
+  test('native merge commits completed state before deleting the parts', () {
+    final source = _kdjxBridgeSource();
+
+    // The assembling step must publish the APK without deleting parts.
+    final assembleStart = source.indexOf('fun assemblePreparedDownload(');
+    final assembleEnd = source.indexOf('fun preparedPartFile(');
+    expect(assembleStart, greaterThanOrEqualTo(0));
+    expect(assembleEnd, greaterThan(assembleStart));
+    expect(
+      source.substring(assembleStart, assembleEnd),
+      isNot(contains('workDirectory.deleteRecursively()')),
+    );
+
+    // The worker persists "completed" with commit() first and only then
+    // removes the parts, so a crash in between restores as completed.
+    final committedIndex = source.indexOf(
+      'persistDownloadStateCommittedLocked()',
+    );
+    final deletePartsIndex = source.indexOf(
+      'prepared.workDirectory.deleteRecursively()',
+    );
+    expect(committedIndex, greaterThanOrEqualTo(0));
+    expect(deletePartsIndex, greaterThan(committedIndex));
+    expect(
+      source,
+      contains(
+        'private fun persistDownloadStateCommittedLocked() {\n'
+        '        if (!downloadStateEditorLocked().commit()) {',
+      ),
+    );
+  });
+
+  test('native restore verifies a crashed merge before trusting the APK', () {
+    final source = _kdjxBridgeSource();
+
+    final mergingRestoreIndex = source.indexOf(
+      'if (downloadStatus == "merging") {',
+    );
+    expect(mergingRestoreIndex, greaterThanOrEqualTo(0));
+    expect(source, contains('verifiedCompletedMergeFileLocked()'));
+
+    final verifyStart = source.indexOf(
+      'fun verifiedCompletedMergeFileLocked()',
+    );
+    final verifyEnd = source.indexOf('fun downloadStateEditorLocked()');
+    expect(verifyStart, greaterThanOrEqualTo(0));
+    expect(verifyEnd, greaterThan(verifyStart));
+    final verifyBody = source.substring(verifyStart, verifyEnd);
+    expect(verifyBody, contains('requireDownloadedApk(downloadPath)'));
+    expect(verifyBody, contains('file.length() != totalBytes'));
+    expect(verifyBody, contains('sha256Hex(file) != downloadArtifactKey'));
+
+    // A failed verification must keep retained parts resumable.
+    final mergingBlock = source.substring(
+      mergingRestoreIndex,
+      source.indexOf('if (downloadStatus in setOf(', mergingRestoreIndex),
+    );
+    expect(mergingBlock, contains('retainedPartBytesFromState()'));
+    expect(mergingBlock, isNot(contains('deleteRecursively')));
+  });
+
+  test('native finalize is single-flight per download generation', () {
+    final source = _kdjxBridgeSource();
+
+    // The first finalize atomically takes merge ownership under the lock.
+    final ownershipIndex = source.indexOf('activeMergeGeneration = generation');
+    final workerIndex = source.indexOf('ioExecutor.execute {', ownershipIndex);
+    expect(ownershipIndex, greaterThanOrEqualTo(0));
+    expect(workerIndex, greaterThan(ownershipIndex));
+
+    // A duplicate finalize for the running merge returns the merging state;
+    // a different release is rejected.
+    expect(
+      source,
+      contains('if (sameRelease && downloadStatus == "merging") {'),
+    );
+    expect(source, contains('"Another KDJX merge is already active"'));
+
+    // The worker clears only the merge marker it owns.
+    expect(
+      source,
+      contains(
+        'finally {\n'
+        '                synchronized(downloadLock) {\n'
+        '                    if (activeMergeGeneration == generation) {\n'
+        '                        activeMergeGeneration = null\n'
+        '                    }\n'
+        '                }\n'
+        '            }',
+      ),
+    );
+
+    // Cancel and clear interrupt the current generation's merge.
+    for (final cancelSite in [
+      'fun cancelDownloadWork()',
+      'fun clearDownload()',
+    ]) {
+      final siteIndex = source.indexOf(cancelSite);
+      expect(siteIndex, greaterThanOrEqualTo(0));
+      final siteBlock = source.substring(siteIndex, siteIndex + 600);
+      expect(siteBlock, contains('downloadGeneration += 1'));
+      expect(siteBlock, contains('activeMergeGeneration = null'));
+    }
+  });
+}
+
+String _kdjxBridgeSource() => File(
+  'android/app/src/main/kotlin/com/novel/novel_app/KdjxGameBridge.kt',
+).readAsStringSync().replaceAll('\r\n', '\n');
+
+class _PolicyParallelDownloader extends ModaoParallelDownloader {
+  _PolicyParallelDownloader() : super(sessionNamespace: 'kdjx-policy-test');
+
+  ModaoParallelDownloadSnapshot? current;
+  int startCalls = 0;
+  int pauseCalls = 0;
+
+  @override
+  ModaoParallelDownloadSnapshot? snapshot(
+    String artifactKey, {
+    required String releaseKey,
+  }) => current?.artifactKey == artifactKey && current?.releaseKey == releaseKey
+      ? current
+      : null;
+
+  @override
+  Future<ModaoParallelDownloadSnapshot> start(
+    ModaoParallelDownloadPlan plan, {
+    Future<void> Function()? onPartsReady,
+  }) async {
+    startCalls++;
+    current = ModaoParallelDownloadSnapshot(
+      artifactKey: plan.artifactKey,
+      releaseKey: plan.releaseKey,
+      status: ModaoParallelDownloadStatus.downloading,
+      downloadedBytes: current?.downloadedBytes ?? 16,
+      totalBytes: plan.totalBytes,
+      partCount: plan.parts.length,
+    );
+    return current!;
+  }
+
+  @override
+  Future<void> pause(
+    String artifactKey, {
+    required String releaseKey,
+    required String reason,
+  }) async {
+    pauseCalls++;
+    final before = current!;
+    current = ModaoParallelDownloadSnapshot(
+      artifactKey: before.artifactKey,
+      releaseKey: before.releaseKey,
+      status: ModaoParallelDownloadStatus.paused,
+      downloadedBytes: before.downloadedBytes,
+      totalBytes: before.totalBytes,
+      partCount: before.partCount,
+      reason: reason,
+    );
+  }
+
+  @override
+  Future<void> cancel(String artifactKey, {required String releaseKey}) async {
+    current = null;
+  }
+
+  @override
+  Future<void> cancelAllExcept({
+    required String artifactKey,
+    required String releaseKey,
+  }) async {}
+
+  @override
+  void forget(String artifactKey, {required String releaseKey}) {}
+}
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 2));
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Timed out waiting for asynchronous state');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+class _BlockingParallelDownloader extends ModaoParallelDownloader {
+  _BlockingParallelDownloader(this.events)
+    : super(sessionNamespace: 'kdjx-clear-order-test');
+
+  final List<String> events;
+  final Completer<void> startObserved = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+
+  @override
+  Future<ModaoParallelDownloadSnapshot> start(
+    ModaoParallelDownloadPlan plan, {
+    Future<void> Function()? onPartsReady,
+  }) async {
+    events.add('parallel:start');
+    startObserved.complete();
+    await _release.future;
+    return ModaoParallelDownloadSnapshot(
+      artifactKey: plan.artifactKey,
+      releaseKey: plan.releaseKey,
+      status: ModaoParallelDownloadStatus.downloading,
+      downloadedBytes: 0,
+      totalBytes: plan.totalBytes,
+      partCount: plan.parts.length,
+    );
+  }
+
+  @override
+  Future<void> cancel(String artifactKey, {required String releaseKey}) async {
+    events.add('parallel:cancel');
+  }
+
+  void releaseStart() {
+    if (!_release.isCompleted) _release.complete();
+  }
 }

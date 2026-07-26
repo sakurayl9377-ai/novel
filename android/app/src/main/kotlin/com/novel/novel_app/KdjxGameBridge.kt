@@ -17,13 +17,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 internal enum class KdjxAuthorizationCaptureAction {
     STORE_INCOMING,
@@ -181,6 +176,15 @@ internal class KdjxGameBridge(private val activity: Activity) {
         val sha256: String,
     )
 
+    private data class PreparedDownload(
+        val artifactKey: String,
+        val releaseKey: String,
+        val sha256: String,
+        val destination: File,
+        val workDirectory: File,
+        val parts: List<ApkPart>,
+    )
+
     private val packageName = "com.kd.kdjxcs"
     private val channelName = "com.novel.novel_app/kdjx_game"
     private val trustedDownloadHosts = setOf("novel.kxhub.xyz")
@@ -190,8 +194,14 @@ internal class KdjxGameBridge(private val activity: Activity) {
     private val downloadPreferencesName = "kdjx_game_download"
     private val externalRequestPreferencesName = "kdjx_external_requests"
     private val downloadLock = Any()
-    private val ioExecutor = Executors.newFixedThreadPool(6)
+    private val ioExecutor = Executors.newFixedThreadPool(2)
     private var methodChannel: MethodChannel? = null
+    private var preparedDownload: PreparedDownload? = null
+
+    // Generation that owns the single in-flight merge worker; guarded by
+    // downloadLock. A merge is active only while this matches
+    // downloadGeneration.
+    private var activeMergeGeneration: Long? = null
 
     @Volatile private var downloadGeneration = 0L
     @Volatile private var downloadStatus = "none"
@@ -201,6 +211,9 @@ internal class KdjxGameBridge(private val activity: Activity) {
     @Volatile private var downloadReason = ""
     @Volatile private var downloadSourceUrl = ""
     @Volatile private var downloadSourceIndex = 0
+    @Volatile private var downloadArtifactKey = ""
+    @Volatile private var downloadReleaseKey = ""
+    @Volatile private var downloadPartCount = 0
 
     init {
         restoreDownloadState()
@@ -228,7 +241,7 @@ internal class KdjxGameBridge(private val activity: Activity) {
                     }
                     "getDeviceEnvironment" -> result.success(deviceEnvironment())
                     "getDownloadState" -> result.success(downloadState())
-                    "startDownload" -> {
+                    "prepareAppDownload" -> {
                         try {
                             val urls = (
                                 call.argument<List<*>>("urls") ?: emptyList<Any>()
@@ -254,7 +267,7 @@ internal class KdjxGameBridge(private val activity: Activity) {
                                     ?: emptyList<Any>(),
                             )
                             result.success(
-                                startDownload(
+                                prepareAppDownload(
                                     urls = urls,
                                     parts = parts,
                                     sourceIndex = (
@@ -262,6 +275,12 @@ internal class KdjxGameBridge(private val activity: Activity) {
                                         ).toInt(),
                                     fileName = call.argument<String>(
                                         "fileName",
+                                    ).orEmpty(),
+                                    expectedSize = (
+                                        call.argument<Number>("sizeBytes") ?: 0
+                                        ).toLong(),
+                                    expectedSha256 = call.argument<String>(
+                                        "sha256",
                                     ).orEmpty(),
                                     allowMetered =
                                         call.argument<Boolean>("allowMetered") == true,
@@ -271,9 +290,30 @@ internal class KdjxGameBridge(private val activity: Activity) {
                             result.error("DOWNLOAD_FAILED", error.message, null)
                         }
                     }
+                    "finalizeAppDownload" -> {
+                        finalizeAppDownload(
+                            artifactKey = call.argument<String>(
+                                "artifactKey",
+                            ).orEmpty(),
+                            releaseKey = call.argument<String>(
+                                "releaseKey",
+                            ).orEmpty(),
+                            result = result,
+                        )
+                    }
+                    "cancelDownloadWork" -> {
+                        result.success(cancelDownloadWork())
+                    }
                     "clearDownload" -> {
-                        clearDownload()
-                        result.success(null)
+                        try {
+                            result.success(clearDownload())
+                        } catch (error: Exception) {
+                            result.error(
+                                "DOWNLOAD_CLEAR_FAILED",
+                                error.message,
+                                null,
+                            )
+                        }
                     }
                     "inspectApk" -> {
                         val path = call.argument<String>("path")
@@ -431,6 +471,7 @@ internal class KdjxGameBridge(private val activity: Activity) {
         detachChannel()
         synchronized(downloadLock) {
             downloadGeneration += 1
+            activeMergeGeneration = null
         }
         ioExecutor.shutdownNow()
     }
@@ -958,14 +999,23 @@ internal class KdjxGameBridge(private val activity: Activity) {
         return parts
     }
 
-    private fun startDownload(
+    private fun prepareAppDownload(
         urls: List<String>,
         parts: List<ApkPart>,
         sourceIndex: Int,
         fileName: String,
+        expectedSize: Long,
+        expectedSha256: String,
         allowMetered: Boolean,
     ): Map<String, Any?> {
+        val normalizedSha256 = normalizeSha256(expectedSha256)
+        val calculatedSize = parts.sumOf(ApkPart::sizeBytes)
         if (!Regex("^kdjx-[0-9]+-[0-9a-f]{12}\\.apk$").matches(fileName) ||
+            !isSha256(normalizedSha256) ||
+            !fileName.endsWith("-${normalizedSha256.take(12)}.apk") ||
+            expectedSize != calculatedSize ||
+            expectedSize <= 0L ||
+            expectedSize > MAXIMUM_APK_BYTES ||
             urls.any { !isTrustedWholeApkUrl(it, fileName) } ||
             (urls.isNotEmpty() && sourceIndex !in urls.indices) ||
             (urls.isEmpty() && sourceIndex != 0)
@@ -987,272 +1037,274 @@ internal class KdjxGameBridge(private val activity: Activity) {
             throw IllegalStateException("Waiting for an unmetered network")
         }
 
-        clearDownload()
-        val destination = File(downloadDirectory(), fileName)
-        val generation: Long
+        val root = downloadDirectory()
+        val destination = File(root, fileName)
+        val workDirectory = File(
+            root,
+            ".parts-${fileName.removeSuffix(".apk")}",
+        )
+        val artifactKey = normalizedSha256
+        val releaseKey = sha256Hex(
+            buildString {
+                append(fileName)
+                for (part in parts) {
+                    append('|')
+                    append(part.index)
+                    append(':')
+                    append(part.sizeBytes)
+                    append(':')
+                    append(part.sha256)
+                }
+            }.toByteArray(Charsets.UTF_8),
+        )
+        val preserveParts: Boolean
         synchronized(downloadLock) {
-            generation = downloadGeneration
-            downloadStatus = "queued"
-            downloadedBytes = 0L
-            totalBytes = parts.sumOf(ApkPart::sizeBytes)
+            downloadGeneration += 1
+            preserveParts =
+                downloadArtifactKey == artifactKey &&
+                downloadReleaseKey == releaseKey &&
+                downloadPath == destination.absolutePath
+            preparedDownload = null
+        }
+        if (!preserveParts) {
+            root.listFiles()?.forEach(File::deleteRecursively)
+        } else {
+            destination.delete()
+            File(destination.absolutePath + ".assembling").delete()
+        }
+        if (!workDirectory.exists() && !workDirectory.mkdirs()) {
+            throw IllegalStateException("Unable to prepare APK parts")
+        }
+        val prepared = PreparedDownload(
+            artifactKey = artifactKey,
+            releaseKey = releaseKey,
+            sha256 = normalizedSha256,
+            destination = destination,
+            workDirectory = workDirectory,
+            parts = parts,
+        )
+        val retainedBytes = retainedPartBytes(prepared)
+        synchronized(downloadLock) {
+            preparedDownload = prepared
+            downloadStatus = "downloading"
+            downloadedBytes = retainedBytes
+            totalBytes = expectedSize
             downloadPath = destination.absolutePath
             downloadReason = ""
             downloadSourceIndex = sourceIndex
             downloadSourceUrl = parts.firstOrNull()?.url
                 ?: urls.getOrNull(sourceIndex).orEmpty()
+            downloadArtifactKey = artifactKey
+            downloadReleaseKey = releaseKey
+            downloadPartCount = parts.size
             persistDownloadStateLocked()
         }
-        ioExecutor.execute {
-            runDownload(
-                generation = generation,
-                destination = destination,
-                parts = parts,
-                urls = urls,
-                preferredSourceIndex = sourceIndex,
-            )
-        }
-        return downloadState()
+        return preparedDownloadPlan(prepared)
     }
 
-    private fun runDownload(
-        generation: Long,
-        destination: File,
-        parts: List<ApkPart>,
-        urls: List<String>,
-        preferredSourceIndex: Int,
-    ) {
-        try {
-            updateDownloadStatus(generation, "downloading")
-            val workDirectory = File(
-                downloadDirectory(),
-                ".parts-$generation",
-            )
-            if (!workDirectory.exists() && !workDirectory.mkdirs()) {
-                throw IllegalStateException("Unable to prepare APK parts")
-            }
-            val counter = AtomicLong(0L)
-            val partFailure = downloadParts(
-                generation,
-                parts,
-                workDirectory,
-                counter,
-            )
-            if (generation != downloadGeneration) return
+    private fun preparedDownloadPlan(
+        prepared: PreparedDownload,
+    ): Map<String, Any?> {
+        return mapOf(
+            "artifactKey" to prepared.artifactKey,
+            "releaseKey" to prepared.releaseKey,
+            "finalPath" to prepared.destination.absolutePath,
+            "totalBytes" to prepared.parts.sumOf(ApkPart::sizeBytes),
+            "transport" to "app_http",
+            "parts" to prepared.parts.map { part ->
+                mapOf(
+                    "index" to part.index,
+                    "path" to preparedPartFile(prepared, part).absolutePath,
+                    "sizeBytes" to part.sizeBytes,
+                    "sha256" to part.sha256,
+                )
+            },
+        )
+    }
 
-            if (partFailure == null) {
-                assembleParts(generation, parts, workDirectory, destination)
-            } else {
-                workDirectory.deleteRecursively()
-                if (urls.isEmpty()) throw partFailure
-                var fallbackFailure: Throwable = partFailure
-                var downloaded = false
-                for (offset in urls.indices) {
-                    val index = (preferredSourceIndex + offset) % urls.size
-                    try {
-                        synchronized(downloadLock) {
-                            if (generation != downloadGeneration) return
-                            downloadedBytes = 0L
-                            downloadSourceIndex = index
-                            downloadSourceUrl = urls[index]
-                            persistDownloadStateLocked()
-                        }
-                        downloadWholeApk(
-                            generation,
-                            urls[index],
-                            destination,
-                            parts.sumOf(ApkPart::sizeBytes),
-                        )
-                        downloaded = true
-                        break
-                    } catch (error: Throwable) {
-                        fallbackFailure = error
-                        if (generation != downloadGeneration) return
-                    }
-                }
-                if (!downloaded) throw fallbackFailure
-            }
-            if (generation != downloadGeneration) return
+    private fun finalizeAppDownload(
+        artifactKey: String,
+        releaseKey: String,
+        result: MethodChannel.Result,
+    ) {
+        val prepared: PreparedDownload
+        val generation: Long
+        try {
             synchronized(downloadLock) {
-                if (generation != downloadGeneration) return
-                downloadedBytes = destination.length()
-                totalBytes = destination.length()
-                downloadStatus = "completed"
+                if (!isSha256(artifactKey) || !isSha256(releaseKey)) {
+                    throw SecurityException("KDJX download plan mismatch")
+                }
+                val sameRelease =
+                    downloadArtifactKey == artifactKey &&
+                        downloadReleaseKey == releaseKey
+                if (activeMergeGeneration == downloadGeneration &&
+                    activeMergeGeneration != null
+                ) {
+                    // A merge worker for this generation is still running.
+                    if (sameRelease && downloadStatus == "merging") {
+                        result.success(downloadState())
+                        return
+                    }
+                    throw IllegalStateException(
+                        "Another KDJX merge is already active",
+                    )
+                }
+                if (sameRelease && downloadStatus == "completed") {
+                    result.success(downloadState())
+                    return
+                }
+                val current = preparedDownload
+                    ?: throw IllegalStateException(
+                        "KDJX download plan is not prepared",
+                    )
+                if (current.artifactKey != artifactKey ||
+                    current.releaseKey != releaseKey ||
+                    !sameRelease
+                ) {
+                    throw SecurityException("KDJX download plan mismatch")
+                }
+                prepared = current
+                generation = downloadGeneration
+                activeMergeGeneration = generation
+                downloadStatus = "merging"
+                downloadedBytes = totalBytes
                 downloadReason = ""
                 persistDownloadStateLocked()
             }
-        } catch (error: Throwable) {
-            if (generation != downloadGeneration) return
-            synchronized(downloadLock) {
-                if (generation != downloadGeneration) return
-                downloadStatus = "failed"
-                downloadReason = when (error) {
-                    is InterruptedException -> "Download cancelled"
-                    else -> error.message?.take(160) ?: "Game download failed"
+        } catch (error: Exception) {
+            result.error("DOWNLOAD_FINALIZE_FAILED", error.message, null)
+            return
+        }
+        ioExecutor.execute {
+            try {
+                assemblePreparedDownload(generation, prepared)
+                synchronized(downloadLock) {
+                    if (generation != downloadGeneration) {
+                        throw InterruptedException("Download cancelled")
+                    }
+                    downloadedBytes = prepared.destination.length()
+                    totalBytes = prepared.destination.length()
+                    downloadStatus = "completed"
+                    downloadReason = ""
+                    preparedDownload = null
+                    persistDownloadStateCommittedLocked()
                 }
-                persistDownloadStateLocked()
+                // Parts may only be removed after the completed state is
+                // durably persisted; a crash in between must restore as
+                // completed instead of forcing a full re-download.
+                prepared.workDirectory.deleteRecursively()
+                val state = downloadState()
+                activity.runOnUiThread { result.success(state) }
+            } catch (error: Throwable) {
+                synchronized(downloadLock) {
+                    if (generation == downloadGeneration) {
+                        downloadStatus = "failed"
+                        downloadReason = when (error) {
+                            is InterruptedException -> "Download cancelled"
+                            else -> error.message?.take(160)
+                                ?: "Game download merge failed"
+                        }
+                        persistDownloadStateLocked()
+                    }
+                }
+                activity.runOnUiThread {
+                    result.error(
+                        "DOWNLOAD_FINALIZE_FAILED",
+                        error.message,
+                        null,
+                    )
+                }
+            } finally {
+                synchronized(downloadLock) {
+                    if (activeMergeGeneration == generation) {
+                        activeMergeGeneration = null
+                    }
+                }
             }
         }
     }
 
-    private fun downloadParts(
+    private fun assemblePreparedDownload(
         generation: Long,
-        parts: List<ApkPart>,
-        workDirectory: File,
-        counter: AtomicLong,
-    ): Throwable? {
-        val failure = AtomicReference<Throwable?>(null)
-        val latch = CountDownLatch(parts.size)
-        for (part in parts) {
-            ioExecutor.execute {
-                try {
-                    downloadPart(generation, part, workDirectory, counter)
-                } catch (error: Throwable) {
-                    failure.compareAndSet(null, error)
-                } finally {
-                    latch.countDown()
-                }
-            }
-        }
-        latch.await()
-        return failure.get()
-    }
-
-    private fun downloadPart(
-        generation: Long,
-        part: ApkPart,
-        workDirectory: File,
-        counter: AtomicLong,
+        prepared: PreparedDownload,
     ) {
-        val destination = File(
-            workDirectory,
+        val temporary = File(prepared.destination.absolutePath + ".assembling")
+        temporary.delete()
+        prepared.destination.delete()
+        val apkDigest = MessageDigest.getInstance("SHA-256")
+        try {
+            FileOutputStream(temporary).buffered(1024 * 1024).use { output ->
+                val buffer = ByteArray(1024 * 1024)
+                for (part in prepared.parts) {
+                    if (generation != downloadGeneration) {
+                        throw InterruptedException("Download cancelled")
+                    }
+                    val inputFile = preparedPartFile(prepared, part)
+                    if (inputFile.length() != part.sizeBytes) {
+                        throw IllegalStateException("APK part is missing")
+                    }
+                    val partDigest = MessageDigest.getInstance("SHA-256")
+                    var partBytes = 0L
+                    inputFile.inputStream().buffered(1024 * 1024).use { input ->
+                        while (true) {
+                            if (generation != downloadGeneration) {
+                                throw InterruptedException("Download cancelled")
+                            }
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            partBytes += count
+                            if (partBytes > part.sizeBytes) {
+                                throw IllegalStateException(
+                                    "APK part is too large",
+                                )
+                            }
+                            partDigest.update(buffer, 0, count)
+                            apkDigest.update(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                    if (partBytes != part.sizeBytes ||
+                        partDigest.digest().toHex() != part.sha256
+                    ) {
+                        throw IllegalStateException(
+                            "APK part verification failed",
+                        )
+                    }
+                }
+            }
+            val expectedSize = prepared.parts.sumOf(ApkPart::sizeBytes)
+            if (temporary.length() != expectedSize ||
+                apkDigest.digest().toHex() != prepared.sha256
+            ) {
+                throw IllegalStateException("Assembled APK verification failed")
+            }
+            moveFile(temporary, prepared.destination)
+        } finally {
+            if (!prepared.destination.exists()) temporary.delete()
+        }
+    }
+
+    private fun preparedPartFile(
+        prepared: PreparedDownload,
+        part: ApkPart,
+    ): File {
+        return File(
+            prepared.workDirectory,
             "part-${part.index.toString().padStart(3, '0')}",
         )
-        val temporary = File(destination.absolutePath + ".download")
-        temporary.delete()
-        destination.delete()
-        val digest = MessageDigest.getInstance("SHA-256")
-        val connection = openConnection(part.url)
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw IllegalStateException("APK part download failed")
-            }
-            val declaredLength = connection.contentLengthLong
-            if (declaredLength > 0L && declaredLength != part.sizeBytes) {
-                throw IllegalStateException("APK part size mismatch")
-            }
-            var received = 0L
-            connection.inputStream.buffered(256 * 1024).use { input ->
-                FileOutputStream(temporary).buffered(256 * 1024).use { output ->
-                    val buffer = ByteArray(256 * 1024)
-                    while (true) {
-                        if (generation != downloadGeneration) {
-                            throw InterruptedException("Download cancelled")
-                        }
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) continue
-                        received += count
-                        if (received > part.sizeBytes) {
-                            throw IllegalStateException("APK part is too large")
-                        }
-                        digest.update(buffer, 0, count)
-                        output.write(buffer, 0, count)
-                        downloadedBytes = counter.addAndGet(count.toLong())
-                    }
-                }
-            }
-            if (received != part.sizeBytes ||
-                digest.digest().toHex() != part.sha256
-            ) {
-                throw IllegalStateException("APK part verification failed")
-            }
-            moveFile(temporary, destination)
-        } finally {
-            connection.disconnect()
-            if (!destination.exists()) temporary.delete()
-        }
     }
 
-    private fun assembleParts(
-        generation: Long,
-        parts: List<ApkPart>,
-        workDirectory: File,
-        destination: File,
-    ) {
-        val temporary = File(destination.absolutePath + ".assembling")
-        temporary.delete()
-        destination.delete()
-        FileOutputStream(temporary).buffered(512 * 1024).use { output ->
-            for (part in parts) {
-                if (generation != downloadGeneration) {
-                    throw InterruptedException("Download cancelled")
-                }
-                val inputFile = File(
-                    workDirectory,
-                    "part-${part.index.toString().padStart(3, '0')}",
-                )
-                if (inputFile.length() != part.sizeBytes) {
-                    throw IllegalStateException("APK part is missing")
-                }
-                inputFile.inputStream().buffered(512 * 1024).use { input ->
-                    input.copyTo(output)
-                }
+    private fun retainedPartBytes(prepared: PreparedDownload): Long {
+        return prepared.parts.sumOf { part ->
+            val completed = preparedPartFile(prepared, part)
+            val partial = File(completed.absolutePath + ".download")
+            val retained = when {
+                completed.exists() -> completed.length()
+                partial.exists() -> partial.length()
+                else -> 0L
             }
-        }
-        val expectedSize = parts.sumOf(ApkPart::sizeBytes)
-        if (temporary.length() != expectedSize) {
-            temporary.delete()
-            throw IllegalStateException("Assembled APK size mismatch")
-        }
-        moveFile(temporary, destination)
-        workDirectory.deleteRecursively()
-    }
-
-    private fun downloadWholeApk(
-        generation: Long,
-        url: String,
-        destination: File,
-        expectedSize: Long,
-    ) {
-        val temporary = File(destination.absolutePath + ".download")
-        temporary.delete()
-        destination.delete()
-        val connection = openConnection(url)
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw IllegalStateException("APK mirror download failed")
-            }
-            val declaredLength = connection.contentLengthLong
-            if (declaredLength > 0L && declaredLength != expectedSize) {
-                throw IllegalStateException("APK mirror size mismatch")
-            }
-            var received = 0L
-            connection.inputStream.buffered(256 * 1024).use { input ->
-                FileOutputStream(temporary).buffered(256 * 1024).use { output ->
-                    val buffer = ByteArray(256 * 1024)
-                    while (true) {
-                        if (generation != downloadGeneration) {
-                            throw InterruptedException("Download cancelled")
-                        }
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) continue
-                        received += count
-                        if (received > expectedSize) {
-                            throw IllegalStateException("APK mirror is too large")
-                        }
-                        output.write(buffer, 0, count)
-                        downloadedBytes = received
-                    }
-                }
-            }
-            if (received != expectedSize) {
-                throw IllegalStateException("APK mirror size mismatch")
-            }
-            moveFile(temporary, destination)
-        } finally {
-            connection.disconnect()
-            if (!destination.exists()) temporary.delete()
+            retained.coerceIn(0L, part.sizeBytes)
         }
     }
 
@@ -1263,26 +1315,19 @@ internal class KdjxGameBridge(private val activity: Activity) {
         }
     }
 
-    private fun openConnection(value: String): HttpURLConnection {
-        return (URL(value).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = false
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            useCaches = false
-            setRequestProperty("Accept-Encoding", "identity")
-        }
-    }
-
-    private fun updateDownloadStatus(generation: Long, status: String) {
-        synchronized(downloadLock) {
-            if (generation != downloadGeneration) return
-            downloadStatus = status
-            persistDownloadStateLocked()
-        }
-    }
-
     private fun downloadState(): Map<String, Any?> {
         synchronized(downloadLock) {
+            if (downloadStatus in setOf(
+                    "queued",
+                    "downloading",
+                    "paused",
+                    "failed",
+                )
+            ) {
+                downloadedBytes = preparedDownload
+                    ?.let(::retainedPartBytes)
+                    ?: retainedPartBytesFromState()
+            }
             return mapOf(
                 "status" to downloadStatus,
                 "downloadedBytes" to downloadedBytes,
@@ -1291,13 +1336,59 @@ internal class KdjxGameBridge(private val activity: Activity) {
                 "reason" to downloadReason,
                 "sourceUrl" to downloadSourceUrl,
                 "sourceIndex" to downloadSourceIndex,
+                "segmented" to (downloadPartCount > 0),
+                "partCount" to downloadPartCount,
+                "retainedBytes" to downloadedBytes,
+                "transport" to if (downloadPartCount > 0) "app_http" else "",
+                "artifactKey" to downloadArtifactKey,
+                "releaseKey" to downloadReleaseKey,
             )
         }
     }
 
-    private fun clearDownload() {
+    private fun retainedPartBytesFromState(): Long {
+        if (downloadPath.isBlank() || downloadPartCount !in 1..16) return 0L
+        val destination = File(downloadPath)
+        if (!Regex("^kdjx-[0-9]+-[0-9a-f]{12}\\.apk$")
+                .matches(destination.name)
+        ) {
+            return 0L
+        }
+        val workDirectory = File(
+            destination.parentFile,
+            ".parts-${destination.name.removeSuffix(".apk")}",
+        )
+        var retained = 0L
+        for (index in 0 until downloadPartCount) {
+            val completed = File(
+                workDirectory,
+                "part-${index.toString().padStart(3, '0')}",
+            )
+            val partial = File(completed.absolutePath + ".download")
+            retained += when {
+                completed.isFile -> completed.length()
+                partial.isFile -> partial.length()
+                else -> 0L
+            }
+            if (retained >= totalBytes) return totalBytes
+        }
+        return retained.coerceIn(0L, totalBytes)
+    }
+
+    private fun cancelDownloadWork(): Boolean {
         synchronized(downloadLock) {
             downloadGeneration += 1
+            preparedDownload = null
+            activeMergeGeneration = null
+        }
+        return true
+    }
+
+    private fun clearDownload(): Boolean {
+        synchronized(downloadLock) {
+            downloadGeneration += 1
+            preparedDownload = null
+            activeMergeGeneration = null
             downloadStatus = "none"
             downloadedBytes = 0L
             totalBytes = 0L
@@ -1305,12 +1396,21 @@ internal class KdjxGameBridge(private val activity: Activity) {
             downloadReason = ""
             downloadSourceUrl = ""
             downloadSourceIndex = 0
-            activity.getSharedPreferences(
+            downloadArtifactKey = ""
+            downloadReleaseKey = ""
+            downloadPartCount = 0
+            val cleared = activity.getSharedPreferences(
                 downloadPreferencesName,
                 Context.MODE_PRIVATE,
-            ).edit().clear().apply()
+            ).edit().clear().commit()
+            if (!cleared) {
+                throw IllegalStateException(
+                    "Unable to clear KDJX download state",
+                )
+            }
         }
         downloadDirectory().listFiles()?.forEach(File::deleteRecursively)
+        return true
     }
 
     private fun restoreDownloadState() {
@@ -1329,9 +1429,43 @@ internal class KdjxGameBridge(private val activity: Activity) {
                 "",
             ).orEmpty()
             downloadSourceIndex = preferences.getInt("sourceIndex", 0)
-            if (downloadStatus in setOf("queued", "downloading", "paused")) {
+            downloadArtifactKey = preferences.getString(
+                "artifactKey",
+                "",
+            ).orEmpty()
+            downloadReleaseKey = preferences.getString(
+                "releaseKey",
+                "",
+            ).orEmpty()
+            downloadPartCount = preferences.getInt("partCount", 0)
+            if (downloadStatus == "merging") {
+                // The process may have died between the atomic APK publish
+                // and the committed "completed" state. If the published APK
+                // fully verifies against the persisted release, restore it
+                // as completed instead of forcing a full re-download.
+                val mergedFile = verifiedCompletedMergeFileLocked()
+                if (mergedFile != null) {
+                    downloadStatus = "completed"
+                    downloadedBytes = mergedFile.length()
+                    totalBytes = mergedFile.length()
+                    downloadReason = ""
+                } else {
+                    // Parts (when still present) stay on disk so the next
+                    // download resumes from the retained offsets.
+                    downloadStatus = "failed"
+                    downloadReason = "Download interrupted; retry the download"
+                    downloadedBytes = retainedPartBytesFromState()
+                }
+            }
+            if (downloadStatus in setOf(
+                    "queued",
+                    "downloading",
+                    "paused",
+                )
+            ) {
                 downloadStatus = "failed"
                 downloadReason = "Download interrupted; retry the download"
+                downloadedBytes = retainedPartBytesFromState()
             }
             val completedFile = runCatching {
                 requireDownloadedApk(downloadPath)
@@ -1346,19 +1480,45 @@ internal class KdjxGameBridge(private val activity: Activity) {
         }
     }
 
+    private fun verifiedCompletedMergeFileLocked(): File? {
+        val file = runCatching { requireDownloadedApk(downloadPath) }
+            .getOrNull() ?: return null
+        if (!file.isFile ||
+            totalBytes <= 0L ||
+            file.length() != totalBytes ||
+            !isSha256(downloadArtifactKey) ||
+            sha256Hex(file) != downloadArtifactKey
+        ) {
+            return null
+        }
+        return file
+    }
+
+    private fun downloadStateEditorLocked() = activity.getSharedPreferences(
+        downloadPreferencesName,
+        Context.MODE_PRIVATE,
+    ).edit()
+        .putString("status", downloadStatus)
+        .putLong("downloadedBytes", downloadedBytes)
+        .putLong("totalBytes", totalBytes)
+        .putString("localPath", downloadPath)
+        .putString("reason", downloadReason)
+        .putString("sourceUrl", downloadSourceUrl)
+        .putInt("sourceIndex", downloadSourceIndex)
+        .putString("artifactKey", downloadArtifactKey)
+        .putString("releaseKey", downloadReleaseKey)
+        .putInt("partCount", downloadPartCount)
+
     private fun persistDownloadStateLocked() {
-        activity.getSharedPreferences(
-            downloadPreferencesName,
-            Context.MODE_PRIVATE,
-        ).edit()
-            .putString("status", downloadStatus)
-            .putLong("downloadedBytes", downloadedBytes)
-            .putLong("totalBytes", totalBytes)
-            .putString("localPath", downloadPath)
-            .putString("reason", downloadReason)
-            .putString("sourceUrl", downloadSourceUrl)
-            .putInt("sourceIndex", downloadSourceIndex)
-            .apply()
+        downloadStateEditorLocked().apply()
+    }
+
+    private fun persistDownloadStateCommittedLocked() {
+        if (!downloadStateEditorLocked().commit()) {
+            throw IllegalStateException(
+                "Unable to persist KDJX download state",
+            )
+        }
     }
 
     private fun inspectApk(path: String): Map<String, Any?> {
