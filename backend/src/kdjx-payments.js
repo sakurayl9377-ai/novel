@@ -40,12 +40,13 @@ export async function createKdjxPayment(input) {
   ensureKdjxGameSchema();
   releaseStaleDeliveryClaims();
   const orderInput = normalizeOrderInput(input);
+  const expectedQuote = normalizeExpectedQuote(input);
   const idempotencyKey = cleanId(
     input.idempotencyKey || orderInput.gameOrderId,
     'idempotency_key',
     128,
   );
-  const product = requireProduct(input.productId);
+  let product;
   let order;
 
   const existingBeforeVerify = findExistingOrder(
@@ -59,10 +60,12 @@ export async function createKdjxPayment(input) {
       userId: input.userId,
       orderInput,
       idempotencyKey,
-      product,
+      expectedQuote,
     });
     order = existingBeforeVerify;
   } else {
+    product = requireProduct(orderInput.productId);
+    assertCurrentQuote(product, expectedQuote);
     const link = requireGameAccountLink(input.userId);
     if (userBalance(input.userId) < product.coinCost) {
       throw paymentError('coins_not_enough', 409);
@@ -96,10 +99,12 @@ export async function createKdjxPayment(input) {
         userId: input.userId,
         orderInput,
         idempotencyKey,
-        product,
+        expectedQuote,
       });
       order = existing;
     } else {
+      product = requireProduct(orderInput.productId);
+      assertCurrentQuote(product, expectedQuote);
       const link = requireGameAccountLink(input.userId);
       const debit = run(
         `UPDATE users
@@ -372,6 +377,7 @@ function releaseStaleDeliveryClaims() {
 function normalizeOrderInput(input) {
   return {
     gameOrderId: cleanId(input.gameOrderId, 'game_order_id', 96),
+    productId: cleanId(input.productId, 'product_id', 128),
     accountId: objectId(input.accountId, 'account_id'),
     roleId: objectId(input.roleId, 'role_id'),
     serverKey: cleanId(input.serverKey, 'server_key', 128),
@@ -401,7 +407,7 @@ function assertMatchingOrder({
   userId,
   orderInput,
   idempotencyKey,
-  product,
+  expectedQuote,
 }) {
   if (
     Number(existing.user_id) !== Number(userId) ||
@@ -410,10 +416,11 @@ function assertMatchingOrder({
     existing.account_id !== orderInput.accountId ||
     existing.role_id !== orderInput.roleId ||
     existing.server_key !== orderInput.serverKey ||
-    existing.product_id !== product.productId ||
-    Number(existing.recharge_id) !== product.rechargeId ||
+    existing.product_id !== orderInput.productId ||
     Number(existing.yy_id) !== orderInput.yyId ||
-    Number(existing.csv_id) !== orderInput.csvId
+    Number(existing.csv_id) !== orderInput.csvId ||
+    Number(existing.money_cents) !== expectedQuote.moneyCents ||
+    Number(existing.coin_cost) !== expectedQuote.coinCost
   ) {
     throw paymentError('payment_idempotency_conflict', 409);
   }
@@ -492,6 +499,35 @@ function requireProduct(productId) {
   return product;
 }
 
+function normalizeExpectedQuote(input) {
+  const moneyCents = requiredPositiveInteger(
+    input.expectedMoneyCents,
+    'expected_money_cents',
+  );
+  const coinCost = requiredPositiveInteger(
+    input.expectedCoinCost,
+    'expected_coin_cost',
+  );
+  const displayPrice = String(input.expectedDisplayPrice || '').trim();
+  if (
+    moneyCents !== coinCost * 10 ||
+    displayPrice !== displayPriceFor(moneyCents)
+  ) {
+    throw paymentError('invalid_payment_quote', 400);
+  }
+  return { moneyCents, coinCost, displayPrice };
+}
+
+function assertCurrentQuote(product, expectedQuote) {
+  if (
+    product.moneyCents !== expectedQuote.moneyCents ||
+    product.coinCost !== expectedQuote.coinCost ||
+    displayPriceFor(product.moneyCents) !== expectedQuote.displayPrice
+  ) {
+    throw paymentError('price_changed', 409);
+  }
+}
+
 function sameVerificationOrder(actual, expected) {
   if (!actual) return false;
   const textFields = [
@@ -529,6 +565,7 @@ function paymentPreview(userId, order, product) {
     yyId: order.yyId,
     csvId: order.csvId,
     ...product,
+    displayPrice: displayPriceFor(product.moneyCents),
     balance: userBalance(userId),
     status: 'preview',
     lastError: '',
@@ -551,6 +588,7 @@ function paymentJson(row) {
     csvId: Number(row.csv_id),
     moneyCents: Number(row.money_cents),
     coinCost: Number(row.coin_cost),
+    displayPrice: displayPriceFor(Number(row.money_cents)),
     balance: userBalance(row.user_id),
     status: row.status,
     attempts: Number(row.fulfillment_attempts),
@@ -595,6 +633,26 @@ function optionalPositiveInteger(value, field) {
     throw paymentError(`invalid_${field}`, 400);
   }
   return result;
+}
+
+function requiredPositiveInteger(value, field) {
+  const result = Number(value);
+  if (
+    value === undefined ||
+    value === null ||
+    value === '' ||
+    !Number.isSafeInteger(result) ||
+    result <= 0
+  ) {
+    throw paymentError(`invalid_${field}`, 400);
+  }
+  return result;
+}
+
+function displayPriceFor(moneyCents) {
+  return moneyCents % 100 === 0
+    ? `${moneyCents / 100}\u5143`
+    : `${(moneyCents / 100).toFixed(2)}\u5143`;
 }
 
 function channelOrderId(gameOrderId) {

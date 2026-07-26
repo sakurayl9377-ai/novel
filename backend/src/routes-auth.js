@@ -2,6 +2,7 @@ import { createSession, loginWithPassword, serializeAuth } from './auth.js';
 import { isRegistrationIpBlocked } from './chat-moderation.js';
 import { config } from './config.js';
 import { one, run } from './db.js';
+import { revokeKdjxCredentials } from './kdjx-sso.js';
 import { sendVerificationEmail } from './mailer.js';
 import { enforceRateLimits } from './rate-limit.js';
 import {
@@ -290,6 +291,7 @@ export async function authRoutes(app) {
        WHERE user_id = ? AND revoked_at IS NULL`,
       [user.id],
     );
+    revokeKdjxCredentials(user.id);
     const updated = one('SELECT * FROM users WHERE id = ?', [user.id]);
     return serializeAuth(updated, createSession(user.id));
   });
@@ -327,6 +329,7 @@ export async function authRoutes(app) {
   app.post('/auth/logout', { preHandler: app.authRequired }, async (request) => {
     const header = request.headers.authorization || '';
     const token = header.replace(/^Bearer\s+/i, '').trim();
+    revokeKdjxCredentials(request.user.id);
     if (token) {
       run(
         `UPDATE auth_tokens

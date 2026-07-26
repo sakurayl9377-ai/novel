@@ -23,6 +23,7 @@ import {
   testChatBotReply,
 } from "./chat-bot.js";
 import { growthFromUser, levelFromPoints, levelThresholds } from "./growth.js";
+import { revokeKdjxCredentials } from "./kdjx-sso.js";
 import {
   findActiveChatKeyword,
   recordBannedRegistrationIp,
@@ -4502,7 +4503,7 @@ function activeUserSessionCount(userId) {
 }
 
 function revokeActiveUserSessions(userId) {
-  return (
+  const revokedAppSessions =
     run(
       `UPDATE auth_tokens
        SET revoked_at = datetime('now')
@@ -4510,8 +4511,9 @@ function revokeActiveUserSessions(userId) {
          AND revoked_at IS NULL
          AND datetime(expires_at) > datetime('now')`,
       [userId],
-    ).changes ?? 0
-  );
+    ).changes ?? 0;
+  revokeKdjxCredentials(userId);
+  return revokedAppSessions;
 }
 
 function disconnectAdminUserFromChat(server, userId) {

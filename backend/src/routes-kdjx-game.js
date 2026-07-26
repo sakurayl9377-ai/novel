@@ -192,6 +192,29 @@ export async function kdjxGameRoutes(app) {
     }
   });
 
+  app.post('/games/kdjx/sessions/status', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const limited = enforceRateLimits(request, reply, [{
+      scope: 'kdjx_session_status_ip',
+      key: request.ip,
+      limit: 60,
+      windowMs: 60_000,
+      error: 'session_status_rate_limited',
+    }]);
+    if (limited) return limited;
+    const identity = verifyKdjxCredential(request.body?.credential);
+    if (!identity) {
+      return reply.code(401).send({
+        active: false,
+        error: 'invalid_or_expired_credential',
+      });
+    }
+    return {
+      active: true,
+      userId: String(identity.userId),
+    };
+  });
+
   app.post('/games/kdjx/sessions/verify', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     if (!verifyKdjxSharedSecret(request.headers['x-kdjx-sso-secret'])) {

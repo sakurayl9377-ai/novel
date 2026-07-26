@@ -49,9 +49,13 @@ const Fastify = (await import('fastify')).default;
 const { authRequired, createSession } = await import('./auth.js');
 const { closeDb, migrate, one, run } = await import('./db.js');
 const { gameRoutes } = await import('./routes-game.js');
-const { hashPassword, hashToken } = await import('./security.js');
+const { authRoutes } = await import('./routes-auth.js');
+const { kdjxConfig } = await import('./kdjx-config.js');
+const { resetKdjxPaymentCatalogForTests } = await import('./kdjx-payments.js');
+const { hashCode, hashPassword, hashToken } = await import('./security.js');
 
 const originalFetch = globalThis.fetch;
+const originalPaymentCatalogJson = kdjxConfig.paymentCatalogJson;
 let userSequence = 0;
 
 migrate();
@@ -101,6 +105,13 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
       hashToken(`kdjx-session:${issued.credential}`),
     );
 
+    const activeStatus = await credentialStatus(app, issued.credential);
+    assert.equal(activeStatus.statusCode, 200);
+    assert.deepEqual(activeStatus.json(), {
+      active: true,
+      userId: String(userId),
+    });
+
     const unauthenticated = await app.inject({
       method: 'POST',
       url: '/games/kdjx/sessions/verify',
@@ -135,6 +146,43 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
     );
     assert.deepEqual(revoked.json(), { ok: true, revoked: 1 });
     assert.equal((await verifyCredential(app, issued.credential)).statusCode, 401);
+    const revokedStatus = await credentialStatus(app, issued.credential);
+    assert.equal(revokedStatus.statusCode, 401);
+    assert.deepEqual(revokedStatus.json(), {
+      active: false,
+      error: 'invalid_or_expired_credential',
+    });
+
+    const logoutCredential = (await authorizeDevice(app, bearer)).credential;
+    assert.equal((await credentialStatus(app, logoutCredential)).statusCode, 200);
+    const logout = await request(app, bearer, 'POST', '/auth/logout');
+    assert.equal(logout.statusCode, 200);
+    assert.equal((await credentialStatus(app, logoutCredential)).statusCode, 401);
+
+    const resetBearer = createSession(userId);
+    const resetCredential = (await authorizeDevice(app, resetBearer)).credential;
+    const email = one('SELECT email FROM users WHERE id = ?', [userId]).email;
+    const resetCode = '654321';
+    run(
+      `INSERT INTO email_verifications
+        (email, code_hash, purpose, ip, expires_at)
+       VALUES (?, ?, 'reset_password', '127.0.0.1', datetime('now', '+5 minutes'))`,
+      [
+        email,
+        hashCode(resetCode, `email:${email}:reset_password`),
+      ],
+    );
+    const reset = await app.inject({
+      method: 'POST',
+      url: '/auth/reset-password',
+      payload: {
+        email,
+        password: 'new-test-password',
+        emailCode: resetCode,
+      },
+    });
+    assert.equal(reset.statusCode, 200);
+    assert.equal((await credentialStatus(app, resetCredential)).statusCode, 401);
   } finally {
     await app.close();
   }
@@ -187,6 +235,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
       rechargeId: 9,
       moneyCents: 600,
       coinCost: 60,
+      displayPrice: '6\u5143',
       balance: 200,
       status: 'preview',
       lastError: '',
@@ -205,6 +254,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     assert.equal(paid.json().item.status, 'fulfilled');
     assert.equal(paid.json().item.moneyCents, 600);
     assert.equal(paid.json().item.coinCost, 60);
+    assert.equal(paid.json().item.displayPrice, '6\u5143');
     assert.equal(paid.json().item.balance, 140);
     assert.equal(paid.json().item.channelOrderId, 'sakura_game-1');
     assert.equal(paid.json().item.sakuraOrderId, 'sakura_game-1');
@@ -309,6 +359,155 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     assert.equal(calls.length, 3);
     assert.equal(userCoins(userId), 140);
   } finally {
+    await app.close();
+  }
+});
+
+test('KDJX rejects missing or stale payment quotes before side effects', async () => {
+  const userId = seedUser({ coins: 200, nickname: 'quote-guard' });
+  const bearer = createSession(userId);
+  const app = await makeApp();
+  let externalCalls = 0;
+  globalThis.fetch = async () => {
+    externalCalls += 1;
+    throw new Error('quote rejection must precede external verification');
+  };
+
+  try {
+    const complete = paymentInput('quote-1', 'quote-1');
+    const missing = { ...complete };
+    delete missing.expectedMoneyCents;
+    const missingResponse = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      missing,
+    );
+    assert.equal(missingResponse.statusCode, 400);
+    assert.equal(
+      missingResponse.json().error,
+      'invalid_expected_money_cents',
+    );
+
+    const stale = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      {
+        ...complete,
+        expectedMoneyCents: 500,
+        expectedCoinCost: 50,
+        expectedDisplayPrice: '5\u5143',
+      },
+    );
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.json().error, 'price_changed');
+
+    const inconsistent = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      { ...complete, expectedCoinCost: 50 },
+    );
+    assert.equal(inconsistent.statusCode, 400);
+    assert.equal(inconsistent.json().error, 'invalid_payment_quote');
+    assert.equal(externalCalls, 0);
+    assert.equal(userCoins(userId), 200);
+    assert.equal(
+      one(
+        `SELECT COUNT(*) count FROM kdjx_payment_orders WHERE user_id = ?`,
+        [userId],
+      ).count,
+      0,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test('KDJX idempotent replay keeps the charged quote after catalog changes', async () => {
+  const userId = seedUser({ coins: 200, nickname: 'quote-replay' });
+  const bearer = createSession(userId);
+  const app = await makeApp();
+  seedGameAccountLink(userId);
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push(url);
+    const body = JSON.parse(options.body);
+    if (url === process.env.KDJX_PAYMENT_VERIFY_URL) {
+      return jsonResponse({ ok: true, order: body });
+    }
+    return jsonResponse({
+      ok: true,
+      fulfilled: true,
+      rechargeFlag: true,
+      gameOrderId: body.gameOrderId,
+      channelOrderId: body.channelOrderId,
+      gamePaymentOrderId: '64b000000000000000000003',
+    });
+  };
+
+  try {
+    const input = paymentInput('quote-replay-1', 'quote-replay-1');
+    const first = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      input,
+    );
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json().item.moneyCents, 600);
+    assert.equal(first.json().item.balance, 140);
+    assert.equal(calls.length, 2);
+
+    const changedCatalog = JSON.parse(originalPaymentCatalogJson);
+    const changedProduct = changedCatalog.products.find(
+      (product) => product.productId === '9',
+    );
+    changedProduct.moneyCents = 700;
+    changedProduct.coinCost = 70;
+    kdjxConfig.paymentCatalogJson = JSON.stringify(changedCatalog);
+    resetKdjxPaymentCatalogForTests();
+
+    const replay = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      input,
+    );
+    assert.equal(replay.statusCode, 200);
+    assert.equal(replay.json().item.moneyCents, 600);
+    assert.equal(replay.json().item.coinCost, 60);
+    assert.equal(replay.json().item.balance, 140);
+    assert.equal(calls.length, 2);
+
+    const conflictingQuote = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      {
+        ...input,
+        expectedMoneyCents: 700,
+        expectedCoinCost: 70,
+        expectedDisplayPrice: '7\u5143',
+      },
+    );
+    assert.equal(conflictingQuote.statusCode, 409);
+    assert.equal(
+      conflictingQuote.json().error,
+      'payment_idempotency_conflict',
+    );
+    assert.equal(userCoins(userId), 140);
+    assert.equal(calls.length, 2);
+  } finally {
+    kdjxConfig.paymentCatalogJson = originalPaymentCatalogJson;
+    resetKdjxPaymentCatalogForTests();
     await app.close();
   }
 });
@@ -637,6 +836,15 @@ function seedUser({ coins, nickname }) {
   ).lastInsertRowid);
 }
 
+function seedGameAccountLink(userId) {
+  run(
+    `INSERT INTO kdjx_game_account_links
+      (novel_user_id, game_open_id, account_password_cipher)
+     VALUES (?, ?, ?)`,
+    [userId, `sakura_test_${userId}`, 'test-cipher'],
+  );
+}
+
 function paymentInput(gameOrderId, idempotencyKey) {
   return {
     gameOrderId,
@@ -647,6 +855,9 @@ function paymentInput(gameOrderId, idempotencyKey) {
     serverKey: 'game.cn_qd.1',
     yyId: 0,
     csvId: 0,
+    expectedMoneyCents: 600,
+    expectedCoinCost: 60,
+    expectedDisplayPrice: '6\u5143',
   };
 }
 
@@ -679,6 +890,7 @@ async function authorizeDevice(app, bearer) {
 async function makeApp() {
   const app = Fastify({ logger: false });
   app.decorate('authRequired', authRequired);
+  app.register(authRoutes);
   app.register(gameRoutes);
   await app.ready();
   return app;
@@ -700,6 +912,14 @@ function verifyCredential(app, credential) {
     headers: {
       'x-kdjx-sso-secret': process.env.KDJX_SSO_SHARED_SECRET,
     },
+    payload: { credential },
+  });
+}
+
+function credentialStatus(app, credential) {
+  return app.inject({
+    method: 'POST',
+    url: '/games/kdjx/sessions/status',
     payload: { credential },
   });
 }

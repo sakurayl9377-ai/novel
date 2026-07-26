@@ -228,6 +228,8 @@ test("user workbench separates profile, security, role and audited economy actio
       email: "user-workbench@example.com",
       password: "user12345",
     });
+    seedKdjxSession(userId, "ban");
+    assert.equal(activeKdjxSessions(userId), 1);
     const banned = await request(
       app,
       "POST",
@@ -245,6 +247,7 @@ test("user workbench separates profile, security, role and audited economy actio
     assert.ok(banned.item.bannedUntil);
     assert.equal(banned.revokedSessions, 1);
     assert.equal(activeSessions(userId), 0);
+    assert.equal(activeKdjxSessions(userId), 0);
     assert.equal(
       one("SELECT COUNT(*) AS count FROM banned_registration_ips WHERE user_id = ?", [userId]).count,
       2,
@@ -260,11 +263,18 @@ test("user workbench separates profile, security, role and audited economy actio
     assert.equal(unbanned.item.status, "active");
     assert.equal(unbanned.removedIps, 2);
     assert.equal(activeSessions(userId), 0, "unban must not reactivate old sessions");
+    assert.equal(
+      activeKdjxSessions(userId),
+      0,
+      "unban must not reactivate old KDJX sessions",
+    );
 
     await request(app, "POST", "/auth/login", {
       email: "user-workbench@example.com",
       password: "user12345",
     });
+    seedKdjxSession(userId, "manual-revoke");
+    assert.equal(activeKdjxSessions(userId), 1);
     const revoked = await request(
       app,
       "POST",
@@ -274,6 +284,7 @@ test("user workbench separates profile, security, role and audited economy actio
     );
     assert.equal(revoked.revokedSessions, 1);
     assert.equal(activeSessions(userId), 0);
+    assert.equal(activeKdjxSessions(userId), 0);
 
     const ownRole = await rawRequest(
       app,
@@ -294,6 +305,31 @@ function activeSessions(userId) {
   return one(
     `SELECT COUNT(*) AS count
      FROM auth_tokens
+     WHERE user_id = ?
+       AND revoked_at IS NULL
+       AND datetime(expires_at) > datetime('now')`,
+    [userId],
+  ).count;
+}
+
+function seedKdjxSession(userId, suffix) {
+  run(
+    `INSERT INTO kdjx_game_sessions
+      (id, token_hash, user_id, game_open_id, expires_at)
+     VALUES (?, ?, ?, ?, datetime('now', '+3650 days'))`,
+    [
+      `user-workbench-${suffix}`,
+      `user-workbench-token-${suffix}`,
+      userId,
+      `user-workbench-open-${userId}`,
+    ],
+  );
+}
+
+function activeKdjxSessions(userId) {
+  return one(
+    `SELECT COUNT(*) AS count
+     FROM kdjx_game_sessions
      WHERE user_id = ?
        AND revoked_at IS NULL
        AND datetime(expires_at) > datetime('now')`,
