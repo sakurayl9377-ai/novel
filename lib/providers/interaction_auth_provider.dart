@@ -197,6 +197,11 @@ class InteractionAuthProvider extends ChangeNotifier {
     _setLoading(true);
     try {
       final user = await _authService.me(account.token);
+      final previousToken = _token;
+      final previousUserId = _user?.id;
+      if (previousToken.isNotEmpty && previousUserId != user.id) {
+        await _revokeKdjxSessionsSafely(previousToken);
+      }
       _token = account.token;
       _user = user;
       _upsertCurrentAccount();
@@ -220,16 +225,22 @@ class InteractionAuthProvider extends ChangeNotifier {
   }
 
   Future<void> removeAccount(InteractionAccountSession account) async {
+    final isCurrentAccount = _user?.id == account.user.id;
+    final token = isCurrentAccount && _token.isNotEmpty
+        ? _token
+        : account.token;
     _accounts = _accounts
         .where((item) => item.user.id != account.user.id)
         .toList();
     await _saveAccounts();
-    if (_isDisposed) return;
-    if (_user?.id == account.user.id) {
-      await clearSession();
-    } else {
-      notifyListeners();
+    if (!_isDisposed) {
+      if (isCurrentAccount) {
+        await clearSession();
+      } else {
+        notifyListeners();
+      }
     }
+    await _revokeKdjxSessionsSafely(token);
   }
 
   Future<void> updateCachedUser(InteractionUser user) async {
@@ -475,6 +486,15 @@ class InteractionAuthProvider extends ChangeNotifier {
       await _appInstallReportService.report(token);
     } catch (_) {
       // Version reporting is best-effort and must never block account usage.
+    }
+  }
+
+  Future<void> _revokeKdjxSessionsSafely(String token) async {
+    if (token.isEmpty) return;
+    try {
+      await _authService.revokeKdjxSessions(token);
+    } catch (_) {
+      // Local account changes must still complete if revocation is offline.
     }
   }
 

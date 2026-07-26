@@ -25,6 +25,7 @@ void main() {
             'generatedAt': '2026-07-23T08:00:00.000Z',
             'games': [
               _game('modao', sortOrder: 30),
+              _game('kdjx', sortOrder: 20),
               _game('bailian', visible: false, sortOrder: 20),
               _game('unknown', route: 'https://evil.example/game'),
               _game(
@@ -45,7 +46,7 @@ void main() {
     final snapshot = await service.load();
 
     expect(snapshot.source, GameCatalogSource.network);
-    expect(snapshot.gameIds, <String>['horse-race', 'modao']);
+    expect(snapshot.gameIds, <String>['horse-race', 'kdjx', 'modao']);
     expect(capturedRequest?.method, 'GET');
     expect(capturedRequest?.url.path, '/novel-api/games/catalog');
     expect(capturedRequest?.headers['Authorization'], isNull);
@@ -53,6 +54,7 @@ void main() {
     expect(capturedRequest?.followRedirects, isFalse);
     expect(preferences.getStringList(GameCatalogService.cacheKey), <String>[
       'horse-race',
+      'kdjx',
       'modao',
     ]);
   });
@@ -68,6 +70,7 @@ void main() {
             jsonEncode({
               'games': [
                 _game('modao', sortOrder: 30),
+                _game('kdjx', sortOrder: 25),
                 _game('horse-race', sortOrder: 10),
                 _game('bailian', sortOrder: 20),
               ],
@@ -80,6 +83,7 @@ void main() {
       expect((await successful.load()).gameIds, <String>[
         'horse-race',
         'bailian',
+        'kdjx',
         'modao',
       ]);
 
@@ -107,6 +111,7 @@ void main() {
       expect(fallback.gameIds, <String>['horse-race']);
       expect(fallback.gameIds, isNot(contains('bailian')));
       expect(fallback.gameIds, isNot(contains('modao')));
+      expect(fallback.gameIds, isNot(contains('kdjx')));
     },
   );
 
@@ -169,6 +174,7 @@ Map<String, Object> _game(
   final entryType = switch (id) {
     'horse-race' => 'native',
     'bailian' => 'web',
+    'kdjx' => 'apk',
     'modao' => 'apk',
     _ => 'web',
   };

@@ -14,6 +14,7 @@ import 'services/app_telemetry_service.dart';
 import 'services/download_manager_service.dart';
 import 'services/growth_service.dart';
 import 'services/interaction_service.dart';
+import 'services/kdjx_game_service.dart';
 import 'services/login_reward_service.dart';
 import 'services/modao_game_service.dart';
 import 'services/progress_sync_service.dart';
@@ -25,6 +26,8 @@ import 'providers/interaction_auth_provider.dart';
 import 'providers/reading_provider.dart';
 import 'providers/tts_provider.dart';
 import 'screens/anime_screen.dart';
+import 'screens/kdjx_authorization_screen.dart';
+import 'screens/kdjx_payment_screen.dart';
 import 'screens/manga_screen.dart';
 import 'screens/modao_payment_screen.dart';
 import 'screens/modao_sso_authorization_screen.dart';
@@ -267,6 +270,7 @@ class _MainScaffoldState extends State<MainScaffold>
   final AppUpdateService _startupUpdateService = AppUpdateService();
   final InteractionService _interactionService = InteractionService();
   final LoginRewardService _loginRewardService = LoginRewardService();
+  final KdjxPaymentBridge _kdjxPaymentBridge = KdjxPaymentBridge();
   final ModaoPaymentBridge _modaoPaymentBridge = ModaoPaymentBridge();
   static const String _announcementSeenKey = 'app_announcement_seen_id';
   int _currentIndex = 0;
@@ -307,6 +311,10 @@ class _MainScaffoldState extends State<MainScaffold>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _kdjxPaymentBridge.start(
+      _scheduleExternalRequestDrain,
+      onAuthorizationRequestAvailable: _scheduleExternalRequestDrain,
+    );
     _modaoPaymentBridge.start(
       onPaymentRequestAvailable: _scheduleExternalRequestDrain,
       onSsoAuthorizationRequestAvailable: _scheduleExternalRequestDrain,
@@ -362,6 +370,7 @@ class _MainScaffoldState extends State<MainScaffold>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _authProvider?.removeListener(_handleAuthChanged);
+    _kdjxPaymentBridge.stop();
     _modaoPaymentBridge.stop();
     super.dispose();
   }
@@ -391,6 +400,41 @@ class _MainScaffoldState extends State<MainScaffold>
         _externalRequestDrainRequested = false;
         if (!mounted) return;
         final navigator = Navigator.of(context, rootNavigator: true);
+        final kdjxAuthorization = await _takePendingKdjxAuthorizationSafely();
+        if (kdjxAuthorization != null && mounted) {
+          await navigator.push<void>(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(name: '/games/kdjx/authorize'),
+              builder: (_) => KdjxAuthorizationScreen(
+                request: kdjxAuthorization,
+                bridge: _kdjxPaymentBridge,
+              ),
+            ),
+          );
+          if (!mounted) return;
+          continueDraining = await _kdjxPaymentBridge
+              .acknowledgeAuthorizationRequest(kdjxAuthorization);
+          continue;
+        }
+
+        final kdjxPayment = await _takePendingKdjxPaymentSafely();
+        if (kdjxPayment != null && mounted) {
+          await navigator.push<void>(
+            MaterialPageRoute<void>(
+              settings: const RouteSettings(name: '/games/kdjx/payment'),
+              builder: (_) => KdjxPaymentScreen(
+                request: kdjxPayment,
+                bridge: _kdjxPaymentBridge,
+              ),
+            ),
+          );
+          if (!mounted) return;
+          continueDraining = await _kdjxPaymentBridge.acknowledgePaymentRequest(
+            kdjxPayment,
+          );
+          continue;
+        }
+
         final authorization = await _takePendingModaoAuthorizationSafely();
         if (authorization != null && mounted) {
           await navigator.push<void>(
@@ -433,6 +477,23 @@ class _MainScaffoldState extends State<MainScaffold>
     }
     if (mounted && _externalRequestDrainRequested) {
       _scheduleExternalRequestDrain();
+    }
+  }
+
+  Future<KdjxAuthorizationRequest?>
+  _takePendingKdjxAuthorizationSafely() async {
+    try {
+      return await _kdjxPaymentBridge.takePendingAuthorizationRequest();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<KdjxPaymentRequest?> _takePendingKdjxPaymentSafely() async {
+    try {
+      return await _kdjxPaymentBridge.takePendingRequest();
+    } catch (_) {
+      return null;
     }
   }
 

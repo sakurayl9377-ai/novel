@@ -58,4 +58,25 @@ void main() {
       expect(requested, isFalse);
     },
   );
+
+  test('KDJX session revocation uses the Sakura bearer session', () async {
+    late http.Request captured;
+    final service = InteractionAuthService(
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({'ok': true, 'revoked': 1}),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+
+    await service.revokeKdjxSessions('sakura-access-token');
+
+    expect(captured.method, 'POST');
+    expect(captured.url.path, endsWith('/games/kdjx/sessions/revoke'));
+    expect(captured.headers['Authorization'], 'Bearer sakura-access-token');
+    expect(jsonDecode(captured.body), isEmpty);
+  });
 }

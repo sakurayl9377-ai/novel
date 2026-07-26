@@ -38,6 +38,7 @@ void main() {
     WidgetBuilder? horseRaceDestinationBuilder,
     VoidCallback? onHorseRaceTap,
     VoidCallback? onBailianTap,
+    VoidCallback? onKdjxTap,
     VoidCallback? onModaoTap,
     bool settle = true,
   }) async {
@@ -59,6 +60,7 @@ void main() {
           horseRaceDestinationBuilder: horseRaceDestinationBuilder,
           onHorseRaceTap: onHorseRaceTap,
           onBailianTap: onBailianTap,
+          onKdjxTap: onKdjxTap,
           onModaoTap: onModaoTap,
         ),
       ),
@@ -103,6 +105,34 @@ void main() {
     expect(find.byKey(GameCenterScreen.horseRaceEntryKey), findsOneWidget);
     expect(find.byKey(GameCenterScreen.modaoEntryKey), findsNothing);
     expect(find.text('魔道修仙'), findsNothing);
+  });
+
+  testWidgets('shows KDJX only when the dynamic catalog enables it', (
+    tester,
+  ) async {
+    var taps = 0;
+    await pumpCenter(
+      tester,
+      size: const Size(390, 844),
+      games: <Map<String, Object>>[
+        _game('horse-race', sortOrder: 10),
+        _game('kdjx', sortOrder: 20),
+      ],
+      onKdjxTap: () => taps += 1,
+    );
+
+    expect(find.byKey(GameCenterScreen.kdjxEntryKey), findsOneWidget);
+    expect(find.text('口袋觉醒'), findsOneWidget);
+    expect(find.bySemanticsLabel('口袋觉醒，精灵冒险'), findsOneWidget);
+
+    await tester.drag(
+      find.byKey(GameCenterScreen.scrollKey),
+      const Offset(0, -400),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(GameCenterScreen.kdjxEntryKey));
+    await tester.pump();
+    expect(taps, 1);
   });
 
   testWidgets('uses one column on phones and two columns on tablets', (
@@ -151,6 +181,7 @@ void main() {
     expect(find.byKey(GameCenterScreen.horseRaceEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.modaoEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.bailianEntryKey), findsNothing);
+    expect(find.byKey(GameCenterScreen.kdjxEntryKey), findsNothing);
 
     response.complete(
       http.Response(
@@ -188,6 +219,7 @@ void main() {
     expect(find.byKey(GameCenterScreen.bailianEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.horseRaceEntryKey), findsOneWidget);
     expect(find.byKey(GameCenterScreen.modaoEntryKey), findsNothing);
+    expect(find.byKey(GameCenterScreen.kdjxEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.staleNoticeKey), findsOneWidget);
     expect(find.byKey(GameCenterScreen.retryKey), findsOneWidget);
   });
@@ -212,6 +244,7 @@ void main() {
     expect(find.byKey(GameCenterScreen.horseRaceEntryKey), findsOneWidget);
     expect(find.byKey(GameCenterScreen.modaoEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.bailianEntryKey), findsNothing);
+    expect(find.byKey(GameCenterScreen.kdjxEntryKey), findsNothing);
     expect(find.byKey(GameCenterScreen.staleNoticeKey), findsOneWidget);
   });
 
@@ -331,6 +364,7 @@ Map<String, Object> _game(
   final entryType = switch (id) {
     'horse-race' => 'native',
     'bailian' => 'web',
+    'kdjx' => 'apk',
     'modao' => 'apk',
     _ => 'web',
   };

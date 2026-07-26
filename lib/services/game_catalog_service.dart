@@ -31,6 +31,7 @@ class GameCatalogService {
   static const Map<String, _KnownGame> _knownGames = <String, _KnownGame>{
     'horse-race': _KnownGame(route: 'horse-race', entryType: 'native'),
     'bailian': _KnownGame(route: 'bailian', entryType: 'web'),
+    'kdjx': _KnownGame(route: 'kdjx', entryType: 'apk'),
     'modao': _KnownGame(route: 'modao', entryType: 'apk'),
   };
 

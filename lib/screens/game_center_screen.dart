@@ -10,6 +10,7 @@ import '../utils/auth_gate.dart';
 import 'bailian_game_screen.dart';
 import 'bailian_orders_screen.dart';
 import 'horse_race_game_screen.dart';
+import 'kdjx_game_screen.dart';
 import 'modao_game_screen.dart';
 
 /// The home for the app's lightweight entertainment experiences.
@@ -19,6 +20,7 @@ class GameCenterScreen extends StatefulWidget {
     this.horseRaceDestinationBuilder,
     this.onHorseRaceTap,
     this.onBailianTap,
+    this.onKdjxTap,
     this.onModaoTap,
     this.catalogService,
   });
@@ -36,12 +38,14 @@ class GameCenterScreen extends StatefulWidget {
     'game-entry-horse-race',
   );
   static const Key bailianEntryKey = ValueKey<String>('game-entry-bailian');
+  static const Key kdjxEntryKey = ValueKey<String>('game-entry-kdjx');
   static const Key modaoEntryKey = ValueKey<String>('game-entry-modao');
   static const Key ordersEntryKey = ValueKey<String>('game-orders-entry');
 
   final WidgetBuilder? horseRaceDestinationBuilder;
   final VoidCallback? onHorseRaceTap;
   final VoidCallback? onBailianTap;
+  final VoidCallback? onKdjxTap;
   final VoidCallback? onModaoTap;
   final GameCatalogService? catalogService;
 
@@ -139,6 +143,22 @@ class _GameCenterScreenState extends State<GameCenterScreen>
     _open(context, (_) => ModaoGameScreen(token: token));
   }
 
+  Future<void> _openKdjx(BuildContext context) async {
+    final allowed = await ensureLoggedInForContent(
+      context,
+      allowed: false,
+      title: '登录后进入游戏',
+      message: '口袋觉醒使用 Sakura 账号授权登录。',
+    );
+    if (!allowed || !context.mounted) return;
+    final auth = context.read<InteractionAuthProvider>();
+    if (auth.token.isEmpty || auth.user == null || auth.user!.id <= 0) return;
+    _open(
+      context,
+      (_) => KdjxGameScreen(expectedUserId: auth.user!.id.toString()),
+    );
+  }
+
   Future<void> _openOrders(BuildContext context) async {
     final allowed = await ensureLoggedInForContent(
       context,
@@ -181,6 +201,17 @@ class _GameCenterScreenState extends State<GameCenterScreen>
         colors: const [Color(0xFF8A4B18), Color(0xFF57361D), Color(0xFF252239)],
         accent: const Color(0xFFFFD27A),
         onTap: widget.onBailianTap ?? () => _openBailian(context),
+      ),
+      'kdjx' => _GameEntryCard(
+        key: GameCenterScreen.kdjxEntryKey,
+        eyebrow: '精灵冒险',
+        title: '口袋觉醒',
+        description: '集结伙伴、挑战关卡，使用 Sakura 账号延续你的冒险。',
+        actionLabel: '查看游戏',
+        icon: Icons.catching_pokemon_rounded,
+        colors: const [Color(0xFFB83D45), Color(0xFF7B3845), Color(0xFF27334A)],
+        accent: const Color(0xFFFFD36A),
+        onTap: widget.onKdjxTap ?? () => _openKdjx(context),
       ),
       'modao' => _GameEntryCard(
         key: GameCenterScreen.modaoEntryKey,

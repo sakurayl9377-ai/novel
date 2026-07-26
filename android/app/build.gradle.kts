@@ -43,6 +43,13 @@ val readerBetaNumber = providers.gradleProperty("readerBetaNumber")
     ?.trim()
     ?.takeIf { it.matches(Regex("[0-9]+")) }
     ?: "1"
+val kdjxGameSigningCertificateSha256 = providers
+    .gradleProperty("KDJX_GAME_SIGNING_CERT_SHA256")
+    .orNull
+    ?.trim()
+    ?.replace(":", "")
+    ?.lowercase()
+    .orEmpty()
 
 gradle.taskGraph.whenReady {
     val releaseArtifactTask = Regex(
@@ -57,6 +64,13 @@ gradle.taskGraph.whenReady {
             "Release signing is not configured. Add android/key.properties or set the external signing paths.",
         )
     }
+    if (releaseBuildRequested && !readerBetaBuild &&
+        !Regex("^[0-9a-f]{64}$").matches(kdjxGameSigningCertificateSha256)
+    ) {
+        throw GradleException(
+            "KDJX_GAME_SIGNING_CERT_SHA256 must be a production SHA-256 certificate digest for release builds.",
+        )
+    }
 }
 
 android {
@@ -66,6 +80,7 @@ android {
 
     buildFeatures {
         resValues = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -100,6 +115,11 @@ android {
         } else {
             "android.permission.REQUEST_INSTALL_PACKAGES"
         }
+        buildConfigField(
+            "String",
+            "KDJX_GAME_SIGNING_CERT_SHA256",
+            "\"$kdjxGameSigningCertificateSha256\"",
+        )
         ndk {
             // Self-hosted release APKs target physical Android devices only.
             // Debug adds x86_64 below so emulator builds remain available.

@@ -213,6 +213,10 @@ class InteractionAuthService {
     await _request('POST', '/auth/logout', token: token);
   }
 
+  Future<void> revokeKdjxSessions(String token) async {
+    await _request('POST', '/games/kdjx/sessions/revoke', token: token);
+  }
+
   InteractionAuthResult _authResultFromJson(Map<String, dynamic> json) {
     final token = _asString(json['token']);
     final user = json['user'];

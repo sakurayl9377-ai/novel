@@ -268,6 +268,7 @@ void main() {
       otherAccount.user.id,
     ]);
     expect(authService.logoutToken, account.token);
+    expect(authService.revokeTokens, isEmpty);
     expect(sessionStorage.sessionEnvelopeWrites, 1);
     final envelope =
         jsonDecode(sessionStorage.values['interaction_auth_session_v2']!)
@@ -283,6 +284,124 @@ void main() {
 
     authService.finishLogout.complete();
     await logout;
+  });
+
+  test(
+    'switchAccount revokes the outgoing game sessions without blocking locally',
+    () async {
+      const otherAccount = InteractionAccountSession(
+        token: 'other-token',
+        user: InteractionUser(
+          id: 77,
+          email: 'other@example.com',
+          nickname: 'Other',
+        ),
+      );
+      sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+        'version': 2,
+        'token': account.token,
+        'user': account.user.toJson(),
+        'accounts': [account.toJson(), otherAccount.toJson()],
+      });
+      final authService = _LifecycleInteractionAuthService(
+        usersByToken: {
+          account.token: account.user,
+          otherAccount.token: otherAccount.user,
+        },
+        revokeFailure: const SocketException('offline'),
+      );
+      final provider = InteractionAuthProvider(
+        authService: authService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      addTearDown(provider.dispose);
+      await provider.loadSession();
+
+      await provider.switchAccount(otherAccount);
+
+      expect(authService.revokeTokens, [account.token]);
+      expect(provider.token, otherAccount.token);
+      expect(provider.user?.id, otherAccount.user.id);
+      final envelope =
+          jsonDecode(sessionStorage.values['interaction_auth_session_v2']!)
+              as Map<String, dynamic>;
+      expect(envelope['token'], otherAccount.token);
+    },
+  );
+
+  test(
+    'removeAccount revokes the removed game sessions without blocking locally',
+    () async {
+      const otherAccount = InteractionAccountSession(
+        token: 'other-token',
+        user: InteractionUser(
+          id: 77,
+          email: 'other@example.com',
+          nickname: 'Other',
+        ),
+      );
+      sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+        'version': 2,
+        'token': account.token,
+        'user': account.user.toJson(),
+        'accounts': [account.toJson(), otherAccount.toJson()],
+      });
+      final authService = _LifecycleInteractionAuthService(
+        usersByToken: {
+          account.token: account.user,
+          otherAccount.token: otherAccount.user,
+        },
+        revokeFailure: const SocketException('offline'),
+      );
+      final provider = InteractionAuthProvider(
+        authService: authService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      addTearDown(provider.dispose);
+      await provider.loadSession();
+
+      await provider.removeAccount(otherAccount);
+
+      expect(authService.revokeTokens, [otherAccount.token]);
+      expect(provider.token, account.token);
+      expect(provider.accounts.map((item) => item.user.id), [account.user.id]);
+      final envelope =
+          jsonDecode(sessionStorage.values['interaction_auth_session_v2']!)
+              as Map<String, dynamic>;
+      expect(
+        (envelope['accounts'] as List)
+            .map((item) => (item as Map<String, dynamic>)['user'])
+            .map((item) => (item as Map<String, dynamic>)['id']),
+        [account.user.id],
+      );
+    },
+  );
+
+  test('removeAccount clears and revokes the current account', () async {
+    sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+      'version': 2,
+      'token': account.token,
+      'user': account.user.toJson(),
+      'accounts': [account.toJson()],
+    });
+    final authService = _LifecycleInteractionAuthService(
+      usersByToken: {account.token: account.user},
+    );
+    final provider = InteractionAuthProvider(
+      authService: authService,
+      appInstallReportService: _NoopAppInstallReportService(),
+      sessionStorage: sessionStorage,
+    );
+    addTearDown(provider.dispose);
+    await provider.loadSession();
+
+    await provider.removeAccount(account);
+
+    expect(authService.revokeTokens, [account.token]);
+    expect(provider.isLoggedIn, isFalse);
+    expect(provider.accounts, isEmpty);
   });
 
   test(
@@ -458,6 +577,7 @@ class _BlockingLogoutInteractionAuthService extends InteractionAuthService {
   final Completer<void> logoutStarted = Completer<void>();
   final Completer<void> finishLogout = Completer<void>();
   String logoutToken = '';
+  final List<String> revokeTokens = [];
 
   @override
   Future<InteractionUser> me(String token) async => savedUser;
@@ -467,6 +587,32 @@ class _BlockingLogoutInteractionAuthService extends InteractionAuthService {
     logoutToken = token;
     logoutStarted.complete();
     await finishLogout.future;
+  }
+
+  @override
+  Future<void> revokeKdjxSessions(String token) async {
+    revokeTokens.add(token);
+  }
+}
+
+class _LifecycleInteractionAuthService extends InteractionAuthService {
+  _LifecycleInteractionAuthService({
+    required this.usersByToken,
+    this.revokeFailure,
+  });
+
+  final Map<String, InteractionUser> usersByToken;
+  final Object? revokeFailure;
+  final List<String> revokeTokens = [];
+
+  @override
+  Future<InteractionUser> me(String token) async => usersByToken[token]!;
+
+  @override
+  Future<void> revokeKdjxSessions(String token) async {
+    revokeTokens.add(token);
+    final failure = revokeFailure;
+    if (failure != null) throw failure;
   }
 }
 

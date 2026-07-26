@@ -81,6 +81,7 @@ class MainActivity : AudioServiceActivity() {
     private val modaoDownloadMergeIndexKey = "merge_index"
     private val modaoDownloadMergingKey = "merging"
     private val modaoDownloadErrorKey = "error"
+    private lateinit var kdjxGameBridge: KdjxGameBridge
     private var readerChannel: MethodChannel? = null
     private var modaoMethodChannel: MethodChannel? = null
     private var mangaTileChannel: MangaTileChannel? = null
@@ -129,6 +130,8 @@ class MainActivity : AudioServiceActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        kdjxGameBridge = KdjxGameBridge(this)
+        kdjxGameBridge.captureExternalRequest(intent)
         captureModaoExternalRequests(intent)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         allowContentInDisplayCutout()
@@ -137,6 +140,7 @@ class MainActivity : AudioServiceActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        kdjxGameBridge.captureExternalRequest(intent)
         val captured = captureModaoExternalRequests(intent)
         if (captured.payment) {
             modaoMethodChannel?.invokeMethod("onPaymentRequestAvailable", null)
@@ -151,6 +155,7 @@ class MainActivity : AudioServiceActivity() {
 
     override fun onPostResume() {
         super.onPostResume()
+        kdjxGameBridge.notifyPendingRequests()
         notifyPendingModaoExternalRequests()
     }
 
@@ -192,6 +197,7 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+        kdjxGameBridge.configure(flutterEngine)
         modaoMethodChannel?.setMethodCallHandler(null)
         modaoMethodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -499,6 +505,7 @@ class MainActivity : AudioServiceActivity() {
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         mangaTileChannel?.dispose()
         mangaTileChannel = null
+        kdjxGameBridge.detachChannel()
         modaoMethodChannel?.setMethodCallHandler(null)
         modaoMethodChannel = null
         readerChannel?.setMethodCallHandler(null)
@@ -510,6 +517,7 @@ class MainActivity : AudioServiceActivity() {
     override fun onDestroy() {
         mangaTileChannel?.dispose()
         mangaTileChannel = null
+        kdjxGameBridge.destroy()
         modaoMethodChannel?.setMethodCallHandler(null)
         modaoMethodChannel = null
         releaseReaderSession(resetBrightness = true)
