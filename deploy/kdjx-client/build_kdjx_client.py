@@ -29,6 +29,7 @@ from xml.etree import ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
 NATIVE_SOURCE = ROOT / "native" / "src" / "com" / "novel" / "kdjx" / "SakuraGameActivity.java"
+PAYMENT_RECOVERY_SOURCE = NATIVE_SOURCE.with_name("PaymentRecovery.java")
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", ANDROID_NS)
 ANDROID = "{%s}" % ANDROID_NS
@@ -36,8 +37,9 @@ ANDROID = "{%s}" % ANDROID_NS
 OWNED_GAME_HOST = "49.232.137.85"
 OWNED_DOWNLOAD_HOSTS = {"novel.kxhub.xyz"}
 DEFAULT_GAME_ORIGIN = f"https://{OWNED_GAME_HOST}"
+DEFAULT_API_ORIGIN = f"{DEFAULT_GAME_ORIGIN}/novel-api"
 DEFAULT_DOWNLOAD_BASE = "https://novel.kxhub.xyz/games/kdjx/hot"
-DEFAULT_HOT_VERSION = "38"
+MAX_ANDROID_VERSION_CODE = 2_100_000_000
 
 FORBIDDEN_ENDPOINTS = (
     "192.168.",
@@ -122,12 +124,13 @@ KNOWN_NON_ENDPOINT_IP_LITERALS = frozenset({
 })
 NATIVE_LIBRARY_METADATA_IP_LITERALS = frozenset({"1.0.0.0", "1.2.0.4", "127.0.0.1"})
 URL_LITERAL_PATTERN = re.compile(
-    r"https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\s\"'<>\\]*)?",
+    r"https?://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[^\s\x00\"'<>\\]*)?",
     re.IGNORECASE,
 )
 IP_LITERAL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_.-])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![A-Za-z0-9_.-])",
 )
+PATCH_ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9._@()/-]+")
 
 LEGACY_NETWORK_REPLACEMENTS = {
     "http://oss.kuyangsh.cn/static/public/html/privacy_protection.html": "{origin}/games/kdjx/privacy",
@@ -163,6 +166,37 @@ REQUIRED_GAME_SOURCE_FILES = (
     "app/views/login/view.lua",
     "app/game_app.lua",
     "app/defines/app_defines.lua",
+)
+
+# Fail closed for the first Sakura migration release. Later legacy patches can
+# continue to use the generic builder, but patch 9 must always be reproducible
+# from the audited production patch 8 snapshot.
+FIRST_SAKURA_HOT_VERSION = "39"
+FIRST_SAKURA_LOGIN_PATCH = "9"
+FIRST_SAKURA_BOOTSTRAP_PATCH = "1"
+FIRST_SAKURA_BASELINE_PATCH = 8
+FIRST_SAKURA_APK_VERSION_CODE = 4
+FIRST_SAKURA_BASELINE_ASSET_COUNT = 2553
+FIRST_SAKURA_FINAL_ASSET_COUNT = 2559
+FIRST_SAKURA_REPLACED_ASSETS = frozenset({
+    "res/version.plist",
+    "src/app.defines.app_defines",
+    "src/app.game_app",
+    "src/app.views.login.view",
+    "x64/src/app.defines.app_defines",
+    "x64/src/app.game_app",
+    "x64/src/app.views.login.view",
+})
+FIRST_SAKURA_NEW_ASSETS = frozenset({
+    "src/app.sdk.helper",
+    "src/app.sdk.init",
+    "src/app.sdk.none",
+    "x64/src/app.sdk.helper",
+    "x64/src/app.sdk.init",
+    "x64/src/app.sdk.none",
+})
+FIRST_SAKURA_OWNED_ASSETS = (
+    FIRST_SAKURA_REPLACED_ASSETS | FIRST_SAKURA_NEW_ASSETS
 )
 
 
@@ -217,6 +251,22 @@ def owned_game_origin(value: str) -> str:
     return f"https://{OWNED_GAME_HOST}"
 
 
+def owned_api_origin(value: str) -> str:
+    parsed = urlparse(value.strip().rstrip("/"))
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != OWNED_GAME_HOST
+        or parsed.port not in (None, 443)
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != "/novel-api"
+    ):
+        fail("api_origin_must_be_https_49_232_137_85_novel_api")
+    return DEFAULT_API_ORIGIN
+
+
 def owned_download_base(value: str) -> str:
     parsed = urlparse(value.strip().rstrip("/"))
     if (
@@ -237,6 +287,123 @@ def hot_version(value: str) -> str:
     if not re.fullmatch(r"[1-9][0-9]{0,8}", value):
         fail("hot_version_must_be_a_positive_integer")
     return value
+
+
+def legacy_patch(value: str) -> str:
+    if not re.fullmatch(r"[1-9][0-9]{0,8}", value):
+        fail("login_patch_must_be_a_positive_integer")
+    return value
+
+
+def login_patch(value: str) -> str:
+    return legacy_patch(value)
+
+
+def source_apk_login_patch(apk: Path) -> str:
+    if not apk.is_file() or apk.suffix.lower() != ".apk":
+        fail("input_apk_missing")
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            payload = archive.read("assets/res/version.plist")
+        values = plistlib.loads(payload)
+    except (
+        KeyError,
+        OSError,
+        plistlib.InvalidFileException,
+        zipfile.BadZipFile,
+    ) as error:
+        fail(f"source_apk_version_plist_invalid:{error.__class__.__name__}")
+    patch = values.get("patch")
+    if not isinstance(patch, (str, int)) or isinstance(patch, bool):
+        fail("source_apk_login_patch_invalid")
+    return legacy_patch(str(patch))
+
+
+def apk_version_code(value: str | None) -> int:
+    if value is None or not re.fullmatch(r"[1-9][0-9]{0,9}", value):
+        fail("apk_version_code_must_be_a_positive_integer")
+    parsed = int(value)
+    if parsed > MAX_ANDROID_VERSION_CODE:
+        fail(f"apk_version_code_must_not_exceed_{MAX_ANDROID_VERSION_CODE}")
+    return parsed
+
+
+def requested_apk_version_code(value: str | None, skip_apk: bool) -> int | None:
+    if skip_apk:
+        if value is not None:
+            fail("apk_version_code_not_allowed_with_skip_apk")
+        return None
+    if value is None:
+        fail("apk_version_code_required")
+    return apk_version_code(value)
+
+
+def enforce_first_sakura_release_contract(
+    version: str,
+    target_patch: str,
+    source_patch: str,
+    upgrade_patches: object,
+    baseline_asset_count: object,
+    target_version_code: int | None,
+) -> None:
+    if target_patch != FIRST_SAKURA_LOGIN_PATCH:
+        return
+    if version != FIRST_SAKURA_HOT_VERSION:
+        fail(f"first_sakura_hot_version_must_be_{FIRST_SAKURA_HOT_VERSION}")
+    if source_patch != FIRST_SAKURA_BOOTSTRAP_PATCH:
+        fail(
+            "first_sakura_bootstrap_patch_must_be_"
+            f"{FIRST_SAKURA_BOOTSTRAP_PATCH}"
+        )
+    if upgrade_patches != [FIRST_SAKURA_BASELINE_PATCH]:
+        fail(
+            "first_sakura_upgrade_path_must_be_"
+            f"{FIRST_SAKURA_BASELINE_PATCH}"
+        )
+    if baseline_asset_count != FIRST_SAKURA_BASELINE_ASSET_COUNT:
+        fail(
+            "first_sakura_baseline_asset_count_must_be_"
+            f"{FIRST_SAKURA_BASELINE_ASSET_COUNT}"
+        )
+    if (
+        target_version_code is not None
+        and target_version_code != FIRST_SAKURA_APK_VERSION_CODE
+    ):
+        fail(
+            "first_sakura_apk_version_code_must_be_"
+            f"{FIRST_SAKURA_APK_VERSION_CODE}"
+        )
+
+
+def enforce_first_sakura_asset_contract(
+    target_patch: str,
+    baseline_patch: int,
+    baseline_names: Iterable[str],
+    generated_names: Iterable[str],
+) -> None:
+    if target_patch != FIRST_SAKURA_LOGIN_PATCH:
+        return
+    baseline = set(baseline_names)
+    generated = set(generated_names)
+    if baseline_patch != FIRST_SAKURA_BASELINE_PATCH:
+        fail(
+            "first_sakura_baseline_patch_must_be_"
+            f"{FIRST_SAKURA_BASELINE_PATCH}"
+        )
+    if len(baseline) != FIRST_SAKURA_BASELINE_ASSET_COUNT:
+        fail(
+            "first_sakura_baseline_name_count_must_be_"
+            f"{FIRST_SAKURA_BASELINE_ASSET_COUNT}"
+        )
+    if generated != FIRST_SAKURA_OWNED_ASSETS:
+        fail("first_sakura_owned_asset_set_mismatch")
+    if baseline & generated != FIRST_SAKURA_REPLACED_ASSETS:
+        fail("first_sakura_baseline_overlay_set_mismatch")
+    if len(baseline | generated) != FIRST_SAKURA_FINAL_ASSET_COUNT:
+        fail(
+            "first_sakura_final_asset_count_must_be_"
+            f"{FIRST_SAKURA_FINAL_ASSET_COUNT}"
+        )
 
 
 def replace_once(text: str, old: str, new: str, name: str) -> str:
@@ -311,10 +478,10 @@ end
 function none.login(cb)
     platformCall("sakuraLogin", "{}", function(info)
         local response = decodeReply(info)
-        local credential = response and response.credential or nil
-        if response and response.status == "ok" and identifier(credential)
-                and string.sub(credential, 1, 13) == "kdjx_session_" then
-            return cb(0, credential)
+        local ticket = response and response.ticket or nil
+        if response and response.status == "ok" and identifier(ticket)
+                and string.sub(ticket, 1, 11) == "kdjx_login_" then
+            return cb(0, ticket)
         end
         if printWarn then printWarn("Sakura login failed %s", tostring(info)) end
         return cb(-1, response and response.error or "sakura_login_failed")
@@ -479,14 +646,15 @@ def transform_game_app(source: Path) -> str:
     return source.read_text(encoding="utf-8")
 
 
-def version_plist(game_origin: str, version: str) -> bytes:
+def version_plist(game_origin: str, login_patch_value: str) -> bytes:
+    login_patch_value = legacy_patch(login_patch_value)
     values = {
         "app_version": "2.1.0.0",
         "loginServer": f"{OWNED_GAME_HOST}:16666",
         # Keep the fallback on the same owned listener until the second TCP
         # listener is explicitly provisioned.
         "loginServer2": f"{OWNED_GAME_HOST}:16666",
-        "patch": version,
+        "patch": login_patch_value,
         "serverUrl": f"{game_origin}/kdjx/servers",
         "versionUrl": f"{game_origin}/kdjx/version",
         "noticeUrl": f"{game_origin}/kdjx/notice",
@@ -511,6 +679,17 @@ def source_file(root: Path, relative: str) -> Path:
     return path
 
 
+def safe_patch_asset_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and bool(PATCH_ASSET_NAME_PATTERN.fullmatch(value))
+        and not value.startswith("/")
+        and "\\" not in value
+        and all(part not in ("", ".", "..") for part in value.split("/"))
+    )
+
+
 def resolve_game_source(path: Path) -> Path:
     """Accept application/src directly or a complete checked-out KDJX root."""
     root = path.resolve()
@@ -529,7 +708,38 @@ def resolve_game_source(path: Path) -> Path:
     fail("game_source_requires_full_application_src")
 
 
-def build_hot_assets(source_root: Path, release_root: Path, game_origin: str, version: str) -> list[Path]:
+def build_hot_assets(
+    source_root: Path,
+    release_root: Path,
+    game_origin: str,
+    login_patch_value: str,
+    baseline_catalog: Path,
+    baseline_files_root: Path,
+    baseline_patch: int,
+) -> list[Path]:
+    try:
+        baseline_entries = json.loads(
+            baseline_catalog.read_text(encoding="utf-8")
+        )["files"]
+    except (KeyError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"server_patch_catalog_invalid:{baseline_patch}:{error.__class__.__name__}")
+    if not isinstance(baseline_entries, list) or not baseline_entries:
+        fail(f"server_patch_catalog_files_invalid:{baseline_patch}")
+
+    baseline_names: list[str] = []
+    baseline_name_set: set[str] = set()
+    baseline_assets: list[tuple[str, Path]] = []
+    for entry in baseline_entries:
+        if not isinstance(entry, dict) or not safe_patch_asset_name(entry.get("name")):
+            fail(f"server_patch_catalog_entry_invalid:{baseline_patch}")
+        relative = entry["name"]
+        if relative in baseline_name_set:
+            fail(f"server_patch_catalog_name_invalid:{baseline_patch}")
+        baseline_names.append(relative)
+        baseline_name_set.add(relative)
+        source = baseline_files_root / str(baseline_patch) / Path(relative)
+        baseline_assets.append((relative, source))
+
     generated: dict[str, str | bytes] = {
         "src/app.sdk.none": sakura_none_lua(),
         "src/app.sdk.helper": transform_helper(source_file(source_root, "app/sdk/helper.lua")),
@@ -538,9 +748,27 @@ def build_hot_assets(source_root: Path, release_root: Path, game_origin: str, ve
         "src/app.game_app": transform_game_app(source_file(source_root, "app/game_app.lua")),
         "src/app.defines.app_defines": transform_app_defines(
             source_file(source_root, "app/defines/app_defines.lua"), game_origin),
-        "res/version.plist": version_plist(game_origin, version),
+        "res/version.plist": version_plist(game_origin, login_patch_value),
     }
-    files: list[Path] = []
+    # The legacy updater exposes architecture-specific Lua names as ordinary
+    # catalog entries. Overlay both namespaces so x64 clients cannot retain
+    # the historical login or payment implementation from patch 8.
+    for relative, payload in list(generated.items()):
+        if relative.startswith("src/"):
+            generated[f"x64/{relative}"] = payload
+
+    enforce_first_sakura_asset_contract(
+        login_patch_value,
+        baseline_patch,
+        baseline_names,
+        generated,
+    )
+
+    for relative, source in baseline_assets:
+        destination = release_root.joinpath(*relative.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+
     for relative, payload in generated.items():
         destination = release_root.joinpath(*relative.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -548,15 +776,21 @@ def build_hot_assets(source_root: Path, release_root: Path, game_origin: str, ve
             destination.write_bytes(payload)
         else:
             write_text(destination, payload)
-        files.append(destination)
-    return files
+    return sorted(
+        (path for path in release_root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(release_root).as_posix(),
+    )
 
 
 def build_hot_manifests(staging: Path, version: str, download_base: str, assets: Iterable[Path]) -> None:
+    version = hot_version(version)
     release_root = staging / "releases" / version
     manifest_assets: dict[str, dict[str, object]] = {}
     total_bytes = 0
-    for asset in sorted(assets):
+    for asset in sorted(
+        assets,
+        key=lambda path: path.relative_to(release_root).as_posix(),
+    ):
         relative = asset.relative_to(release_root).as_posix()
         size = asset.stat().st_size
         total_bytes += size
@@ -584,6 +818,234 @@ def build_hot_manifests(staging: Path, version: str, download_base: str, assets:
             separators=(",", ":"),
         ),
     )
+
+
+def build_legacy_patch(
+    output: Path,
+    staging: Path,
+    release_root: Path,
+    version: str,
+    target_patch: str,
+    assets: Iterable[Path],
+) -> tuple[Path, int]:
+    """Create the updater contract consumed by the production Go login service."""
+    version = hot_version(version)
+    target_patch = login_patch(target_patch)
+    patch_root = staging / target_patch
+    catalog_files: list[dict[str, object]] = []
+    revision = hashlib.sha1()
+
+    for asset in sorted(
+        assets,
+        key=lambda path: path.relative_to(release_root).as_posix(),
+    ):
+        relative = asset.relative_to(release_root).as_posix()
+        if not safe_patch_asset_name(relative):
+            fail(f"legacy_patch_asset_path_invalid:{relative}")
+        destination = patch_root.joinpath(*relative.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(asset, destination)
+        size = destination.stat().st_size
+        digest = md5(destination)
+        catalog_files.append({
+            "name": relative,
+            "size": size,
+            "md5": digest,
+            "patch": int(target_patch),
+        })
+        revision.update(f"{relative}\0{size}\0{digest}\n".encode("utf-8"))
+
+    if not catalog_files:
+        fail("legacy_patch_assets_missing")
+    plist_entry = next(
+        (entry for entry in catalog_files if entry["name"] == "res/version.plist"),
+        None,
+    )
+    if plist_entry is None:
+        fail("legacy_patch_version_plist_missing")
+    plist_patch = str(
+        plistlib.loads((patch_root / "res" / "version.plist").read_bytes())["patch"]
+    )
+    if plist_patch != target_patch:
+        fail(f"legacy_patch_version_plist_mismatch:{plist_patch}")
+
+    catalog_path = output / "login-patch" / "cn" / f"{target_patch}.json"
+    catalog_text = json.dumps(
+        {
+            "files": catalog_files,
+            "svn_version": version,
+            "git_version": revision.hexdigest(),
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
+    write_text(catalog_path, catalog_text)
+    write_text(
+        staging / "legacy-patch.json",
+        catalog_text,
+    )
+    verify_legacy_patch(catalog_path, patch_root, target_patch, version)
+    verify_legacy_patch(
+        staging / "legacy-patch.json",
+        patch_root,
+        target_patch,
+        version,
+    )
+    return catalog_path, len(catalog_files)
+
+
+def verify_legacy_patch(
+    catalog_path: Path,
+    patch_root: Path,
+    expected_patch: str,
+    expected_version: str,
+) -> None:
+    expected_patch = login_patch(expected_patch)
+    expected_version = hot_version(expected_version)
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"legacy_patch_catalog_invalid:{error.__class__.__name__}")
+    files = catalog.get("files")
+    if not isinstance(files, list) or not files:
+        fail("legacy_patch_catalog_files_invalid")
+    if catalog.get("svn_version") != expected_version:
+        fail("legacy_patch_catalog_version_mismatch")
+
+    names: set[str] = set()
+    previous_name = ""
+    revision = hashlib.sha1()
+    for entry in files:
+        if not isinstance(entry, dict):
+            fail("legacy_patch_catalog_entry_invalid")
+        name = entry.get("name")
+        if (
+            not safe_patch_asset_name(name)
+            or name in names
+        ):
+            fail("legacy_patch_catalog_name_invalid")
+        if previous_name and name <= previous_name:
+            fail("legacy_patch_catalog_order_invalid")
+        previous_name = name
+        names.add(name)
+        path = patch_root.joinpath(*name.split("/"))
+        if not path.is_file():
+            fail(f"legacy_patch_asset_missing:{name}")
+        if entry.get("patch") != int(expected_patch):
+            fail(f"legacy_patch_number_mismatch:{name}")
+        if entry.get("size") != path.stat().st_size or entry.get("md5") != md5(path):
+            fail(f"legacy_patch_digest_mismatch:{name}")
+        revision.update(
+            f"{name}\0{entry['size']}\0{entry['md5']}\n".encode("utf-8")
+        )
+
+    if catalog.get("git_version") != revision.hexdigest():
+        fail("legacy_patch_catalog_revision_mismatch")
+
+    actual_names = {
+        path.relative_to(patch_root).as_posix()
+        for path in patch_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_names != names:
+        fail("legacy_patch_file_set_mismatch")
+    if "res/version.plist" not in names:
+        fail("legacy_patch_version_plist_missing")
+
+
+def audit_server_patch_baseline(
+    catalog_dir: Path,
+    files_dir: Path,
+    source_patch: str,
+    target_patch: str,
+) -> dict[str, object]:
+    """Prove the source APK can reach the new patch through retained history."""
+    source_number = int(legacy_patch(source_patch))
+    target_number = int(login_patch(target_patch))
+    if target_number <= source_number:
+        fail(f"login_patch_must_exceed_source_apk_patch_{source_number}")
+    if not catalog_dir.is_dir() or catalog_dir.is_symlink():
+        fail("server_patch_catalog_dir_invalid")
+    if not files_dir.is_dir() or files_dir.is_symlink():
+        fail("server_patch_files_dir_invalid")
+
+    catalogs: dict[int, Path] = {}
+    for path in catalog_dir.iterdir():
+        if path.is_file() and not path.is_symlink() and re.fullmatch(r"[1-9][0-9]{0,8}\.json", path.name):
+            catalogs[int(path.stem)] = path
+    if not catalogs:
+        fail("server_patch_catalogs_missing")
+    if max(catalogs) >= target_number:
+        fail(f"login_patch_must_exceed_server_patch_{max(catalogs)}")
+    if target_number - 1 not in catalogs:
+        fail(f"server_patch_predecessor_missing:{target_number - 1}")
+
+    selected = sorted(
+        patch for patch in catalogs
+        if source_number < patch < target_number
+    )
+    if not selected:
+        fail("server_patch_upgrade_path_missing")
+
+    total_assets = 0
+    total_bytes = 0
+    for patch_number in selected:
+        catalog_path = catalogs[patch_number]
+        try:
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(f"server_patch_catalog_invalid:{patch_number}:{error.__class__.__name__}")
+        entries = catalog.get("files")
+        if not isinstance(entries, list) or not entries:
+            fail(f"server_patch_catalog_files_invalid:{patch_number}")
+        names: set[str] = set()
+        has_version_plist = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                fail(f"server_patch_catalog_entry_invalid:{patch_number}")
+            name = entry.get("name")
+            expected_size = entry.get("size")
+            expected_md5 = entry.get("md5")
+            if (
+                not safe_patch_asset_name(name)
+                or name in names
+            ):
+                fail(f"server_patch_catalog_name_invalid:{patch_number}")
+            names.add(name)
+            if (
+                not isinstance(expected_size, int)
+                or isinstance(expected_size, bool)
+                or expected_size <= 0
+                or not isinstance(expected_md5, str)
+                or not re.fullmatch(r"[a-f0-9]{32}", expected_md5)
+                or entry.get("patch") != patch_number
+            ):
+                fail(f"server_patch_catalog_metadata_invalid:{patch_number}:{name}")
+            path = files_dir / str(patch_number) / Path(name)
+            if not path.is_file() or path.is_symlink():
+                fail(f"server_patch_asset_missing:{patch_number}:{name}")
+            if path.stat().st_size != expected_size or md5(path) != expected_md5:
+                fail(f"server_patch_asset_digest_mismatch:{patch_number}:{name}")
+            total_assets += 1
+            total_bytes += expected_size
+            if name == "res/version.plist":
+                has_version_plist = True
+                try:
+                    file_patch = str(plistlib.loads(path.read_bytes())["patch"])
+                except (KeyError, plistlib.InvalidFileException):
+                    fail(f"server_patch_version_plist_invalid:{patch_number}")
+                if file_patch != str(patch_number):
+                    fail(f"server_patch_version_plist_mismatch:{patch_number}")
+        if not has_version_plist:
+            fail(f"server_patch_version_plist_missing:{patch_number}")
+
+    return {
+        "sourceApkLoginPatch": str(source_number),
+        "serverExistingPatches": sorted(catalogs),
+        "serverUpgradePatches": selected,
+        "serverBaselineAssetCount": total_assets,
+        "serverBaselineBytes": total_bytes,
+    }
 
 
 def command_for(tool: Path, args: list[str]) -> list[str]:
@@ -666,19 +1128,25 @@ public class MessageHandler { public void callbackToLua(int id, String value) {}
     )
 
 
-def compile_bridge(work: Path, game_origin: str, android_jar: Path, d8: Path) -> Path:
-    if not NATIVE_SOURCE.is_file():
+def compile_bridge(work: Path, api_origin: str, android_jar: Path, d8: Path) -> Path:
+    if not NATIVE_SOURCE.is_file() or not PAYMENT_RECOVERY_SOURCE.is_file():
         fail("native_bridge_source_missing")
     javac = resolve_tool(None, ("javac.exe", "javac"), ())
     source_root = work / "java-source"
     stub_source = source_root / "stubs"
-    bridge_source = source_root / "bridge" / "com" / "novel" / "kdjx" / "SakuraGameActivity.java"
+    bridge_root = source_root / "bridge" / "com" / "novel" / "kdjx"
+    bridge_source = bridge_root / "SakuraGameActivity.java"
+    payment_recovery_source = bridge_root / "PaymentRecovery.java"
     write_compile_stubs(stub_source)
     bridge_text = NATIVE_SOURCE.read_text(encoding="utf-8")
-    api_origin = f"{game_origin}/novel-api"
+    api_origin = owned_api_origin(api_origin)
     if bridge_text.count("__KDJX_API_ORIGIN__") != 1:
         fail("native_bridge_placeholder_invalid")
     write_text(bridge_source, bridge_text.replace("__KDJX_API_ORIGIN__", api_origin))
+    payment_recovery_text = PAYMENT_RECOVERY_SOURCE.read_text(encoding="utf-8")
+    if "__KDJX_API_ORIGIN__" in payment_recovery_text:
+        fail("native_bridge_placeholder_invalid")
+    write_text(payment_recovery_source, payment_recovery_text)
 
     stub_classes = work / "stub-classes"
     bridge_classes = work / "bridge-classes"
@@ -688,7 +1156,8 @@ def compile_bridge(work: Path, game_origin: str, android_jar: Path, d8: Path) ->
         javac,
         [
             "-source", "8", "-target", "8", "-cp", f"{android_jar}{os.pathsep}{stub_classes}",
-            "-d", str(bridge_classes), str(bridge_source),
+            "-d", str(bridge_classes),
+            str(bridge_source), str(payment_recovery_source),
         ],
     )
     dex_output = work / "dex"
@@ -710,9 +1179,38 @@ def compile_bridge(work: Path, game_origin: str, android_jar: Path, d8: Path) ->
     return dex
 
 
-def modify_manifest(path: Path) -> None:
+def manifest_version_code(root: ET.Element) -> int | None:
+    raw_value = root.get(ANDROID + "versionCode")
+    if raw_value is None:
+        return None
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", raw_value):
+        fail("apk_manifest_version_code_invalid")
+    parsed = int(raw_value)
+    if parsed > MAX_ANDROID_VERSION_CODE:
+        fail("apk_manifest_version_code_invalid")
+    return parsed
+
+
+def modify_manifest(
+    path: Path,
+    source_version_code: int,
+    target_version_code: int,
+) -> None:
+    source_version_code = apk_version_code(str(source_version_code))
+    target_version_code = apk_version_code(str(target_version_code))
     tree = ET.parse(path)
     root = tree.getroot()
+    if root.tag != "manifest":
+        fail("apk_manifest_root_invalid")
+    decoded_version_code = manifest_version_code(root)
+    if (
+        decoded_version_code is not None
+        and decoded_version_code != source_version_code
+    ):
+        fail("apk_manifest_version_code_mismatch")
+    if decoded_version_code is not None:
+        root.set(ANDROID + "versionCode", str(target_version_code))
+
     app = root.find("application")
     if app is None:
         fail("apk_manifest_application_missing")
@@ -765,6 +1263,65 @@ def modify_manifest(path: Path) -> None:
         ) or name.startswith(disabled_component_prefixes):
             app.remove(item)
     tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def modify_apktool_version(
+    path: Path,
+    target_version_code: int,
+) -> int:
+    target_version_code = apk_version_code(str(target_version_code))
+    if not path.is_file():
+        fail("apktool_metadata_missing")
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"^([ \t]*versionCode:[ \t]*)(['\"]?)([0-9]+)(['\"]?)([ \t]*(?:#.*)?)$",
+        flags=re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        fail("apktool_version_code_not_unique")
+    match = matches[0]
+    if match.group(2) != match.group(4):
+        fail("apktool_version_code_invalid")
+    source_version_code = apk_version_code(match.group(3))
+    if target_version_code <= source_version_code:
+        fail(f"apk_version_code_must_increase_from_{source_version_code}")
+    replacement = (
+        f"{match.group(1)}{match.group(2)}{target_version_code}"
+        f"{match.group(4)}{match.group(5)}"
+    )
+    write_text(path, text[:match.start()] + replacement + text[match.end():])
+    return source_version_code
+
+
+def verify_rebuilt_version_metadata(
+    manifest_path: Path,
+    metadata_path: Path,
+    expected_version_code: int,
+) -> None:
+    expected_version_code = apk_version_code(str(expected_version_code))
+    metadata_text = metadata_path.read_text(encoding="utf-8")
+    metadata_matches = re.findall(
+        r"^[ \t]*versionCode:[ \t]*['\"]?([0-9]+)['\"]?[ \t]*(?:#.*)?$",
+        metadata_text,
+        flags=re.MULTILINE,
+    )
+    if (
+        len(metadata_matches) != 1
+        or apk_version_code(metadata_matches[0]) != expected_version_code
+    ):
+        fail("rebuilt_apk_version_code_mismatch")
+    tree = ET.parse(manifest_path)
+    root = tree.getroot()
+    decoded_version_code = manifest_version_code(root)
+    if (
+        root.tag != "manifest"
+        or (
+            decoded_version_code is not None
+            and decoded_version_code != expected_version_code
+        )
+    ):
+        fail("rebuilt_apk_version_code_mismatch")
 
 
 def sanitize_tivicloud_config(path: Path, game_origin: str) -> None:
@@ -821,7 +1378,9 @@ def build_apk(
     apk: Path,
     output: Path,
     game_origin: str,
+    api_origin: str,
     version_plist_bytes: bytes,
+    target_version_code: int,
     apktool: Path,
     android_jar: Path,
     d8: Path,
@@ -832,17 +1391,38 @@ def build_apk(
         work = Path(temporary)
         decoded = work / "decoded"
         run_tool(apktool, ["d", "-f", "-o", str(decoded), str(apk)])
-        modify_manifest(decoded / "AndroidManifest.xml")
+        source_version_code = modify_apktool_version(
+            decoded / "apktool.yml",
+            target_version_code,
+        )
+        modify_manifest(
+            decoded / "AndroidManifest.xml",
+            source_version_code,
+            target_version_code,
+        )
         version_path = decoded / "assets" / "res" / "version.plist"
         version_path.parent.mkdir(parents=True, exist_ok=True)
         version_path.write_bytes(version_plist_bytes)
         sanitize_tivicloud_config(decoded / "assets" / "TivicloudSDK.xml", game_origin)
         patch_legacy_sdk_endpoints(decoded, game_origin)
         remove_legacy_native_libraries(decoded)
-        bridge_dex = compile_bridge(work, game_origin, android_jar, d8)
+        bridge_dex = compile_bridge(work, api_origin, android_jar, d8)
         unsigned = work / "unsigned.apk"
         run_tool(apktool, ["b", str(decoded), "-o", str(unsigned)])
         append_bridge_dex(unsigned, bridge_dex)
+        manifest_check = work / "rebuilt-manifest"
+        run_tool(
+            apktool,
+            [
+                "d", "--only-manifest", "-f",
+                "-o", str(manifest_check), str(unsigned),
+            ],
+        )
+        verify_rebuilt_version_metadata(
+            manifest_check / "AndroidManifest.xml",
+            manifest_check / "apktool.yml",
+            target_version_code,
+        )
         shutil.copyfile(unsigned, output)
     return output
 
@@ -894,7 +1474,13 @@ def allowed_client_url_literal(literal: str, entry_name: str) -> bool:
         and not parsed.password
         and not parsed.query
         and not parsed.fragment
-        and (parsed.path in ("", "/") or parsed.path.startswith("/kdjx/") or parsed.path.startswith("/games/kdjx/"))
+        and (
+            parsed.path in ("", "/")
+            or parsed.path.startswith("/kdjx/")
+            or parsed.path.startswith("/games/kdjx/")
+            or parsed.path == "/novel-api"
+            or parsed.path.startswith("/novel-api/games/kdjx/")
+        )
     ):
         return True
     if (
@@ -1006,7 +1592,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--apk", type=Path, required=True, help="Original KDJX APK; never modified in place")
     parser.add_argument("--game-source", type=Path, required=True, help="KDJX application/src directory")
     parser.add_argument("--output", type=Path, required=True, help="New, dedicated output directory")
-    parser.add_argument("--hot-version", default=DEFAULT_HOT_VERSION)
+    parser.add_argument(
+        "--server-patch-catalog-dir",
+        type=Path,
+        required=True,
+        help="Retained Go login patch catalog directory, such as patch/cn",
+    )
+    parser.add_argument(
+        "--server-patch-files-dir",
+        type=Path,
+        required=True,
+        help="Retained legacy download tree containing numbered patch directories",
+    )
+    parser.add_argument(
+        "--hot-version",
+        required=True,
+        help="Compatibility Cocos manifest version; independent from the legacy updater patch",
+    )
+    parser.add_argument(
+        "--login-patch",
+        required=True,
+        help="Target legacy updater patch; the bootstrap APK embeds its predecessor",
+    )
+    parser.add_argument(
+        "--apk-version-code",
+        help="New Android versionCode; required for APK builds and must increase",
+    )
     parser.add_argument("--game-origin", default=DEFAULT_GAME_ORIGIN)
     parser.add_argument("--download-base", default=DEFAULT_DOWNLOAD_BASE)
     parser.add_argument("--apktool", help="Path to apktool executable/cmd")
@@ -1021,16 +1632,54 @@ def main() -> int:
     args = parse_args()
     try:
         game_origin = owned_game_origin(args.game_origin)
+        api_origin = owned_api_origin(DEFAULT_API_ORIGIN)
         download_base = owned_download_base(args.download_base)
         version = hot_version(args.hot_version)
+        login_patch_value = login_patch(args.login_patch)
+        source_apk_patch = source_apk_login_patch(args.apk.resolve())
+        baseline_report = audit_server_patch_baseline(
+            args.server_patch_catalog_dir.resolve(),
+            args.server_patch_files_dir.resolve(),
+            source_apk_patch,
+            login_patch_value,
+        )
+        baseline_patch = int(baseline_report["serverUpgradePatches"][-1])
+        target_apk_version_code = requested_apk_version_code(
+            args.apk_version_code,
+            args.skip_apk,
+        )
+        enforce_first_sakura_release_contract(
+            version,
+            login_patch_value,
+            source_apk_patch,
+            baseline_report["serverUpgradePatches"],
+            baseline_report["serverBaselineAssetCount"],
+            target_apk_version_code,
+        )
         source_root = resolve_game_source(args.game_source)
         output = args.output.resolve()
         prepare_output(output, args.force)
 
         hot_staging = output / "hot-staging"
         release_root = hot_staging / "releases" / version
-        assets = build_hot_assets(source_root, release_root, game_origin, version)
+        assets = build_hot_assets(
+            source_root,
+            release_root,
+            game_origin,
+            login_patch_value,
+            args.server_patch_catalog_dir.resolve() / f"{baseline_patch}.json",
+            args.server_patch_files_dir.resolve(),
+            baseline_patch,
+        )
         build_hot_manifests(hot_staging, version, download_base, assets)
+        legacy_catalog, legacy_asset_count = build_legacy_patch(
+            output,
+            hot_staging,
+            release_root,
+            version,
+            login_patch_value,
+            assets,
+        )
 
         patched_apk: Path | None = None
         if not args.skip_apk:
@@ -1050,7 +1699,9 @@ def main() -> int:
                 args.apk.resolve(),
                 patched_apk,
                 game_origin,
-                (release_root / "res" / "version.plist").read_bytes(),
+                api_origin,
+                version_plist(game_origin, source_apk_patch),
+                target_apk_version_code,
                 apktool,
                 android_jar,
                 d8,
@@ -1059,11 +1710,19 @@ def main() -> int:
         report = audit_outputs(output, hot_staging, patched_apk, download_base)
         report.update({
             "hotVersion": version,
+            "loginPatch": login_patch_value,
+            "bootstrapLoginPatch": source_apk_patch,
+            "legacyPatchMode": "cumulative",
+            "legacyCatalog": legacy_catalog.relative_to(output).as_posix(),
+            "legacyAssetCount": legacy_asset_count,
+            "apkVersionCode": target_apk_version_code,
             "gameOrigin": game_origin,
+            "apiOrigin": api_origin,
             "downloadBase": download_base,
             "generatedAt": int(time.time()),
             "unsignedApk": patched_apk.name if patched_apk else None,
         })
+        report.update(baseline_report)
         write_text(output / "verification.json", json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         print(json.dumps(report, ensure_ascii=False))
         return 0

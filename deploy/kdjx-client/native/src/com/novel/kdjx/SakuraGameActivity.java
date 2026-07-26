@@ -1,7 +1,9 @@
 package com.novel.kdjx;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
@@ -36,6 +38,7 @@ import java.security.cert.Certificate;
 import java.util.Calendar;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -60,20 +63,26 @@ public final class SakuraGameActivity extends AppActivity {
             API_ORIGIN + "/games/kdjx/device-authorizations";
     private static final String DEVICE_TOKEN_URL =
             API_ORIGIN + "/games/kdjx/device-authorizations/token";
+    private static final String LOGIN_TICKET_URL =
+            API_ORIGIN + "/games/kdjx/sessions/login-ticket";
     private static final long MAX_DEVICE_WAIT_MS = 10L * 60L * 1000L;
+    private static final long MAX_PAYMENT_WAIT_MS = 15L * 60L * 1000L;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final Object loginLock = new Object();
+    private final Object paymentLock = new Object();
 
-    private volatile CallInfo pendingLogin;
-    private volatile CallInfo pendingPayment;
-    private volatile String pendingPaymentOrder;
-    private volatile String pendingPaymentReturnNonce;
+    private volatile PendingLogin pendingLogin;
+    private volatile PendingPayment pendingPayment;
+    private volatile String expectedUserId = "";
+    private volatile boolean destroyed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        captureExpectedUserId(getIntent());
         handleSakuraReturn(getIntent());
     }
 
@@ -81,36 +90,127 @@ public final class SakuraGameActivity extends AppActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        captureExpectedUserId(intent);
         handleSakuraReturn(intent);
     }
 
     @Override
     protected void onDestroy() {
+        synchronized (loginLock) {
+            destroyed = true;
+            pendingLogin = null;
+            main.removeCallbacksAndMessages(null);
+        }
         io.shutdownNow();
         super.onDestroy();
     }
 
     /** Invoked by app.sdk.none through the existing MessageHandler bridge. */
     public void sakuraLogin(final CallInfo callInfo) {
-        if (callInfo == null) return;
-        pendingLogin = callInfo;
+        if (callInfo == null || destroyed) return;
+        final PendingLogin request;
+        synchronized (loginLock) {
+            if (pendingLogin != null) {
+                reply(
+                        callInfo,
+                        loginReply("error", "", "login_in_progress"));
+                return;
+            }
+            request = new PendingLogin(callInfo, expectedUserId);
+            pendingLogin = request;
+        }
         final String credential = SessionVault.read(this);
         if (isCredential(credential)) {
-            reply(callInfo, loginReply("ok", credential, ""));
+            exchangeLoginTicket(request, credential);
             return;
         }
         final String pendingDeviceCode = pendingDeviceCode();
         if (isDeviceCode(pendingDeviceCode) &&
                 System.currentTimeMillis() < pendingDeviceDeadline()) {
-            pollForCredential(pendingDeviceCode, callInfo);
+            pollForCredential(pendingDeviceCode, request);
             return;
         }
-        beginDeviceAuthorization(callInfo);
+        beginDeviceAuthorization(request);
+    }
+
+    private void captureExpectedUserId(Intent intent) {
+        if (intent == null) {
+            expectedUserId = "";
+            return;
+        }
+        if (intent.hasExtra("sakura_expected_user_id")) {
+            String value = nonNull(
+                    intent.getStringExtra("sakura_expected_user_id"));
+            expectedUserId = isCanonicalUserId(value) ? value : "";
+            return;
+        }
+        boolean sakuraReturn =
+                intent.hasExtra("sakura_device_code") ||
+                intent.hasExtra("sakura_payment_order_id");
+        if (!sakuraReturn) expectedUserId = "";
+    }
+
+    private void exchangeLoginTicket(
+            final PendingLogin request,
+            final String credential) {
+        executeIo(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSONObject payload = new JSONObject();
+                    payload.put("credential", credential);
+                    HttpReply response = postJson(LOGIN_TICKET_URL, payload);
+                    if (!isPendingLogin(request)) return;
+                    if (response.status == 401) {
+                        SessionVault.clear(SakuraGameActivity.this);
+                        beginDeviceAuthorization(request);
+                        return;
+                    }
+                    if (response.status < 200 || response.status >= 300 ||
+                            !response.body.optBoolean("ok", false)) {
+                        throw new IllegalStateException("login_ticket_unavailable");
+                    }
+                    String ticket = response.body.optString("ticket", "");
+                    if (!isLoginTicket(ticket) ||
+                            response.body.optInt("ticketExpiresIn", 0) != 60) {
+                        throw new IllegalStateException("login_ticket_invalid");
+                    }
+                    String credentialUserId = response.body.optString("userId", "");
+                    if (!isCanonicalUserId(credentialUserId)) {
+                        throw new IllegalStateException("login_ticket_invalid");
+                    }
+                    String requiredUserId = request.requiredUserId;
+                    if (requiredUserId.length() > 0 &&
+                            !requiredUserId.equals(credentialUserId)) {
+                        SessionVault.clear(SakuraGameActivity.this);
+                        beginDeviceAuthorization(request);
+                        return;
+                    }
+                    if (isPendingLogin(request)) {
+                        clearPendingLogin(request);
+                        reply(
+                                request.callback,
+                                loginReply("ok", ticket, ""));
+                    }
+                } catch (Exception ignored) {
+                    if (isPendingLogin(request)) {
+                        clearPendingLogin(request);
+                        reply(
+                                request.callback,
+                                loginReply(
+                                        "error",
+                                        "",
+                                        "login_ticket_unavailable"));
+                    }
+                }
+            }
+        });
     }
 
     /** Starts Sakura coin payment without changing the game's displayed yuan price. */
     public void sakuraPay(final CallInfo callInfo) {
         if (callInfo == null) return;
+        PendingPayment request = null;
         try {
             final JSONObject payload = new JSONObject(nonNull(callInfo.bundle));
             final String orderId = payload.optString("gameOrderId", "");
@@ -128,7 +228,60 @@ public final class SakuraGameActivity extends AppActivity {
                 return;
             }
 
-            final String returnNonce = newPaymentReturnNonce();
+            final long now = System.currentTimeMillis();
+            synchronized (paymentLock) {
+                StoredPaymentResult completed = readStoredPaymentResult(now);
+                if (completed != null) {
+                    if (orderId.equals(completed.orderId)) {
+                        if (tryReply(
+                                callInfo,
+                                paymentReply(completed.status))) {
+                            clearStoredPaymentResult(completed);
+                        }
+                        return;
+                    }
+                    clearStoredPaymentResult(completed);
+                }
+                PendingPayment active = pendingPayment;
+                if (active != null && !active.isActive(now)) {
+                    pendingPayment = null;
+                    clearStoredPayment(active);
+                    reply(active.callback, paymentReply("payment_expired"));
+                    active = null;
+                }
+                if (active != null) {
+                    reply(callInfo, paymentReply("payment_in_progress"));
+                    return;
+                }
+
+                PendingPayment stored = readStoredPayment(now);
+                if (stored != null && !orderId.equals(stored.orderId)) {
+                    reply(callInfo, paymentReply("payment_in_progress"));
+                    return;
+                }
+                if (stored == null) {
+                    final String nonce = newPaymentReturnNonce();
+                    final long deadline = now + MAX_PAYMENT_WAIT_MS;
+                    request = new PendingPayment(
+                            callInfo,
+                            orderId,
+                            nonce,
+                            now,
+                            deadline);
+                    if (!writeStoredPayment(request)) {
+                        throw new IllegalStateException("payment_state_failed");
+                    }
+                } else {
+                    request = new PendingPayment(
+                            callInfo,
+                            stored.orderId,
+                            stored.returnNonce,
+                            stored.capturedAt,
+                            stored.deadline);
+                }
+                pendingPayment = request;
+            }
+
             Uri paymentUri = new Uri.Builder()
                     .scheme("sakura-novel")
                     .authority("game")
@@ -141,24 +294,21 @@ public final class SakuraGameActivity extends AppActivity {
                     .appendQueryParameter("serverKey", serverKey)
                     .appendQueryParameter("yyId", yyId)
                     .appendQueryParameter("csvId", csvId)
-                    .appendQueryParameter("returnNonce", returnNonce)
+                    .appendQueryParameter(
+                            "returnNonce",
+                            request.returnNonce)
                     .build();
             Intent intent = new Intent(Intent.ACTION_VIEW, paymentUri)
                     .setPackage(SAKURA_PACKAGE)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             if (intent.resolveActivity(getPackageManager()) == null) {
+                clearPendingPayment(request);
                 reply(callInfo, paymentReply("sakura_app_missing"));
                 return;
             }
-            pendingPayment = callInfo;
-            pendingPaymentOrder = orderId;
-            pendingPaymentReturnNonce = returnNonce;
-            pendingPreferences().edit()
-                    .putString("payment_order", orderId)
-                    .putString("payment_return_nonce", returnNonce)
-                    .apply();
             startActivity(intent);
         } catch (Exception ignored) {
+            if (request != null) clearPendingPayment(request);
             reply(callInfo, paymentReply("invalid_request"));
         }
     }
@@ -169,105 +319,260 @@ public final class SakuraGameActivity extends AppActivity {
         reply(callInfo, simpleReply("ok", ""));
     }
 
-    private void beginDeviceAuthorization(final CallInfo callInfo) {
-        io.execute(new Runnable() {
+    private void beginDeviceAuthorization(final PendingLogin request) {
+        executeIo(new Runnable() {
             @Override
             public void run() {
                 try {
+                    if (!isPendingLogin(request)) return;
                     HttpReply response = postJson(DEVICE_CREATE_URL, new JSONObject());
+                    if (!isPendingLogin(request)) return;
                     JSONObject body = response.body;
                     String deviceCode = body.optString("deviceCode", "");
+                    String userCode = normalizeUserCode(
+                            body.optString("userCode", ""));
                     String verificationUriComplete = body.optString(
                             "verificationUriComplete", "");
                     int expiresIn = body.optInt("expiresIn", 0);
                     if (response.status < 200 || response.status >= 300 ||
                             !isDeviceCode(deviceCode) ||
-                            !isAuthorizationUri(verificationUriComplete, deviceCode) ||
+                            userCode.length() == 0 ||
+                            !isAuthorizationUri(
+                                    verificationUriComplete,
+                                    deviceCode,
+                                    userCode) ||
                             expiresIn <= 0 || expiresIn > 900) {
                         throw new IllegalStateException("authorization_start_failed");
                     }
                     long deadline = System.currentTimeMillis() + Math.min(
                             MAX_DEVICE_WAIT_MS, expiresIn * 1000L);
-                    pendingPreferences().edit()
-                            .putString("device_code", deviceCode)
-                            .putLong("device_deadline", deadline)
-                            .apply();
-                    launchSakuraAuthorization(callInfo, verificationUriComplete);
+                    launchSakuraAuthorization(
+                            request,
+                            deviceCode,
+                            userCode,
+                            deadline,
+                            verificationUriComplete);
                 } catch (Exception ignored) {
-                    reply(callInfo, loginReply("error", "", "authorization_start_failed"));
+                    if (isPendingLogin(request)) {
+                        clearPendingLogin(request);
+                        reply(
+                                request.callback,
+                                loginReply(
+                                        "error",
+                                        "",
+                                        "authorization_start_failed"));
+                    }
                 }
             }
         });
     }
 
     private void launchSakuraAuthorization(
-            final CallInfo callInfo,
+            final PendingLogin request,
+            final String deviceCode,
+            final String userCode,
+            final long deadline,
             final String verificationUriComplete) {
         main.post(new Runnable() {
             @Override
             public void run() {
                 try {
-                    Intent intent = new Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse(verificationUriComplete))
-                            .setPackage(SAKURA_PACKAGE)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    if (intent.resolveActivity(getPackageManager()) == null) {
+                    if (!isPendingLogin(request)) return;
+                    if (isFinishing()) {
                         throw new IllegalStateException("sakura_app_missing");
                     }
-                    startActivity(intent);
+                    new AlertDialog.Builder(SakuraGameActivity.this)
+                            .setTitle(
+                                    "\u53e3\u888b\u89c9\u9192 Sakura " +
+                                    "\u767b\u5f55")
+                            .setMessage(
+                                    "\u672c\u6b21\u767b\u5f55\u6388\u6743" +
+                                    "\u7801\uff1a\n\n" + userCode +
+                                    "\n\n\u8bf7\u4ec5\u5728 Sakura App " +
+                                    "\u663e\u793a\u76f8\u540c\u6388\u6743" +
+                                    "\u7801\u65f6\u5141\u8bb8\u767b\u5f55" +
+                                    "\u3002")
+                            .setCancelable(false)
+                            .setNegativeButton(
+                                    "\u53d6\u6d88",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(
+                                                DialogInterface dialog,
+                                                int which) {
+                                            clearPendingDeviceCode();
+                                            if (!isPendingLogin(request)) return;
+                                            clearPendingLogin(request);
+                                            reply(
+                                                    request.callback,
+                                                    loginReply(
+                                                            "error",
+                                                            "",
+                                                            "authorization_cancelled"));
+                                        }
+                                    })
+                            .setPositiveButton(
+                                    "\u6253\u5f00 Sakura",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(
+                                                DialogInterface dialog,
+                                                int which) {
+                                            if (!isPendingLogin(request)) return;
+                                            openSakuraAuthorization(
+                                                    request,
+                                                    deviceCode,
+                                                    deadline,
+                                                    verificationUriComplete);
+                                        }
+                                    })
+                            .show();
                 } catch (Exception ignored) {
                     clearPendingDeviceCode();
-                    reply(callInfo, loginReply("error", "", "sakura_app_missing"));
+                    if (isPendingLogin(request)) {
+                        clearPendingLogin(request);
+                        reply(
+                                request.callback,
+                                loginReply("error", "", "sakura_app_missing"));
+                    }
                 }
             }
         });
     }
 
+    private void openSakuraAuthorization(
+            PendingLogin request,
+            String deviceCode,
+            long deadline,
+            String verificationUriComplete) {
+        try {
+            if (!isPendingLogin(request)) return;
+            Intent intent = new Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(verificationUriComplete))
+                    .setPackage(SAKURA_PACKAGE)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (intent.resolveActivity(getPackageManager()) == null) {
+                throw new IllegalStateException("sakura_app_missing");
+            }
+            if (!isPendingLogin(request)) return;
+            boolean saved = pendingPreferences().edit()
+                    .putString("device_code", deviceCode)
+                    .putLong("device_deadline", deadline)
+                    .commit();
+            if (!saved) {
+                throw new IllegalStateException("authorization_state_failed");
+            }
+            startActivity(intent);
+        } catch (Exception ignored) {
+            clearPendingDeviceCode();
+            if (isPendingLogin(request)) {
+                clearPendingLogin(request);
+                reply(
+                        request.callback,
+                        loginReply("error", "", "sakura_app_missing"));
+            }
+        }
+    }
+
     private void handleSakuraReturn(Intent intent) {
         if (intent == null) return;
         String deviceCode = nonNull(intent.getStringExtra("sakura_device_code"));
-        if (pendingLogin != null && isDeviceCode(deviceCode) &&
+        String authorizationStatus = nonNull(
+                intent.getStringExtra("sakura_authorization_status"));
+        PendingLogin login = pendingLogin;
+        if (login != null && isDeviceCode(deviceCode) &&
                 deviceCode.equals(pendingDeviceCode())) {
-            // The return Intent is only a wake-up. The authorization result
-            // always comes from the server-side device-code exchange.
-            pollForCredential(deviceCode, pendingLogin);
+            if ("approved".equals(authorizationStatus)) {
+                // Approval is only a wake-up. The credential still comes from
+                // the server-side device-code exchange.
+                pollForCredential(deviceCode, login);
+            } else if ("denied".equals(authorizationStatus) ||
+                    "cancelled".equals(authorizationStatus)) {
+                if (isPendingLogin(login)) {
+                    clearPendingLogin(login);
+                    clearPendingDeviceCode();
+                    reply(
+                            login.callback,
+                            loginReply(
+                                    "error",
+                                    "",
+                                    "denied".equals(authorizationStatus)
+                                            ? "authorization_denied"
+                                            : "authorization_cancelled"));
+                }
+            }
         }
 
         String orderId = nonNull(intent.getStringExtra("sakura_payment_order_id"));
         String paymentStatus = nonNull(intent.getStringExtra("sakura_payment_status"));
         String returnNonce = nonNull(intent.getStringExtra("sakura_payment_return_nonce"));
-        if (pendingPayment != null && isIdentifier(orderId) &&
-                orderId.equals(pendingPaymentOrder) &&
-                isPaymentReturnNonce(returnNonce) &&
-                sameReturnNonce(returnNonce, pendingPaymentReturnNonce)) {
-            CallInfo callback = pendingPayment;
-            pendingPayment = null;
-            pendingPaymentOrder = null;
-            pendingPaymentReturnNonce = null;
-            pendingPreferences().edit()
-                    .remove("payment_order")
-                    .remove("payment_return_nonce")
-                    .apply();
-            reply(callback, paymentReply(isPaymentStatus(paymentStatus)
-                    ? paymentStatus : "cancelled"));
+        PendingPayment payment = null;
+        StoredPaymentResult completed = null;
+        boolean expired = false;
+        synchronized (paymentLock) {
+            PendingPayment active = pendingPayment;
+            long now = System.currentTimeMillis();
+            if (active != null && !active.isActive(now)) {
+                pendingPayment = null;
+                clearStoredPayment(active);
+                payment = active;
+                expired = true;
+            } else {
+                PendingPayment stored = active != null
+                        ? active : readStoredPayment(now);
+                if (stored != null) {
+                    String resolvedStatus = PaymentRecovery.returnedStatus(
+                            stored.orderId,
+                            stored.returnNonce,
+                            stored.capturedAt,
+                            stored.deadline,
+                            orderId,
+                            returnNonce,
+                            paymentStatus,
+                            now,
+                            MAX_PAYMENT_WAIT_MS);
+                    if (resolvedStatus.length() > 0) {
+                        completed = completeStoredPayment(
+                                stored,
+                                resolvedStatus);
+                        if (completed != null) {
+                            if (pendingPayment == active) pendingPayment = null;
+                            payment = stored;
+                        }
+                    }
+                }
+            }
+        }
+        if (payment != null) {
+            if (expired) {
+                reply(payment.callback, paymentReply("payment_expired"));
+            } else if (completed != null && tryReply(
+                    payment.callback,
+                    paymentReply(completed.status))) {
+                clearStoredPaymentResult(completed);
+            }
         }
     }
 
-    private void pollForCredential(final String deviceCode, final CallInfo callback) {
-        io.execute(new Runnable() {
+    private void pollForCredential(
+            final String deviceCode,
+            final PendingLogin request) {
+        executeIo(new Runnable() {
             @Override
             public void run() {
                 try {
+                    if (!isPendingLogin(request)) return;
                     if (System.currentTimeMillis() >= pendingDeviceDeadline()) {
                         throw new IllegalStateException("authorization_expired");
                     }
-                    JSONObject request = new JSONObject();
-                    request.put("deviceCode", deviceCode);
-                    HttpReply response = postJson(DEVICE_TOKEN_URL, request);
+                    JSONObject payload = new JSONObject();
+                    payload.put("deviceCode", deviceCode);
+                    HttpReply response = postJson(DEVICE_TOKEN_URL, payload);
+                    if (!isPendingLogin(request)) return;
                     if (response.status == 202 || "pending".equals(response.body.optString("status"))) {
                         int retryAfter = response.body.optInt("retryAfter", 5);
-                        scheduleCredentialPoll(deviceCode, callback, retryAfter);
+                        scheduleCredentialPoll(deviceCode, request, retryAfter);
                         return;
                     }
                     String credential = response.body.optString("credential", "");
@@ -276,27 +581,61 @@ public final class SakuraGameActivity extends AppActivity {
                             !isCredential(credential)) {
                         throw new IllegalStateException("authorization_failed");
                     }
+                    if (!isPendingLogin(request)) return;
                     SessionVault.write(SakuraGameActivity.this, credential);
                     clearPendingDeviceCode();
-                    pendingLogin = null;
-                    reply(callback, loginReply("ok", credential, ""));
+                    exchangeLoginTicket(request, credential);
                 } catch (Exception ignored) {
-                    clearPendingDeviceCode();
-                    pendingLogin = null;
-                    reply(callback, loginReply("error", "", "authorization_failed"));
+                    if (isPendingLogin(request)) {
+                        clearPendingDeviceCode();
+                        clearPendingLogin(request);
+                        reply(
+                                request.callback,
+                                loginReply(
+                                        "error",
+                                        "",
+                                        "authorization_failed"));
+                    }
                 }
             }
         });
     }
 
-    private void scheduleCredentialPoll(final String deviceCode, final CallInfo callback, int retryAfter) {
+    private void scheduleCredentialPoll(
+            final String deviceCode,
+            final PendingLogin request,
+            int retryAfter) {
         int seconds = Math.max(2, Math.min(15, retryAfter));
-        main.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                pollForCredential(deviceCode, callback);
-            }
-        }, seconds * 1000L);
+        synchronized (loginLock) {
+            if (destroyed || pendingLogin != request) return;
+            main.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (isPendingLogin(request)) {
+                        pollForCredential(deviceCode, request);
+                    }
+                }
+            }, seconds * 1000L);
+        }
+    }
+
+    private void executeIo(Runnable task) {
+        if (destroyed) return;
+        try {
+            io.execute(task);
+        } catch (RejectedExecutionException ignored) {
+            // The activity may be destroyed between the gate and submission.
+        }
+    }
+
+    private boolean isPendingLogin(PendingLogin request) {
+        return request != null && !destroyed && pendingLogin == request;
+    }
+
+    private void clearPendingLogin(PendingLogin request) {
+        synchronized (loginLock) {
+            if (pendingLogin == request) pendingLogin = null;
+        }
     }
 
     private HttpReply postJson(String endpoint, JSONObject request) throws Exception {
@@ -305,6 +644,8 @@ public final class SakuraGameActivity extends AppActivity {
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(15_000);
         connection.setDoOutput(true);
+        connection.setInstanceFollowRedirects(false);
+        connection.setUseCaches(false);
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("Cache-Control", "no-store");
@@ -354,23 +695,139 @@ public final class SakuraGameActivity extends AppActivity {
                 .apply();
     }
 
+    private PendingPayment readStoredPayment(long now) {
+        SharedPreferences preferences = pendingPreferences();
+        PendingPayment stored = new PendingPayment(
+                null,
+                nonNull(preferences.getString("payment_order", "")),
+                nonNull(preferences.getString("payment_return_nonce", "")),
+                preferences.getLong("payment_captured_at", 0L),
+                preferences.getLong("payment_deadline", 0L));
+        if (stored.isActive(now)) return stored;
+        clearStoredPayment(null);
+        return null;
+    }
+
+    private boolean writeStoredPayment(PendingPayment payment) {
+        return pendingPreferences().edit()
+                .remove("payment_result_order")
+                .remove("payment_result_status")
+                .remove("payment_result_deadline")
+                .putString("payment_order", payment.orderId)
+                .putString("payment_return_nonce", payment.returnNonce)
+                .putLong("payment_captured_at", payment.capturedAt)
+                .putLong("payment_deadline", payment.deadline)
+                .commit();
+    }
+
+    private StoredPaymentResult readStoredPaymentResult(long now) {
+        SharedPreferences preferences = pendingPreferences();
+        StoredPaymentResult stored = new StoredPaymentResult(
+                nonNull(preferences.getString("payment_result_order", "")),
+                nonNull(preferences.getString("payment_result_status", "")),
+                preferences.getLong("payment_result_deadline", 0L));
+        if (stored.isActive(now)) return stored;
+        clearStoredPaymentResult(null);
+        return null;
+    }
+
+    private StoredPaymentResult completeStoredPayment(
+            PendingPayment expected,
+            String status) {
+        if (expected == null || !isPaymentStatus(status)) return null;
+        SharedPreferences preferences = pendingPreferences();
+        if (!expected.orderId.equals(nonNull(
+                preferences.getString("payment_order", ""))) ||
+                !expected.returnNonce.equals(nonNull(
+                        preferences.getString("payment_return_nonce", ""))) ||
+                expected.capturedAt != preferences.getLong(
+                        "payment_captured_at", 0L) ||
+                expected.deadline != preferences.getLong(
+                        "payment_deadline", 0L)) {
+            return null;
+        }
+        StoredPaymentResult completed = new StoredPaymentResult(
+                expected.orderId,
+                status,
+                expected.deadline);
+        boolean saved = preferences.edit()
+                .remove("payment_order")
+                .remove("payment_return_nonce")
+                .remove("payment_captured_at")
+                .remove("payment_deadline")
+                .putString("payment_result_order", completed.orderId)
+                .putString("payment_result_status", completed.status)
+                .putLong("payment_result_deadline", completed.deadline)
+                .commit();
+        return saved ? completed : null;
+    }
+
+    private void clearPendingPayment(PendingPayment payment) {
+        synchronized (paymentLock) {
+            if (pendingPayment == payment) pendingPayment = null;
+            clearStoredPayment(payment);
+        }
+    }
+
+    private void clearStoredPayment(PendingPayment expected) {
+        SharedPreferences preferences = pendingPreferences();
+        if (expected != null &&
+                (!expected.orderId.equals(nonNull(
+                        preferences.getString("payment_order", ""))) ||
+                !expected.returnNonce.equals(nonNull(
+                        preferences.getString("payment_return_nonce", ""))))) {
+            return;
+        }
+        preferences.edit()
+                .remove("payment_order")
+                .remove("payment_return_nonce")
+                .remove("payment_captured_at")
+                .remove("payment_deadline")
+                .commit();
+    }
+
+    private void clearStoredPaymentResult(StoredPaymentResult expected) {
+        SharedPreferences preferences = pendingPreferences();
+        if (expected != null &&
+                (!expected.orderId.equals(nonNull(
+                        preferences.getString("payment_result_order", ""))) ||
+                !expected.status.equals(nonNull(
+                        preferences.getString("payment_result_status", ""))) ||
+                expected.deadline != preferences.getLong(
+                        "payment_result_deadline", 0L))) {
+            return;
+        }
+        preferences.edit()
+                .remove("payment_result_order")
+                .remove("payment_result_status")
+                .remove("payment_result_deadline")
+                .commit();
+    }
+
     private void reply(CallInfo callInfo, String payload) {
-        if (callInfo == null) return;
+        tryReply(callInfo, payload);
+    }
+
+    private boolean tryReply(CallInfo callInfo, String payload) {
+        if (callInfo == null) return false;
         try {
             Field field = AppActivity.class.getDeclaredField("messageHandler");
             field.setAccessible(true);
             MessageHandler handler = (MessageHandler) field.get(this);
-            if (handler != null) handler.callbackToLua(callInfo.msgID, payload);
+            if (handler == null) return false;
+            handler.callbackToLua(callInfo.msgID, payload);
+            return true;
         } catch (Exception ignored) {
             // The bridge can be torn down while Android switches activities.
+            return false;
         }
     }
 
-    private static String loginReply(String status, String credential, String error) {
+    private static String loginReply(String status, String ticket, String error) {
         try {
             JSONObject result = new JSONObject();
             result.put("status", status);
-            if (!credential.isEmpty()) result.put("credential", credential);
+            if (!ticket.isEmpty()) result.put("ticket", ticket);
             if (!error.isEmpty()) result.put("error", error);
             return result.toString();
         } catch (Exception ignored) {
@@ -393,16 +850,42 @@ public final class SakuraGameActivity extends AppActivity {
         }
     }
 
-    private static boolean isAuthorizationUri(String value, String deviceCode) {
+    private static boolean isAuthorizationUri(
+            String value,
+            String deviceCode,
+            String userCode) {
         try {
             Uri uri = Uri.parse(value);
             return "sakura-novel".equals(uri.getScheme()) &&
                     "game".equals(uri.getHost()) &&
+                    uri.getPort() == -1 &&
+                    uri.getUserInfo() == null &&
+                    uri.getFragment() == null &&
                     "/kdjx/authorize".equals(uri.getPath()) &&
-                    deviceCode.equals(uri.getQueryParameter("device_code"));
+                    uri.getQueryParameterNames().size() == 2 &&
+                    uri.getQueryParameterNames().contains("device_code") &&
+                    uri.getQueryParameterNames().contains("user_code") &&
+                    uri.getQueryParameters("device_code").size() == 1 &&
+                    uri.getQueryParameters("user_code").size() == 1 &&
+                    deviceCode.equals(uri.getQueryParameter("device_code")) &&
+                    userCode.equals(normalizeUserCode(
+                            uri.getQueryParameter("user_code")));
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static String normalizeUserCode(String value) {
+        if (value == null) return "";
+        String normalized = value.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!normalized.matches(
+                "(?:[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}|" +
+                "[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-" +
+                "[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4})")) {
+            return "";
+        }
+        String compact = normalized.replace("-", "");
+        return compact.substring(0, 4) + "-" + compact.substring(4);
     }
 
     private static boolean isDeviceCode(String value) {
@@ -417,17 +900,28 @@ public final class SakuraGameActivity extends AppActivity {
                 value.matches("[A-Za-z0-9_-]+");
     }
 
+    private static boolean isLoginTicket(String value) {
+        return value != null && value.startsWith("kdjx_login_") &&
+                value.length() >= 51 && value.length() <= 160 &&
+                value.matches("[A-Za-z0-9_-]+");
+    }
+
     private static boolean isIdentifier(String value) {
         return value != null && value.length() >= 1 && value.length() <= 128 &&
                 value.matches("[A-Za-z0-9._:-]+");
     }
 
+    private static boolean isCanonicalUserId(String value) {
+        if (value == null || !value.matches("[1-9][0-9]{0,18}")) return false;
+        try {
+            return Long.parseLong(value) > 0L;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
     private static boolean isPaymentStatus(String value) {
-        return "cancelled".equals(value) || "pending".equals(value) ||
-                "paid".equals(value) || "fulfilling".equals(value) ||
-                "delivery_failed".equals(value) || "failed".equals(value) ||
-                "delivered".equals(value) || "fulfilled".equals(value) ||
-                "success".equals(value) || "refunded".equals(value);
+        return PaymentRecovery.isPaymentStatus(value);
     }
 
     private static String newPaymentReturnNonce() {
@@ -452,6 +946,63 @@ public final class SakuraGameActivity extends AppActivity {
 
     private static String nonNull(String value) {
         return value == null ? "" : value;
+    }
+
+    private static final class PendingLogin {
+        final CallInfo callback;
+        final String requiredUserId;
+
+        PendingLogin(CallInfo callback, String requiredUserId) {
+            this.callback = callback;
+            this.requiredUserId = nonNull(requiredUserId);
+        }
+    }
+
+    private static final class PendingPayment {
+        final CallInfo callback;
+        final String orderId;
+        final String returnNonce;
+        final long capturedAt;
+        final long deadline;
+
+        PendingPayment(
+                CallInfo callback,
+                String orderId,
+                String returnNonce,
+                long capturedAt,
+                long deadline) {
+            this.callback = callback;
+            this.orderId = nonNull(orderId);
+            this.returnNonce = nonNull(returnNonce);
+            this.capturedAt = capturedAt;
+            this.deadline = deadline;
+        }
+
+        boolean isActive(long now) {
+            return isIdentifier(orderId) &&
+                    isPaymentReturnNonce(returnNonce) &&
+                    capturedAt > 0L && capturedAt <= now &&
+                    deadline > capturedAt &&
+                    deadline - capturedAt == MAX_PAYMENT_WAIT_MS &&
+                    deadline > now;
+        }
+    }
+
+    private static final class StoredPaymentResult {
+        final String orderId;
+        final String status;
+        final long deadline;
+
+        StoredPaymentResult(String orderId, String status, long deadline) {
+            this.orderId = nonNull(orderId);
+            this.status = nonNull(status);
+            this.deadline = deadline;
+        }
+
+        boolean isActive(long now) {
+            return isIdentifier(orderId) && isPaymentStatus(status) &&
+                    deadline > now;
+        }
     }
 
     private static final class HttpReply {
