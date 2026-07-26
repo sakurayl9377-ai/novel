@@ -9,6 +9,11 @@ import {
 import { hashToken, randomToken } from './security.js';
 
 const sessionHash = (credential) => hashToken(`kdjx-session:${credential}`);
+const loginTicketHash = (ticket) => hashToken(`kdjx-login-ticket:${ticket}`);
+
+export function kdjxSsoAvailable() {
+  return Boolean(kdjxConfig.ssoSharedSecret.trim());
+}
 
 export function createKdjxSessionGrantInTransaction(userId, now = new Date()) {
   const user = one('SELECT status FROM users WHERE id = ?', [userId]);
@@ -71,6 +76,118 @@ export function verifyKdjxCredential(rawCredential) {
     [sessionHash(rawCredential)],
   );
   return session ? sessionIdentity(session.id) : null;
+}
+
+export function issueKdjxLoginTicket(rawCredential, now = new Date()) {
+  ensureKdjxGameSchema();
+  if (!validOpaqueToken(rawCredential, 'kdjx_session_')) return null;
+
+  const nowIso = now.toISOString();
+  const expiresAt = new Date(
+    now.getTime() + kdjxConfig.loginTicketTtlSeconds * 1000,
+  ).toISOString();
+  let result = null;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const session = one(
+      `SELECT session.id, session.user_id
+       FROM kdjx_game_sessions session
+       JOIN users user ON user.id = session.user_id
+       WHERE session.token_hash = ?
+         AND session.revoked_at IS NULL
+         AND datetime(session.expires_at) > datetime(?)
+         AND user.status = 'active'`,
+      [sessionHash(rawCredential), nowIso],
+    );
+    if (!session) {
+      db.exec('ROLLBACK');
+      return null;
+    }
+
+    run(
+      `DELETE FROM kdjx_game_login_tickets
+       WHERE datetime(expires_at) <= datetime(?)`,
+      [nowIso],
+    );
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const ticket = `kdjx_login_${randomToken(32)}`;
+      try {
+        run(
+          `INSERT INTO kdjx_game_login_tickets
+            (ticket_hash, session_id, expires_at)
+           VALUES (?, ?, ?)`,
+          [loginTicketHash(ticket), session.id, expiresAt],
+        );
+        result = {
+          ticket,
+          ticketExpiresAt: expiresAt,
+          ticketExpiresIn: kdjxConfig.loginTicketTtlSeconds,
+          userId: Number(session.user_id),
+        };
+        break;
+      } catch (error) {
+        if (!String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) {
+          throw error;
+        }
+      }
+    }
+    if (!result) throw ssoError('login_ticket_capacity_exhausted', 503);
+    run(
+      `UPDATE kdjx_game_sessions SET last_used_at = ? WHERE id = ?`,
+      [nowIso, session.id],
+    );
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
+}
+
+export function consumeKdjxLoginTicket(rawTicket, now = new Date()) {
+  ensureKdjxGameSchema();
+  if (!validOpaqueToken(rawTicket, 'kdjx_login_')) return null;
+
+  const nowIso = now.toISOString();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const consumed = one(
+      `UPDATE kdjx_game_login_tickets AS ticket
+       SET consumed_at = ?
+       WHERE ticket_hash = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime(?)
+         AND EXISTS (
+           SELECT 1
+           FROM kdjx_game_sessions session
+           JOIN users user ON user.id = session.user_id
+           WHERE session.id = ticket.session_id
+             AND session.revoked_at IS NULL
+             AND datetime(session.expires_at) > datetime(?)
+             AND user.status = 'active'
+         )
+       RETURNING session_id`,
+      [nowIso, loginTicketHash(rawTicket), nowIso, nowIso],
+    );
+    if (!consumed) {
+      db.exec('COMMIT');
+      return null;
+    }
+    run(
+      `UPDATE kdjx_game_sessions SET last_used_at = ? WHERE id = ?`,
+      [nowIso, consumed.session_id],
+    );
+    const identity = sessionIdentity(consumed.session_id);
+    if (!identity) {
+      db.exec('ROLLBACK');
+      return null;
+    }
+    db.exec('COMMIT');
+    return identity;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
 }
 
 export function revokeKdjxCredentials(userId, rawCredential) {

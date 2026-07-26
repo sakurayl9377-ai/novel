@@ -46,6 +46,8 @@ assert adapter_spec is not None and adapter_spec.loader is not None
 adapter_module = importlib.util.module_from_spec(adapter_spec)
 adapter_spec.loader.exec_module(adapter_module)
 
+login_patch_path = root / 'scripts' / 'apply-sakura-only-login.py'
+
 clean_head_config = """import path from 'node:path';
 
 export const config = {
@@ -188,6 +190,7 @@ def assert_adapter_result(backend, include_modao=False):
     )
 
     assert config.count('kdjxDeviceAuthorizationUrl:') == 1
+    assert config.count('kdjxLoginTicketTtlSeconds:') == 1
     assert routes.count(
         "import { kdjxGameRoutes } from './routes-kdjx-game.js';"
     ) == 1
@@ -195,8 +198,10 @@ def assert_adapter_result(backend, include_modao=False):
     assert env_example.count(
         'KDJX_DEVICE_AUTHORIZATION_URL=sakura-novel://game/kdjx/authorize'
     ) == 1
+    assert env_example.count('KDJX_LOGIN_TICKET_TTL_SECONDS=60') == 1
     assert deploy.count('validate_kdjx_production_config()') == 1
     assert deploy.count('backend/catalogs/kdjx-payment-catalog.json') == 1
+    assert "KDJX_LOGIN_TICKET_TTL_SECONDS: '60'" in deploy
     assert deploy.count(
         'chown -R "$app_user:$app_user" "$new_release"\n'
         'validate_kdjx_production_config\n'
@@ -263,6 +268,63 @@ assert_missing_anchor_fails(
     adapter_module.patch_env_example,
     "BAILIAN_SSO_TTL_SECONDS=60\n",
 )
+
+with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
+    runtime = pathlib.Path(temp) / 'runtime'
+    login_root = runtime / 'gosrc' / 'tjgame' / 'login'
+    task_source = login_root / 'checkin' / 'task' / 'check.go'
+    verifier_source = login_root / 'sakuraauth' / 'client.go'
+    verifier_test = verifier_source.with_name('client_test.go')
+    task_source.parent.mkdir(parents=True)
+    verifier_source.parent.mkdir(parents=True)
+    task_source.write_text(
+        'package task\n\n'
+        'func check(t *Task) {\n'
+        '\tlog.Infof("login channel `%s` tag `%s` guarder `%s`", t.Channel, t.Tag, t.Guarder)\n\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    verifier_source.write_text(
+        'package sakuraauth\n\n'
+        'func verify(proof string) {\n'
+        '\tif !strings.HasPrefix(proof, "kdjx_session_") { return }\n'
+        '\t_, _ = json.Marshal(map[string]string{"credential": proof})\n'
+        '\t_ = c.BaseURL+"/games/kdjx/sessions/verify"\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    verifier_test.write_text(
+        'package sakuraauth\n\n'
+        'func TestVerifyCredential(t *testing.T) {\n'
+        '\tproof := "kdjx_session_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"\n'
+        '\tbody := map[string]string{"credential": proof}\n'
+        '\tif body["credential"] != proof {\n'
+        '\t\tt.Fatal("credential was not forwarded")\n'
+        '\t}\n'
+        '}\n',
+        encoding='utf-8',
+    )
+    command = [
+        sys.executable,
+        str(login_patch_path),
+        '--source-root',
+        str(runtime),
+    ]
+    subprocess.run(command, check=True)
+    first_result = {
+        path: path.read_bytes()
+        for path in (task_source, verifier_source, verifier_test)
+    }
+    subprocess.run(command, check=True)
+    assert all(path.read_bytes() == payload for path, payload in first_result.items())
+    patched_verifier = verifier_source.read_text(encoding='utf-8')
+    patched_tests = verifier_test.read_text(encoding='utf-8')
+    assert 'kdjx_login_' in patched_verifier
+    assert 'map[string]string{"ticket": proof}' in patched_verifier
+    assert 'kdjx_session_' not in patched_verifier
+    assert 'body["ticket"]' in patched_tests
+    assert 'TestVerifyRejectsLongLivedSessionCredential' in patched_tests
+    assert 'if t.Channel != "sakura" {' in task_source.read_text(encoding='utf-8')
 
 with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     runtime = pathlib.Path(temp) / 'runtime'
@@ -347,7 +409,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         [sys.executable, str(root / 'scripts' / 'sanitize-kdjx-runtime-inputs.py'), '--runtime-root', str(runtime)],
         check=True,
     )
-    (runtime / 'sakura-only-login-gate.txt').write_text('sakura-only-login-gate-v1\n', encoding='utf-8')
+    (runtime / 'sakura-only-login-gate.txt').write_text('sakura-only-login-ticket-gate-v2\n', encoding='utf-8')
     (runtime / 'loopback-metrics-gate.txt').write_text('loopback-metrics-gate-v1\n', encoding='utf-8')
     runtime_audit = runtime / 'scripts' / 'audit-runtime-addresses.py'
     runtime_audit.parent.mkdir(parents=True)

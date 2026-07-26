@@ -14,6 +14,9 @@ import {
 } from './kdjx-payments.js';
 import { ensureKdjxGameSchema } from './kdjx-schema.js';
 import {
+  consumeKdjxLoginTicket,
+  issueKdjxLoginTicket,
+  kdjxSsoAvailable,
   revokeKdjxCredentials,
   verifyKdjxCredential,
   verifyKdjxSharedSecret,
@@ -215,14 +218,52 @@ export async function kdjxGameRoutes(app) {
     };
   });
 
+  app.post('/games/kdjx/sessions/login-ticket', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    if (!kdjxSsoAvailable()) {
+      return reply.code(503).send({ error: 'kdjx_sso_unavailable' });
+    }
+    const limited = enforceRateLimits(request, reply, [{
+      scope: 'kdjx_login_ticket_ip',
+      key: request.ip,
+      limit: 60,
+      windowMs: 60_000,
+      error: 'login_ticket_rate_limited',
+    }]);
+    if (limited) return limited;
+    if (!hasOnlyBodyField(request.body, 'credential')) {
+      return reply.code(401).send({ error: 'invalid_or_expired_credential' });
+    }
+    try {
+      const ticket = issueKdjxLoginTicket(request.body.credential);
+      if (!ticket) {
+        return reply.code(401).send({ error: 'invalid_or_expired_credential' });
+      }
+      return {
+        ok: true,
+        ticket: ticket.ticket,
+        ticketExpiresAt: ticket.ticketExpiresAt,
+        ticketExpiresIn: ticket.ticketExpiresIn,
+        userId: String(ticket.userId),
+      };
+    } catch (error) {
+      return reply
+        .code(error.statusCode || 500)
+        .send({ error: error.code || 'login_ticket_failed' });
+    }
+  });
+
   app.post('/games/kdjx/sessions/verify', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     if (!verifyKdjxSharedSecret(request.headers['x-kdjx-sso-secret'])) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    const identity = verifyKdjxCredential(request.body?.credential);
+    if (!hasOnlyBodyField(request.body, 'ticket')) {
+      return reply.code(401).send({ error: 'invalid_or_expired_login_ticket' });
+    }
+    const identity = consumeKdjxLoginTicket(request.body.ticket);
     if (!identity) {
-      return reply.code(401).send({ error: 'invalid_or_expired_credential' });
+      return reply.code(401).send({ error: 'invalid_or_expired_login_ticket' });
     }
     return internalIdentityJson(identity);
   });
@@ -246,6 +287,11 @@ export async function kdjxGameRoutes(app) {
       }
     },
   );
+}
+
+function hasOnlyBodyField(body, field) {
+  return body !== null && typeof body === 'object' && !Array.isArray(body) &&
+    Object.keys(body).length === 1 && Object.hasOwn(body, field);
 }
 
 function internalIdentityJson(identity) {

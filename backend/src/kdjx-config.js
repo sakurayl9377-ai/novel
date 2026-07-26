@@ -12,6 +12,7 @@ export const kdjxConfig = {
   ssoSharedSecret: config.kdjxSsoSharedSecret,
   sessionTtlDays: config.kdjxSessionTtlDays,
   sessionMaxPerUser: config.kdjxSessionMaxPerUser,
+  loginTicketTtlSeconds: config.kdjxLoginTicketTtlSeconds,
   deviceCodeTtlSeconds: config.kdjxDeviceCodeTtlSeconds,
   devicePollIntervalSeconds: config.kdjxDevicePollIntervalSeconds,
   paymentCatalogFile: catalogFile

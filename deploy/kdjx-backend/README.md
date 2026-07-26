@@ -56,9 +56,10 @@ are handled only by the Go login adapter at the private endpoints
 `/internal/sakura/payments/verify` and `/internal/sakura/payments/fulfill`.
 The Nginx snippet rejects public requests to those endpoints.
 
-The staging step also replaces legacy SDK configuration with an empty config
-and inserts a Sakura-only gate into the Go login check path. Non-Sakura login
-channels fail closed.
+The staging step also replaces legacy SDK configuration with an empty config,
+inserts a Sakura-only gate into the Go login check path, and patches the Go
+verifier to accept only `kdjx_login_*` one-time tickets. Non-Sakura channels,
+long-lived `kdjx_session_*` credentials, and legacy proof formats fail closed.
 
 ## Build A Runtime Tree
 
@@ -140,10 +141,15 @@ backend host. It exposes only `/kdjx/version`, `/kdjx/notice`, and
 `/kdjx/word-check`, and `/kdjx/feedback`; it also serves local `200` support
 and privacy pages and acknowledges `/games/kdjx/telemetry/` with `204`. It
 does not proxy a catch-all path. The app and APK hot-update files remain on the
-download host. The device authorization create/poll flow is the only public
-login flow; credential verification stays private and requires the shared
-server-side secret. The Nginx include explicitly rejects the private
-`/novel-api/games/kdjx/sessions/verify` route before any general API proxy.
+download host. The public device authorization flow returns a long-lived
+`kdjx_session_*` credential only to the game's Android Keystore. Before each
+TCP login, Native exchanges that credential at
+`/novel-api/games/kdjx/sessions/login-ticket` for a 60-second
+`kdjx_login_*` ticket. The Go login service sends only that ticket to the
+private `/novel-api/games/kdjx/sessions/verify` endpoint, where it is consumed
+atomically after the linked session and user are confirmed active. The Nginx
+include explicitly rejects the private verify route before any general API
+proxy; the long-lived credential never enters Lua or legacy TCP transport.
 
 ## Install Units
 

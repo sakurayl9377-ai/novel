@@ -17,6 +17,7 @@ process.env.KDJX_DEVICE_AUTHORIZATION_URL =
 process.env.KDJX_SSO_SHARED_SECRET = 'kdjx-test-sso-secret';
 process.env.KDJX_SESSION_TTL_DAYS = '3650';
 process.env.KDJX_SESSION_MAX_PER_USER = '3';
+process.env.KDJX_LOGIN_TICKET_TTL_SECONDS = '60';
 process.env.KDJX_PAYMENT_CATALOG_JSON = JSON.stringify({
   schemaVersion: 1,
   conversion: '10_SAKURA_COINS_EQUAL_1_CNY',
@@ -66,7 +67,7 @@ after(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-test('KDJX uses device authorization and has no legacy ticket routes', async () => {
+test('KDJX exchanges vault credentials for atomic one-time login tickets', async () => {
   const userId = seedUser({ coins: 20, nickname: 'kdjx-user' });
   const bearer = createSession(userId);
   const app = await makeApp();
@@ -90,6 +91,13 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
       `SELECT name FROM sqlite_master
        WHERE type = 'table' AND name = 'kdjx_game_sso_tickets'`,
     ), undefined);
+    assert.equal(
+      one(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name = 'kdjx_game_login_tickets'`,
+      ).name,
+      'kdjx_game_login_tickets',
+    );
 
     const issued = await authorizeDevice(app, bearer);
     assert.equal(issued.credentialExpiresIn, 3650 * 86400);
@@ -97,7 +105,7 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
     assert.match(issued.gameOpenId, /^sakura_/);
     assert.equal(Object.hasOwn(issued, 'accountPassword'), false);
     const storedSession = one(
-      `SELECT token_hash FROM kdjx_game_sessions WHERE user_id = ?`,
+      `SELECT id, token_hash FROM kdjx_game_sessions WHERE user_id = ?`,
       [userId],
     );
     assert.equal(
@@ -112,31 +120,94 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
       userId: String(userId),
     });
 
+    const ticketResponse = await loginTicket(app, issued.credential);
+    assert.equal(ticketResponse.statusCode, 200);
+    assert.equal(ticketResponse.headers['cache-control'], 'no-store');
+    const login = ticketResponse.json();
+    assert.equal(login.ok, true);
+    assert.match(login.ticket, /^kdjx_login_/);
+    assert.equal(login.ticketExpiresIn, 60);
+    assert.equal(login.userId, String(userId));
+    assert.equal(Object.hasOwn(login, 'credential'), false);
+    const storedTicket = one(
+      `SELECT ticket_hash, session_id, consumed_at
+       FROM kdjx_game_login_tickets`,
+    );
+    assert.equal(
+      storedTicket.ticket_hash,
+      hashToken(`kdjx-login-ticket:${login.ticket}`),
+    );
+    assert.notEqual(storedTicket.ticket_hash, login.ticket);
+    assert.equal(storedTicket.session_id, storedSession.id);
+    assert.equal(storedTicket.consumed_at, null);
+
+    const longCredentialAsTicket = await verifyTicket(app, issued.credential);
+    assert.equal(longCredentialAsTicket.statusCode, 401);
+    assert.equal(
+      longCredentialAsTicket.json().error,
+      'invalid_or_expired_login_ticket',
+    );
+    const legacyCredentialBody = await app.inject({
+      method: 'POST',
+      url: '/games/kdjx/sessions/verify',
+      headers: { 'x-kdjx-sso-secret': process.env.KDJX_SSO_SHARED_SECRET },
+      payload: { credential: issued.credential },
+    });
+    assert.equal(legacyCredentialBody.statusCode, 401);
+    assert.equal(
+      legacyCredentialBody.json().error,
+      'invalid_or_expired_login_ticket',
+    );
+
     const unauthenticated = await app.inject({
       method: 'POST',
       url: '/games/kdjx/sessions/verify',
-      payload: { credential: issued.credential },
+      payload: { ticket: login.ticket },
     });
     assert.equal(unauthenticated.statusCode, 401);
     const wrongSecret = await app.inject({
       method: 'POST',
       url: '/games/kdjx/sessions/verify',
       headers: { 'x-kdjx-sso-secret': 'wrong-secret' },
-      payload: { credential: issued.credential },
+      payload: { ticket: login.ticket },
     });
     assert.equal(wrongSecret.statusCode, 401);
 
-    const verified = await verifyCredential(app, issued.credential);
-    assert.equal(verified.statusCode, 200);
+    const concurrent = await Promise.all([
+      verifyTicket(app, login.ticket),
+      verifyTicket(app, login.ticket),
+    ]);
+    assert.deepEqual(
+      concurrent.map((response) => response.statusCode).sort(),
+      [200, 401],
+    );
+    const verified = concurrent.find((response) => response.statusCode === 200);
     assert.equal(verified.json().accountName, issued.gameOpenId);
     assert.equal(verified.json().channel, 'sakura');
     assert.equal(verified.json().nickname, 'kdjx-user');
     assert.ok(verified.json().accountPassword.length >= 30);
+    assert.equal((await verifyTicket(app, login.ticket)).statusCode, 401);
     assert.ok(one(
       `SELECT last_used_at FROM kdjx_game_sessions WHERE user_id = ?`,
       [userId],
     ).last_used_at);
 
+    const expiring = (await loginTicket(app, issued.credential)).json();
+    run(
+      `UPDATE kdjx_game_login_tickets
+       SET expires_at = datetime('now', '-1 second')
+       WHERE ticket_hash = ?`,
+      [hashToken(`kdjx-login-ticket:${expiring.ticket}`)],
+    );
+    assert.equal((await verifyTicket(app, expiring.ticket)).statusCode, 401);
+
+    const inactive = (await loginTicket(app, issued.credential)).json();
+    run(`UPDATE users SET status = 'disabled' WHERE id = ?`, [userId]);
+    assert.equal((await verifyTicket(app, inactive.ticket)).statusCode, 401);
+    run(`UPDATE users SET status = 'active' WHERE id = ?`, [userId]);
+    assert.equal((await verifyTicket(app, inactive.ticket)).statusCode, 200);
+
+    const revocableTicket = (await loginTicket(app, issued.credential)).json();
     const revoked = await request(
       app,
       bearer,
@@ -145,7 +216,7 @@ test('KDJX uses device authorization and has no legacy ticket routes', async () 
       { credential: issued.credential },
     );
     assert.deepEqual(revoked.json(), { ok: true, revoked: 1 });
-    assert.equal((await verifyCredential(app, issued.credential)).statusCode, 401);
+    assert.equal((await verifyTicket(app, revocableTicket.ticket)).statusCode, 401);
     const revokedStatus = await credentialStatus(app, issued.credential);
     assert.equal(revokedStatus.statusCode, 401);
     assert.deepEqual(revokedStatus.json(), {
@@ -644,7 +715,12 @@ test('KDJX device authorization lets the game poll after Sakura app approval', a
       ).token_hash,
       hashToken(`kdjx-session:${credential.credential}`),
     );
-    assert.equal((await verifyCredential(app, credential.credential)).statusCode, 200);
+    const loginTicketResponse = await loginTicket(app, credential.credential);
+    assert.equal(loginTicketResponse.statusCode, 200);
+    assert.equal(
+      (await verifyTicket(app, loginTicketResponse.json().ticket)).statusCode,
+      200,
+    );
 
     run(
       `UPDATE kdjx_device_authorizations
@@ -905,13 +981,21 @@ function request(app, bearer, method, url, payload) {
   });
 }
 
-function verifyCredential(app, credential) {
+function verifyTicket(app, ticket) {
   return app.inject({
     method: 'POST',
     url: '/games/kdjx/sessions/verify',
     headers: {
       'x-kdjx-sso-secret': process.env.KDJX_SSO_SHARED_SECRET,
     },
+    payload: { ticket },
+  });
+}
+
+function loginTicket(app, credential) {
+  return app.inject({
+    method: 'POST',
+    url: '/games/kdjx/sessions/login-ticket',
     payload: { credential },
   });
 }

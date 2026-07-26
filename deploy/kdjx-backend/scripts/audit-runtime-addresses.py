@@ -387,8 +387,8 @@ def require_runtime_invariants(root):
         fail("legacy Python payment listener is present in the staged runtime")
 
     gate_marker = root / "sakura-only-login-gate.txt"
-    if not gate_marker.is_file() or gate_marker.read_text(encoding="utf-8").strip() != "sakura-only-login-gate-v1":
-        fail("Sakura-only login build gate is missing")
+    if not gate_marker.is_file() or gate_marker.read_text(encoding="utf-8").strip() != "sakura-only-login-ticket-gate-v2":
+        fail("Sakura-only one-time login-ticket build gate is missing")
     metrics_marker = root / "loopback-metrics-gate.txt"
     if not metrics_marker.is_file() or metrics_marker.read_text(encoding="utf-8").strip() != "loopback-metrics-gate-v1":
         fail("loopback anti-cheat metrics build gate is missing")

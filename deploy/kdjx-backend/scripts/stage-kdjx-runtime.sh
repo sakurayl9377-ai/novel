@@ -214,7 +214,7 @@ build_go_component online_fight_forward online_fight_forward_server
 # The temporary source tree contains historical comments and test fixtures. The
 # compiled Sakura-gated binaries are the only Go artifacts retained at runtime.
 rm -rf -- "$candidate_root/gosrc"
-printf 'sakura-only-login-gate-v1\n' > "$candidate_root/sakura-only-login-gate.txt"
+printf 'sakura-only-login-ticket-gate-v2\n' > "$candidate_root/sakura-only-login-gate.txt"
 chmod 0640 "$candidate_root/sakura-only-login-gate.txt"
 printf 'loopback-metrics-gate-v1\n' > "$candidate_root/loopback-metrics-gate.txt"
 chmod 0640 "$candidate_root/loopback-metrics-gate.txt"

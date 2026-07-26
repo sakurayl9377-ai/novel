@@ -64,6 +64,7 @@ const required = {
   KDJX_PAYMENT_VERIFY_URL: 'http://127.0.0.1:18080/internal/sakura/payments/verify',
   KDJX_PAYMENT_FULFILLMENT_URL: 'http://127.0.0.1:18080/internal/sakura/payments/fulfill',
   KDJX_SESSION_TTL_DAYS: '3650',
+  KDJX_LOGIN_TICKET_TTL_SECONDS: '60',
 };
 for (const [key, expected] of Object.entries(required)) {
   if (values[key] !== expected) {
@@ -82,6 +83,7 @@ const allowedKdjxKeys = new Set([
   'KDJX_SSO_SHARED_SECRET',
   'KDJX_SESSION_TTL_DAYS',
   'KDJX_SESSION_MAX_PER_USER',
+  'KDJX_LOGIN_TICKET_TTL_SECONDS',
   'KDJX_DEVICE_CODE_TTL_SECONDS',
   'KDJX_DEVICE_POLL_INTERVAL_SECONDS',
   'KDJX_PAYMENT_CATALOG_FILE',

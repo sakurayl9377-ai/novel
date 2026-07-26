@@ -24,6 +24,13 @@ KDJX_CONFIG = """  kdjxDeviceAuthorizationUrl: env('KDJX_DEVICE_AUTHORIZATION_UR
     1,
     Math.min(50, Math.trunc(envNumber('KDJX_SESSION_MAX_PER_USER', 10))),
   ),
+  kdjxLoginTicketTtlSeconds: Math.max(
+    15,
+    Math.min(
+      60,
+      Math.trunc(envNumber('KDJX_LOGIN_TICKET_TTL_SECONDS', 60)),
+    ),
+  ),
   kdjxDeviceCodeTtlSeconds: Math.max(
     300,
     Math.min(
@@ -86,12 +93,14 @@ DEPLOY_NEW_RELEASE_ANCHOR = 'chown -R "$app_user:$app_user" "$new_release"\n'
 ENV_EXAMPLE_INSERT_ANCHOR = "\nVIDEO_COVER_DIR=./data/video-covers\n"
 
 KDJX_ENV_EXAMPLE = """
-# KDJX device authorization, long-lived revocable credentials, and Sakura
-# coin payment. The app deep link only carries a short-lived device code.
+# KDJX device authorization, long-lived revocable credentials, 60-second
+# one-time login tickets, and Sakura coin payment. The app deep link only
+# carries a short-lived device code.
 KDJX_DEVICE_AUTHORIZATION_URL=sakura-novel://game/kdjx/authorize
 KDJX_SSO_SHARED_SECRET=
 KDJX_SESSION_TTL_DAYS=3650
 KDJX_SESSION_MAX_PER_USER=10
+KDJX_LOGIN_TICKET_TTL_SECONDS=60
 KDJX_DEVICE_CODE_TTL_SECONDS=600
 KDJX_DEVICE_POLL_INTERVAL_SECONDS=5
 KDJX_PAYMENT_CATALOG_FILE=./catalogs/kdjx-payment-catalog.json
@@ -137,6 +146,7 @@ const required = {
   KDJX_PAYMENT_VERIFY_URL: 'http://127.0.0.1:18080/internal/sakura/payments/verify',
   KDJX_PAYMENT_FULFILLMENT_URL: 'http://127.0.0.1:18080/internal/sakura/payments/fulfill',
   KDJX_SESSION_TTL_DAYS: '3650',
+  KDJX_LOGIN_TICKET_TTL_SECONDS: '60',
 };
 for (const [key, expected] of Object.entries(required)) {
   if (values[key] !== expected) {
@@ -155,6 +165,7 @@ const allowedKdjxKeys = new Set([
   'KDJX_SSO_SHARED_SECRET',
   'KDJX_SESSION_TTL_DAYS',
   'KDJX_SESSION_MAX_PER_USER',
+  'KDJX_LOGIN_TICKET_TTL_SECONDS',
   'KDJX_DEVICE_CODE_TTL_SECONDS',
   'KDJX_DEVICE_POLL_INTERVAL_SECONDS',
   'KDJX_PAYMENT_CATALOG_FILE',
@@ -220,6 +231,7 @@ def patch_config(path):
         "kdjxDeviceAuthorizationUrl:",
         "kdjxSsoSharedSecret:",
         "kdjxSessionTtlDays:",
+        "kdjxLoginTicketTtlSeconds:",
         "kdjxPaymentVerifyUrl:",
         "kdjxPaymentFulfillmentUrl:",
         "kdjxPaymentHmacSecret:",
@@ -302,6 +314,7 @@ def patch_env_example(path):
     required = (
         "KDJX_DEVICE_AUTHORIZATION_URL=sakura-novel://game/kdjx/authorize",
         "KDJX_SESSION_TTL_DAYS=3650",
+        "KDJX_LOGIN_TICKET_TTL_SECONDS=60",
         "KDJX_PAYMENT_CATALOG_FILE=./catalogs/kdjx-payment-catalog.json",
         "KDJX_PAYMENT_VERIFY_URL=http://127.0.0.1:18080/internal/sakura/payments/verify",
         "KDJX_PAYMENT_FULFILLMENT_URL=http://127.0.0.1:18080/internal/sakura/payments/fulfill",

@@ -37,6 +37,20 @@ export function ensureKdjxGameSchema() {
     CREATE INDEX IF NOT EXISTS idx_kdjx_game_sessions_expiry
       ON kdjx_game_sessions(expires_at, revoked_at);
 
+    CREATE TABLE IF NOT EXISTS kdjx_game_login_tickets (
+      ticket_hash TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES kdjx_game_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_kdjx_game_login_tickets_session
+      ON kdjx_game_login_tickets(session_id, consumed_at);
+    CREATE INDEX IF NOT EXISTS idx_kdjx_game_login_tickets_expiry
+      ON kdjx_game_login_tickets(expires_at, consumed_at);
+
     CREATE TABLE IF NOT EXISTS kdjx_device_authorizations (
       device_code_hash TEXT PRIMARY KEY,
       user_code_hash TEXT NOT NULL UNIQUE,

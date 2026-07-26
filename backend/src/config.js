@@ -129,6 +129,13 @@ export const config = {
     1,
     Math.min(50, Math.trunc(envNumber('KDJX_SESSION_MAX_PER_USER', 10))),
   ),
+  kdjxLoginTicketTtlSeconds: Math.max(
+    15,
+    Math.min(
+      60,
+      Math.trunc(envNumber('KDJX_LOGIN_TICKET_TTL_SECONDS', 60)),
+    ),
+  ),
   kdjxDeviceCodeTtlSeconds: Math.max(
     300,
     Math.min(
