@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -633,5 +634,22 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('native bridge is initialized before Flutter engine configuration', () {
+    final source = File(
+      'android/app/src/main/kotlin/com/novel/novel_app/MainActivity.kt',
+    ).readAsStringSync().replaceAll('\r\n', '\n');
+
+    expect(
+      source,
+      contains(
+        'private val kdjxGameBridge by lazy(LazyThreadSafetyMode.NONE) {\n'
+        '        KdjxGameBridge(this)\n'
+        '    }',
+      ),
+    );
+    expect(source, isNot(contains('lateinit var kdjxGameBridge')));
+    expect(source, isNot(contains('kdjxGameBridge = KdjxGameBridge(this)')));
   });
 }

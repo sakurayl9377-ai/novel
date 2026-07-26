@@ -81,7 +81,9 @@ class MainActivity : AudioServiceActivity() {
     private val modaoDownloadMergeIndexKey = "merge_index"
     private val modaoDownloadMergingKey = "merging"
     private val modaoDownloadErrorKey = "error"
-    private lateinit var kdjxGameBridge: KdjxGameBridge
+    private val kdjxGameBridge by lazy(LazyThreadSafetyMode.NONE) {
+        KdjxGameBridge(this)
+    }
     private var readerChannel: MethodChannel? = null
     private var modaoMethodChannel: MethodChannel? = null
     private var mangaTileChannel: MangaTileChannel? = null
@@ -130,7 +132,6 @@ class MainActivity : AudioServiceActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        kdjxGameBridge = KdjxGameBridge(this)
         kdjxGameBridge.captureExternalRequest(intent)
         captureModaoExternalRequests(intent)
         WindowCompat.setDecorFitsSystemWindows(window, false)
