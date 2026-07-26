@@ -100,11 +100,11 @@ It never publishes a raw-IP HTTPS URL or an undeployed mirror.
 
 Place only the generated `manifest.json` and its referenced APK in a root-owned
 staging directory named like
-`/tmp/novel-kdjx-release-2.1.0.0+3-A1B2C3`, then run:
+`/tmp/novel-kdjx-release-2.1.0.0+4-A1B2C3`, then run:
 
 ```bash
 sudo /usr/local/sbin/novel-kdjx-game-release-deploy \
-  /tmp/novel-kdjx-release-2.1.0.0+3-A1B2C3
+  /tmp/novel-kdjx-release-2.1.0.0+4-A1B2C3
 ```
 
 The helper checks the package contract, size, SHA-256, ZIP integrity, Android
@@ -150,7 +150,9 @@ inside it must be `0700` and every file `0600`. Its name is
 project.manifest
 version.manifest
 release-metadata.json
+legacy-patch.json
 releases/<numeric-version>/<asset paths from project.manifest>
+<legacy-patch>/<every cumulative asset in legacy-patch.json>
 ```
 
 Both Cocos manifests use these fixed URLs:
@@ -161,15 +163,22 @@ remoteVersionUrl=https://novel.kxhub.xyz/games/kdjx/hot/version.manifest
 remoteManifestUrl=https://novel.kxhub.xyz/games/kdjx/hot/project.manifest
 ```
 
-`release-metadata.json` contains `version`, `assetCount`, and `totalBytes`.
-After validating every asset's declared size and MD5, activate it with:
+`release-metadata.json` contains `version`, `assetCount`, and `totalBytes` for
+the compatibility tree. `legacy-patch.json` contains the Go updater catalog;
+every entry must name the same cumulative asset set, carry one patch number,
+be sorted by POSIX relative path, and match the staged file's exact size and
+MD5. The helper also recomputes the catalog `git_version` revision. For the
+first Sakura release, the compatibility version is 39 and the cumulative
+legacy patch is 9 with 2559 files copied from the audited 2553-file patch 8
+baseline plus the Sakura overlays. Activate both immutable trees with:
 
 ```bash
 sudo /usr/local/sbin/novel-kdjx-hot-update-deploy \
-  /tmp/novel-kdjx-hot-update-1-A1B2C3
+  /tmp/novel-kdjx-hot-update-39-A1B2C3
 ```
 
-This release channel does not package or deploy the extracted legacy server
-tree. That source includes credentials, private addresses, logs, and database
-dumps. Only the separately sanitized KDJX adapter defined by
-`backend/docs/kdjx-adapter-contract.md` may be deployed to the backend host.
+This release channel publishes only sanitized client patch assets. It does not
+package or deploy the extracted legacy server tree, which includes credentials,
+private addresses, logs, and database dumps. Only the separately sanitized
+KDJX adapter defined by `backend/docs/kdjx-adapter-contract.md` may be deployed
+to the backend host.

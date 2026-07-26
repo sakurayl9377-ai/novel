@@ -19,7 +19,7 @@ rejected_dir="/tmp/novel-kdjx-rejected-target-${token}"
 lock_file="/tmp/novel-kdjx-release-${token}.lock"
 mock_root="/tmp/novel-kdjx-mocks-${token}"
 install_root="/tmp/novel-kdjx-install-test-${token}"
-hot_staging_dir="/tmp/novel-kdjx-hot-update-1-${token}"
+hot_staging_dir="/tmp/novel-kdjx-hot-update-39-${token}"
 hot_release_dir="/tmp/novel-kdjx-hot-update-target-${token}"
 hot_lock_file="/tmp/novel-kdjx-hot-update-${token}.lock"
 prune_dir="/tmp/novel-game-prune-test-kdjx-${token}"
@@ -90,6 +90,10 @@ if grep -Fq '"$wrapper" -h' "$zipalign_installer"; then
 fi
 bash -n "$script_dir/prune-game-release-artifacts.sh"
 grep -Fq 'location = /games/kdjx/manifest.json {' \
+  "$script_dir/nginx-kdjx-locations.conf"
+grep -Fq '/games/kdjx/hot/[1-9][0-9]{0,8}/' \
+  "$script_dir/nginx-kdjx-locations.conf"
+grep -Fq 'limit_except GET HEAD {' \
   "$script_dir/nginx-kdjx-locations.conf"
 
 mkdir -p -- \
@@ -509,33 +513,77 @@ fi
 grep -Fq -- "--resolve novel.kxhub.xyz:443:47.88.26.14" "$mock_root/curl.log"
 ! grep -Fq -- "--resolve mirror.kxhub.xyz:443:47.88.26.14" "$mock_root/curl.log"
 
-mkdir -p -- "$hot_staging_dir/releases/1/assets/main"
+mkdir -p -- "$hot_staging_dir/releases/39/assets/main"
 python3 - "$hot_staging_dir" <<'PY'
 import hashlib
 import json
 import pathlib
+import plistlib
 import sys
 
 staging = pathlib.Path(sys.argv[1])
-payload = b"managed KDJX hot update fixture\n"
-asset = staging / "releases" / "1" / "assets" / "main" / "index.lua"
-asset.write_bytes(payload)
+plist = plistlib.dumps(
+    {"app_version": "2.1.0.0", "patch": "9"},
+    fmt=plistlib.FMT_XML,
+    sort_keys=False,
+).replace(
+    b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+    b'"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n',
+    b"",
+)
+payloads = {
+    "assets/main/index.lua": b"managed KDJX hot update fixture\n",
+    "res/version.plist": plist,
+    "src/app.defines.app_defines": b"return {}\n",
+    "src/app.game_app": b"return {}\n",
+    "src/app.sdk.helper": b"return {}\n",
+    "src/app.sdk.init": b"return {}\n",
+    "src/app.sdk.none": b"return {}\n",
+    "src/app.views.login.view": b"return {}\n",
+    "x64/src/app.defines.app_defines": b"return {}\n",
+    "x64/src/app.game_app": b"return {}\n",
+    "x64/src/app.sdk.helper": b"return {}\n",
+    "x64/src/app.sdk.init": b"return {}\n",
+    "x64/src/app.sdk.none": b"return {}\n",
+    "x64/src/app.views.login.view": b"return {}\n",
+}
+for index in range(2559 - len(payloads)):
+    payloads[f"assets/cumulative/{index:04d}.bin"] = b"cumulative fixture\n"
+manifest_assets = {}
+legacy_files = []
+legacy_revision = hashlib.sha1()
+for relative, payload in sorted(payloads.items()):
+    compatibility = staging / "releases" / "39" / relative
+    compatibility.parent.mkdir(parents=True, exist_ok=True)
+    compatibility.write_bytes(payload)
+    legacy = staging / "9" / relative
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(payload)
+    digest = hashlib.md5(payload).hexdigest()
+    manifest_assets[relative] = {
+        "size": len(payload),
+        "md5": digest,
+        "compressed": False,
+    }
+    legacy_files.append({
+        "name": relative,
+        "size": len(payload),
+        "md5": digest,
+        "patch": 9,
+    })
+    legacy_revision.update(
+        f"{relative}\0{len(payload)}\0{digest}\n".encode("utf-8")
+    )
 base = "https://novel.kxhub.xyz/games/kdjx/hot/"
 shared = {
-    "version": "1",
-    "packageUrl": f"{base}releases/1/",
+    "version": "39",
+    "packageUrl": f"{base}releases/39/",
     "remoteVersionUrl": f"{base}version.manifest",
     "remoteManifestUrl": f"{base}project.manifest",
 }
 project = {
     **shared,
-    "assets": {
-        "assets/main/index.lua": {
-            "size": len(payload),
-            "md5": hashlib.md5(payload).hexdigest(),
-            "compressed": False,
-        }
-    },
+    "assets": manifest_assets,
     "searchPaths": [],
 }
 (staging / "version.manifest").write_text(
@@ -546,7 +594,22 @@ project = {
 )
 (staging / "release-metadata.json").write_text(
     json.dumps(
-        {"version": "1", "assetCount": 1, "totalBytes": len(payload)},
+        {
+            "version": "39",
+            "assetCount": len(payloads),
+            "totalBytes": sum(map(len, payloads.values())),
+        },
+        separators=(",", ":"),
+    ) + "\n",
+    encoding="utf-8",
+)
+(staging / "legacy-patch.json").write_text(
+    json.dumps(
+        {
+            "files": legacy_files,
+            "svn_version": "39",
+            "git_version": legacy_revision.hexdigest(),
+        },
         separators=(",", ":"),
     ) + "\n",
     encoding="utf-8",
@@ -562,7 +625,7 @@ fi
 grep -Fq '"error":"staging_permissions_invalid"' "$mock_root/hot-permission.out"
 
 printf 'return "http://192.168.1.99/legacy"\n' \
-  > "$hot_staging_dir/releases/1/assets/main/index.lua"
+  > "$hot_staging_dir/releases/39/assets/main/index.lua"
 if KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
   KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
   KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
@@ -572,18 +635,97 @@ if KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
 fi
 grep -Fq '"error":"endpoint_policy_violation"' "$mock_root/hot-endpoint.out"
 printf 'managed KDJX hot update fixture\n' \
-  > "$hot_staging_dir/releases/1/assets/main/index.lua"
+  > "$hot_staging_dir/releases/39/assets/main/index.lua"
+
+cp -- "$hot_staging_dir/legacy-patch.json" \
+  "$mock_root/legacy-patch.valid.json"
+python3 - "$hot_staging_dir/legacy-patch.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["files"].pop()
+path.write_text(
+    json.dumps(value, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+if KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
+  KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
+  KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+    bash "$hot_helper" "$hot_staging_dir" > "$mock_root/hot-first-sakura-count.out" 2>&1; then
+  printf 'KDJX hot helper accepted an incomplete first Sakura patch\n' >&2
+  exit 1
+fi
+grep -Fq '"error":"release_validation_failed"' \
+  "$mock_root/hot-first-sakura-count.out"
+cp -- "$mock_root/legacy-patch.valid.json" \
+  "$hot_staging_dir/legacy-patch.json"
+
+python3 - "$hot_staging_dir/legacy-patch.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["git_version"] = "0" * 40
+path.write_text(
+    json.dumps(value, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+if KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
+  KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
+  KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+    bash "$hot_helper" "$hot_staging_dir" > "$mock_root/hot-legacy-revision.out" 2>&1; then
+  printf 'KDJX hot helper accepted a false legacy revision\n' >&2
+  exit 1
+fi
+grep -Fq '"error":"release_validation_failed"' \
+  "$mock_root/hot-legacy-revision.out"
+cp -- "$mock_root/legacy-patch.valid.json" \
+  "$hot_staging_dir/legacy-patch.json"
+
+printf 'tampered legacy fixture\n' \
+  > "$hot_staging_dir/9/assets/main/index.lua"
+if KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
+  KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
+  KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+    bash "$hot_helper" "$hot_staging_dir" > "$mock_root/hot-legacy-digest.out" 2>&1; then
+  printf 'KDJX hot helper accepted a legacy digest mismatch\n' >&2
+  exit 1
+fi
+grep -Fq '"error":"release_validation_failed"' "$mock_root/hot-legacy-digest.out"
+printf 'managed KDJX hot update fixture\n' \
+  > "$hot_staging_dir/9/assets/main/index.lua"
 
 KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
 KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
 KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
   bash "$hot_helper" "$hot_staging_dir" >/dev/null
+KDJX_HOT_UPDATE_TEST_PERMISSION_BYPASS=1 \
+KDJX_HOT_UPDATE_DIR="$hot_release_dir" \
+KDJX_HOT_UPDATE_LOCK_FILE="$hot_lock_file" \
+  bash "$hot_helper" "$hot_staging_dir" >/dev/null
 cmp -- \
-  "$hot_staging_dir/releases/1/assets/main/index.lua" \
-  "$hot_release_dir/releases/1/assets/main/index.lua"
+  "$hot_staging_dir/releases/39/assets/main/index.lua" \
+  "$hot_release_dir/releases/39/assets/main/index.lua"
+cmp -- \
+  "$hot_staging_dir/9/assets/main/index.lua" \
+  "$hot_release_dir/9/assets/main/index.lua"
+cmp -- \
+  "$hot_staging_dir/9/res/version.plist" \
+  "$hot_release_dir/9/res/version.plist"
 cmp -- "$hot_staging_dir/project.manifest" "$hot_release_dir/project.manifest"
 cmp -- "$hot_staging_dir/version.manifest" "$hot_release_dir/version.manifest"
-[[ -f "$hot_release_dir/history/project-1.manifest" ]]
-[[ -f "$hot_release_dir/history/version-1.manifest" ]]
+[[ -f "$hot_release_dir/history/project-39.manifest" ]]
+[[ -f "$hot_release_dir/history/version-39.manifest" ]]
+cmp -- \
+  "$hot_staging_dir/legacy-patch.json" \
+  "$hot_release_dir/history/legacy-patch-9.json"
+[[ "$(stat -c '%a' -- "$hot_release_dir/9")" == "755" ]]
 
 printf 'KDJX download release channel tests passed.\n'

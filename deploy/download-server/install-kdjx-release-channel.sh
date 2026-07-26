@@ -217,6 +217,10 @@ grep -Fq 'location = /games/kdjx/manifest.json {' "$snippet_source" \
   || fail "snippet_manifest_route_missing"
 grep -Fq '/games/kdjx/hot/(version|project)\.manifest' "$snippet_source" \
   || fail "snippet_hot_route_missing"
+grep -Fq '/games/kdjx/hot/[1-9][0-9]{0,8}/' "$snippet_source" \
+  || fail "snippet_legacy_hot_route_missing"
+grep -Fq 'limit_except GET HEAD {' "$snippet_source" \
+  || fail "snippet_legacy_hot_read_only_missing"
 grep -Fq '.part-00[0-4]\.apk$' "$snippet_source" \
   || fail "snippet_parts_route_missing"
 grep -Fq 'Cloudflare-CDN-Cache-Control' "$snippet_source" \

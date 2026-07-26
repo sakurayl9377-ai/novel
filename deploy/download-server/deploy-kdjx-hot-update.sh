@@ -98,6 +98,7 @@ import hashlib
 import json
 import os
 import pathlib
+import plistlib
 import re
 import shutil
 import sys
@@ -108,7 +109,7 @@ release_root = pathlib.Path(sys.argv[2])
 base_url = sys.argv[3]
 maximum_total_bytes = 512 * 1024 * 1024
 maximum_asset_count = 20000
-path_pattern = re.compile(r"[A-Za-z0-9._/-]+")
+path_pattern = re.compile(r"[A-Za-z0-9._@()/-]+")
 
 
 def fail(code):
@@ -140,9 +141,11 @@ def file_md5(path):
 version_path = staging / "version.manifest"
 project_path = staging / "project.manifest"
 metadata_path = staging / "release-metadata.json"
+legacy_metadata_path = staging / "legacy-patch.json"
 version_manifest = read_json(version_path)
 project_manifest = read_json(project_path)
 metadata = read_json(metadata_path)
+legacy_metadata = read_json(legacy_metadata_path)
 version = project_manifest.get("version")
 if (
     not isinstance(version, str)
@@ -177,7 +180,7 @@ for relative, metadata_value in assets.items():
         or not path_pattern.fullmatch(relative)
         or relative.startswith("/")
         or "\\" in relative
-        or ".." in relative.split("/")
+        or any(part in ("", ".", "..") for part in relative.split("/"))
         or not isinstance(metadata_value, dict)
     ):
         fail("asset_path_invalid")
@@ -213,6 +216,128 @@ if (
 ):
     fail("release_metadata_invalid")
 
+legacy_files = legacy_metadata.get("files")
+if (
+    not isinstance(legacy_files, list)
+    or not (1 <= len(legacy_files) <= maximum_asset_count)
+    or legacy_metadata.get("svn_version") != version
+    or not isinstance(legacy_metadata.get("git_version"), str)
+    or not re.fullmatch(r"[a-f0-9]{40}", legacy_metadata["git_version"])
+):
+    fail("legacy_patch_metadata_invalid")
+legacy_patch = None
+for entry in legacy_files:
+    if not isinstance(entry, dict):
+        fail("legacy_patch_entry_invalid")
+    entry_patch = entry.get("patch")
+    if isinstance(entry_patch, bool) or not isinstance(entry_patch, int):
+        fail("legacy_patch_version_invalid")
+    if legacy_patch is None:
+        legacy_patch = entry_patch
+    elif legacy_patch != entry_patch:
+        fail("legacy_patch_version_invalid")
+if not (1 <= legacy_patch <= 999999999):
+    fail("legacy_patch_version_invalid")
+if legacy_patch == 9 and (version != "39" or len(legacy_files) != 2559):
+    fail("first_sakura_patch_contract_invalid")
+legacy_source = staging / str(legacy_patch)
+if not legacy_source.is_dir() or legacy_source.is_symlink():
+    fail("legacy_patch_source_invalid")
+legacy_source_resolved = legacy_source.resolve(strict=True)
+legacy_validated = []
+legacy_names = set()
+legacy_total_bytes = 0
+legacy_previous_name = ""
+legacy_revision = hashlib.sha1()
+for entry in legacy_files:
+    if not isinstance(entry, dict):
+        fail("legacy_patch_entry_invalid")
+    relative = entry.get("name")
+    expected_size = entry.get("size")
+    expected_md5 = entry.get("md5")
+    if (
+        not isinstance(relative, str)
+        or not path_pattern.fullmatch(relative)
+        or relative.startswith("/")
+        or "\\" in relative
+        or any(part in ("", ".", "..") for part in relative.split("/"))
+        or relative in legacy_names
+    ):
+        fail("legacy_patch_path_invalid")
+    if legacy_previous_name and relative <= legacy_previous_name:
+        fail("legacy_patch_order_invalid")
+    legacy_previous_name = relative
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or not (0 < expected_size <= maximum_total_bytes)
+        or not isinstance(expected_md5, str)
+        or not re.fullmatch(r"[a-f0-9]{32}", expected_md5)
+        or entry.get("patch") != legacy_patch
+    ):
+        fail("legacy_patch_entry_invalid")
+    source = legacy_source.joinpath(*relative.split("/"))
+    if not source.is_file() or source.is_symlink():
+        fail("legacy_patch_asset_missing")
+    try:
+        source.resolve(strict=True).relative_to(legacy_source_resolved)
+    except ValueError:
+        fail("legacy_patch_path_invalid")
+    actual_size, actual_md5 = file_md5(source)
+    if actual_size != expected_size or actual_md5 != expected_md5:
+        fail("legacy_patch_digest_mismatch")
+    legacy_names.add(relative)
+    legacy_validated.append((relative, source))
+    legacy_revision.update(
+        f"{relative}\0{actual_size}\0{actual_md5}\n".encode("utf-8")
+    )
+    legacy_total_bytes += actual_size
+    if legacy_total_bytes > maximum_total_bytes:
+        fail("legacy_patch_too_large")
+if legacy_metadata["git_version"] != legacy_revision.hexdigest():
+    fail("legacy_patch_revision_mismatch")
+actual_legacy_names = {
+    path.relative_to(legacy_source).as_posix()
+    for path in legacy_source.rglob("*")
+    if path.is_file() and not path.is_symlink()
+}
+if actual_legacy_names != legacy_names:
+    fail("legacy_patch_file_set_mismatch")
+if legacy_patch == 9:
+    required_sakura_assets = {
+        "res/version.plist",
+        "src/app.defines.app_defines",
+        "src/app.game_app",
+        "src/app.sdk.helper",
+        "src/app.sdk.init",
+        "src/app.sdk.none",
+        "src/app.views.login.view",
+        "x64/src/app.defines.app_defines",
+        "x64/src/app.game_app",
+        "x64/src/app.sdk.helper",
+        "x64/src/app.sdk.init",
+        "x64/src/app.sdk.none",
+        "x64/src/app.views.login.view",
+    }
+    if not required_sakura_assets.issubset(legacy_names):
+        fail("first_sakura_asset_set_invalid")
+if legacy_names != set(assets):
+    fail("legacy_patch_compatibility_set_mismatch")
+for relative, source in legacy_validated:
+    compatibility = release_source.joinpath(*relative.split("/"))
+    if file_md5(source) != file_md5(compatibility):
+        fail("legacy_patch_compatibility_digest_mismatch")
+if "res/version.plist" not in legacy_names:
+    fail("legacy_patch_version_plist_missing")
+try:
+    plist_patch = str(
+        plistlib.loads((legacy_source / "res" / "version.plist").read_bytes())["patch"]
+    )
+except Exception:
+    fail("legacy_patch_version_plist_invalid")
+if plist_patch != str(legacy_patch):
+    fail("legacy_patch_version_plist_mismatch")
+
 release_root.mkdir(mode=0o755, parents=False, exist_ok=True)
 if release_root.is_symlink():
     fail("release_path_invalid")
@@ -221,6 +346,33 @@ releases_root.mkdir(mode=0o755, exist_ok=True)
 history_root = release_root / "history"
 history_root.mkdir(mode=0o755, exist_ok=True)
 final_release = releases_root / version
+final_legacy = release_root / str(legacy_patch)
+existing_legacy_patches = []
+for child in release_root.iterdir():
+    if child.name.isdigit():
+        if not child.is_dir() or child.is_symlink():
+            fail("current_legacy_patch_invalid")
+        existing_legacy_patches.append(int(child.name))
+if existing_legacy_patches and max(existing_legacy_patches) > legacy_patch:
+    fail("legacy_patch_version_regression")
+if final_legacy.exists():
+    if not final_legacy.is_dir() or final_legacy.is_symlink():
+        fail("legacy_patch_immutable_conflict")
+    final_names = {
+        path.relative_to(final_legacy).as_posix()
+        for path in final_legacy.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    if final_names != legacy_names:
+        fail("legacy_patch_immutable_conflict")
+    for relative, source in legacy_validated:
+        destination = final_legacy.joinpath(*relative.split("/"))
+        if (
+            not destination.is_file()
+            or destination.is_symlink()
+            or file_md5(destination) != file_md5(source)
+        ):
+            fail("legacy_patch_immutable_conflict")
 current_version_path = release_root / "version.manifest"
 if current_version_path.exists():
     current = read_json(current_version_path)
@@ -266,9 +418,29 @@ else:
             fail("immutable_release_conflict")
 final_release.chmod(0o755)
 
+temporary_legacy = None
+if not final_legacy.exists():
+    temporary_legacy = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".legacy-{legacy_patch}.next.", dir=release_root)
+    )
+    try:
+        for relative, source in legacy_validated:
+            destination = temporary_legacy.joinpath(*relative.split("/"))
+            destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            destination.chmod(0o644)
+        temporary_legacy.chmod(0o755)
+        os.rename(temporary_legacy, final_legacy)
+        temporary_legacy = None
+    finally:
+        if temporary_legacy is not None:
+            shutil.rmtree(temporary_legacy, ignore_errors=True)
+final_legacy.chmod(0o755)
+
 for name, source in (
     (f"project-{version}.manifest", project_path),
     (f"version-{version}.manifest", version_path),
+    (f"legacy-patch-{legacy_patch}.json", legacy_metadata_path),
 ):
     destination = history_root / name
     if destination.exists() and destination.read_bytes() != source.read_bytes():
@@ -292,6 +464,9 @@ print(json.dumps({
     "version": version,
     "assetCount": len(validated),
     "totalBytes": total_bytes,
+    "legacyPatch": legacy_patch,
+    "legacyAssetCount": len(legacy_validated),
+    "legacyTotalBytes": legacy_total_bytes,
 }, separators=(",", ":")))
 PY
 )"; then
