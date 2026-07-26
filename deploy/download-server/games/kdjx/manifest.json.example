@@ -1,0 +1,13 @@
+{
+  "packageName": "com.kd.kdjxcs",
+  "versionName": "2.1.0.0",
+  "versionCode": 3,
+  "apkUrl": "https://novel.kxhub.xyz/games/kdjx/kdjx-3-000000000000.apk",
+  "apkUrls": [
+    "https://novel.kxhub.xyz/games/kdjx/kdjx-3-000000000000.apk"
+  ],
+  "sizeBytes": 1,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "signingCertificateSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "notes": []
+}

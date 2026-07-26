@@ -1,0 +1,12 @@
+# Production-only material. Do not place credentials or release archives in Git.
+*.env
+*.key
+*.pem
+*.p12
+*.jks
+*.tar
+*.tar.gz
+*.pyc
+__pycache__/
+artifacts/
+staged-runtime/

@@ -48,6 +48,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
   const serviceStates = new Map([
     ["bailian", "stopped"],
     ["modao", "running"],
+    ["kdjx", "running"],
   ]);
 
   const serviceControl = async (gameId, action, controlOptions = {}) => {
@@ -97,7 +98,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     assert.equal(initialCatalog.headers["cache-control"], "no-store");
     assert.deepEqual(
       initialCatalog.json().games.map((game) => game.id),
-      ["horse-race", "modao"],
+      ["horse-race", "modao", "kdjx"],
     );
     assert.equal(
       initialCatalog.json().games.some((game) => "service" in game),
@@ -118,7 +119,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     );
     assert.deepEqual(
       stoppedPublicCatalog.json().games.map((game) => game.id),
-      ["horse-race"],
+      ["horse-race", "kdjx"],
     );
     assert.equal(
       stoppedPublicCatalog.json().games.some((game) => "service" in game),
@@ -133,7 +134,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     );
     assert.deepEqual(
       unknownPublicCatalog.json().games.map((game) => game.id),
-      ["horse-race"],
+      ["horse-race", "kdjx"],
     );
 
     statusFailures.add("modao");
@@ -144,7 +145,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     );
     assert.deepEqual(
       unavailablePublicCatalog.json().games.map((game) => game.id),
-      ["horse-race"],
+      ["horse-race", "kdjx"],
     );
     serviceStates.set("modao", "running");
 
@@ -174,7 +175,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     assert.equal(overview.statusCode, 200);
     assert.deepEqual(
       overview.json().games.map((game) => game.id),
-      ["horse-race", "bailian", "modao"],
+      ["horse-race", "bailian", "modao", "kdjx"],
     );
     const builtIn = overview
       .json()
@@ -247,7 +248,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     const shownCatalog = await request(app, "GET", "/games/catalog");
     assert.deepEqual(
       shownCatalog.json().games.map((game) => game.id),
-      ["horse-race", "bailian", "modao"],
+      ["horse-race", "bailian", "modao", "kdjx"],
     );
 
     const callsBeforeInjection = controlCalls.length;
@@ -324,7 +325,7 @@ test("catalog visibility and service actions are admin-only and whitelisted", as
     const hiddenCatalog = await request(app, "GET", "/games/catalog");
     assert.deepEqual(
       hiddenCatalog.json().games.map((game) => game.id),
-      ["horse-race", "modao"],
+      ["horse-race", "modao", "kdjx"],
     );
 
     const started = await request(

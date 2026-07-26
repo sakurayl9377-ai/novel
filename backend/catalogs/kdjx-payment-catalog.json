@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "conversion": "10_SAKURA_COINS_EQUAL_1_CNY",
+  "productCount": 27,
+  "products": [
+    {
+      "productId": "1",
+      "productName": "Recharge 30 CNY",
+      "rechargeId": 1,
+      "moneyCents": 3000,
+      "coinCost": 300
+    },
+    {
+      "productId": "2",
+      "productName": "Recharge 88 CNY",
+      "rechargeId": 2,
+      "moneyCents": 8800,
+      "coinCost": 880
+    },
+    {
+      "productId": "3",
+      "productName": "Recharge 648 CNY",
+      "rechargeId": 3,
+      "moneyCents": 64800,
+      "coinCost": 6480
+    },
+    {
+      "productId": "4",
+      "productName": "Recharge 328 CNY",
+      "rechargeId": 4,
+      "moneyCents": 32800,
+      "coinCost": 3280
+    },
+    {
+      "productId": "5",
+      "productName": "Recharge 198 CNY",
+      "rechargeId": 5,
+      "moneyCents": 19800,
+      "coinCost": 1980
+    },
+    {
+      "productId": "6",
+      "productName": "Recharge 98 CNY",
+      "rechargeId": 6,
+      "moneyCents": 9800,
+      "coinCost": 980
+    },
+    {
+      "productId": "7",
+      "productName": "Recharge 60 CNY",
+      "rechargeId": 7,
+      "moneyCents": 6000,
+      "coinCost": 600
+    },
+    {
+      "productId": "8",
+      "productName": "Recharge 30 CNY",
+      "rechargeId": 8,
+      "moneyCents": 3000,
+      "coinCost": 300
+    },
+    {
+      "productId": "9",
+      "productName": "Recharge 6 CNY",
+      "rechargeId": 9,
+      "moneyCents": 600,
+      "coinCost": 60
+    },
+    {
+      "productId": "101",
+      "productName": "Direct purchase 1 CNY",
+      "rechargeId": 101,
+      "moneyCents": 100,
+      "coinCost": 10
+    },
+    {
+      "productId": "102",
+      "productName": "Direct purchase 6 CNY",
+      "rechargeId": 102,
+      "moneyCents": 600,
+      "coinCost": 60
+    },
+    {
+      "productId": "103",
+      "productName": "Direct purchase 12 CNY",
+      "rechargeId": 103,
+      "moneyCents": 1200,
+      "coinCost": 120
+    },
+    {
+      "productId": "104",
+      "productName": "Direct purchase 18 CNY",
+      "rechargeId": 104,
+      "moneyCents": 1800,
+      "coinCost": 180
+    },
+    {
+      "productId": "105",
+      "productName": "Direct purchase 25 CNY",
+      "rechargeId": 105,
+      "moneyCents": 2500,
+      "coinCost": 250
+    },
+    {
+      "productId": "106",
+      "productName": "Direct purchase 30 CNY",
+      "rechargeId": 106,
+      "moneyCents": 3000,
+      "coinCost": 300
+    },
+    {
+      "productId": "107",
+      "productName": "Direct purchase 60 CNY",
+      "rechargeId": 107,
+      "moneyCents": 6000,
+      "coinCost": 600
+    },
+    {
+      "productId": "108",
+      "productName": "Direct purchase 98 CNY",
+      "rechargeId": 108,
+      "moneyCents": 9800,
+      "coinCost": 980
+    },
+    {
+      "productId": "109",
+      "productName": "Direct purchase 128 CNY",
+      "rechargeId": 109,
+      "moneyCents": 12800,
+      "coinCost": 1280
+    },
+    {
+      "productId": "110",
+      "productName": "Direct purchase 168 CNY",
+      "rechargeId": 110,
+      "moneyCents": 16800,
+      "coinCost": 1680
+    },
+    {
+      "productId": "111",
+      "productName": "Direct purchase 198 CNY",
+      "rechargeId": 111,
+      "moneyCents": 19800,
+      "coinCost": 1980
+    },
+    {
+      "productId": "112",
+      "productName": "Direct purchase 328 CNY",
+      "rechargeId": 112,
+      "moneyCents": 32800,
+      "coinCost": 3280
+    },
+    {
+      "productId": "113",
+      "productName": "Direct purchase 648 CNY",
+      "rechargeId": 113,
+      "moneyCents": 64800,
+      "coinCost": 6480
+    },
+    {
+      "productId": "114",
+      "productName": "Direct purchase 128 CNY",
+      "rechargeId": 114,
+      "moneyCents": 12800,
+      "coinCost": 1280
+    },
+    {
+      "productId": "115",
+      "productName": "Direct purchase 48 CNY",
+      "rechargeId": 115,
+      "moneyCents": 4800,
+      "coinCost": 480
+    },
+    {
+      "productId": "116",
+      "productName": "Direct purchase 15 CNY",
+      "rechargeId": 116,
+      "moneyCents": 1500,
+      "coinCost": 150
+    },
+    {
+      "productId": "117",
+      "productName": "Direct purchase 80 CNY",
+      "rechargeId": 117,
+      "moneyCents": 8000,
+      "coinCost": 800
+    },
+    {
+      "productId": "118",
+      "productName": "Direct purchase 160 CNY",
+      "rechargeId": 118,
+      "moneyCents": 16000,
+      "coinCost": 1600
+    }
+  ]
+}

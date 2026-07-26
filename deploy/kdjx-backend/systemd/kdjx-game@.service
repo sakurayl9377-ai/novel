@@ -1,0 +1,19 @@
+[Unit]
+Description=KDJX Python game shard %i
+After=kdjx-host@accountdb.service kdjx-host@giftdb.service kdjx-host@storage1.service kdjx-host@storage2.service kdjx-host@pvp1.service kdjx-host@pvp2.service kdjx-host@crossdb.service kdjx-host@cross.service kdjx-anti-cheat.service
+Requires=kdjx-host@accountdb.service kdjx-host@giftdb.service kdjx-host@storage1.service kdjx-host@storage2.service kdjx-host@pvp1.service kdjx-host@pvp2.service kdjx-host@crossdb.service kdjx-host@cross.service kdjx-anti-cheat.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/kdjx/runtime.env
+ExecStart=/opt/kdjx/runtime/current/scripts/run-python-game.sh %i
+ExecStop=-/usr/bin/docker stop --time 30 kdjx-game-%i
+Restart=on-failure
+RestartSec=8
+TimeoutStopSec=60
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=kdjx-runtime.target

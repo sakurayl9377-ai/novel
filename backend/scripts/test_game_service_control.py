@@ -34,6 +34,24 @@ class GameServiceControlTest(unittest.TestCase):
                     "modao-account.service",
                     "modao-game.service",
                 ),
+                "kdjx": (
+                    "kdjx-mongodb.service",
+                    "kdjx-nsqlookupd.service",
+                    "kdjx-nsqd.service",
+                    "kdjx-host@accountdb.service",
+                    "kdjx-host@giftdb.service",
+                    "kdjx-host@storage1.service",
+                    "kdjx-host@storage2.service",
+                    "kdjx-host@pvp1.service",
+                    "kdjx-host@pvp2.service",
+                    "kdjx-host@crossdb.service",
+                    "kdjx-host@cross.service",
+                    "kdjx-anti-cheat.service",
+                    "kdjx-online-fight-forward.service",
+                    "kdjx-game@1.service",
+                    "kdjx-login.service",
+                    "kdjx-runtime.target",
+                ),
             },
         )
         self.assertEqual(
@@ -143,7 +161,7 @@ class GameServiceControlTest(unittest.TestCase):
 
 
 class GameServiceDeploymentContractTest(unittest.TestCase):
-    def test_installer_rolls_back_until_both_groups_pass_status(self):
+    def test_installer_rolls_back_until_all_groups_pass_status(self):
         script = INSTALLER_PATH.read_text(encoding="utf-8")
 
         self.assertIn(
@@ -163,6 +181,10 @@ class GameServiceDeploymentContractTest(unittest.TestCase):
             'sudo -u "$app_user" sudo -n "$helper_target" bailian status',
             script,
         )
+        self.assertIn(
+            'sudo -u "$app_user" sudo -n "$helper_target" kdjx status',
+            script,
+        )
 
         backup = script.index(
             'cp -a -- "$helper_target" "$helper_backup"',
@@ -175,12 +197,16 @@ class GameServiceDeploymentContractTest(unittest.TestCase):
         bailian_check = script.index(
             'sudo -u "$app_user" sudo -n "$helper_target" bailian status',
         )
-        committed = script.index("committed=true", bailian_check)
+        kdjx_check = script.index(
+            'sudo -u "$app_user" sudo -n "$helper_target" kdjx status',
+        )
+        committed = script.index("committed=true", kdjx_check)
         self.assertLess(backup, install_started)
         self.assertLess(install_started, helper_move)
         self.assertLess(helper_move, modao_check)
         self.assertLess(modao_check, bailian_check)
-        self.assertLess(bailian_check, committed)
+        self.assertLess(bailian_check, kdjx_check)
+        self.assertLess(kdjx_check, committed)
 
     def test_production_deploy_backs_up_installs_and_restores_control_files(self):
         script = DEPLOY_PATH.read_text(encoding="utf-8")

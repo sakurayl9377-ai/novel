@@ -16,9 +16,11 @@ import {
   listBailianPayments,
   previewBailianPayment, retryBailianPayment,
 } from './bailian-payments.js';
+import { kdjxGameRoutes } from './routes-kdjx-game.js';
 import { modaoGameRoutes } from './routes-modao-game.js';
 
 export async function gameRoutes(app) {
+  app.register(kdjxGameRoutes);
   app.register(modaoGameRoutes);
 
   const paymentHandler = (handler) => async (request, reply) => {

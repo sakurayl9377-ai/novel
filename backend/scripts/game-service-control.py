@@ -24,6 +24,24 @@ SERVICE_GROUPS = {
         "modao-account.service",
         "modao-game.service",
     ),
+    "kdjx": (
+        "kdjx-mongodb.service",
+        "kdjx-nsqlookupd.service",
+        "kdjx-nsqd.service",
+        "kdjx-host@accountdb.service",
+        "kdjx-host@giftdb.service",
+        "kdjx-host@storage1.service",
+        "kdjx-host@storage2.service",
+        "kdjx-host@pvp1.service",
+        "kdjx-host@pvp2.service",
+        "kdjx-host@crossdb.service",
+        "kdjx-host@cross.service",
+        "kdjx-anti-cheat.service",
+        "kdjx-online-fight-forward.service",
+        "kdjx-game@1.service",
+        "kdjx-login.service",
+        "kdjx-runtime.target",
+    ),
 }
 
 

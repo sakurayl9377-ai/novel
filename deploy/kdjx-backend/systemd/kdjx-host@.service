@@ -1,0 +1,19 @@
+[Unit]
+Description=KDJX Go host service %i
+After=kdjx-mongodb.service kdjx-nsqd.service
+Requires=kdjx-mongodb.service kdjx-nsqd.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/kdjx/runtime.env
+WorkingDirectory=/opt/kdjx/runtime/current/host
+ExecStart=/opt/kdjx/runtime/current/scripts/run-host-service.sh %i
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=kdjx-runtime.target

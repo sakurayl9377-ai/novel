@@ -31,6 +31,92 @@ healthy() {
   curl -fsS --max-time 5 "$health_url" >/dev/null
 }
 
+validate_kdjx_production_config() {
+  local environment_file="$shared_root/.env"
+  local catalog_file="$new_release/catalogs/kdjx-payment-catalog.json"
+  [[ -r "$environment_file" ]] || fail "kdjx_environment_missing"
+  [[ -f "$catalog_file" ]] || fail "kdjx_catalog_missing"
+
+  "$node_bin" - "$environment_file" "$catalog_file" <<'NODE'
+const fs = require('node:fs');
+
+const [environmentFile, catalogFile] = process.argv.slice(2);
+const source = fs.readFileSync(environmentFile, 'utf8');
+const values = {};
+for (const rawLine of source.split(/\r?\n/)) {
+  const line = rawLine.trim();
+  if (!line || line.startsWith('#')) continue;
+  const normalized = line.startsWith('export ') ? line.slice(7).trim() : line;
+  const equals = normalized.indexOf('=');
+  if (equals < 1) continue;
+  const key = normalized.slice(0, equals).trim();
+  let value = normalized.slice(equals + 1).trim();
+  if ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+  values[key] = value;
+}
+
+const required = {
+  KDJX_DEVICE_AUTHORIZATION_URL: 'sakura-novel://game/kdjx/authorize',
+  KDJX_PAYMENT_CATALOG_FILE: './catalogs/kdjx-payment-catalog.json',
+  KDJX_PAYMENT_VERIFY_URL: 'http://127.0.0.1:18080/internal/sakura/payments/verify',
+  KDJX_PAYMENT_FULFILLMENT_URL: 'http://127.0.0.1:18080/internal/sakura/payments/fulfill',
+  KDJX_SESSION_TTL_DAYS: '3650',
+};
+for (const [key, expected] of Object.entries(required)) {
+  if (values[key] !== expected) {
+    process.stderr.write(`kdjx_configuration_invalid=${key}\n`);
+    process.exit(1);
+  }
+}
+for (const key of ['KDJX_SSO_SHARED_SECRET', 'KDJX_PAYMENT_HMAC_SECRET']) {
+  if ((values[key] || '').length < 32) {
+    process.stderr.write(`kdjx_configuration_invalid=${key}\n`);
+    process.exit(1);
+  }
+}
+const allowedKdjxKeys = new Set([
+  'KDJX_DEVICE_AUTHORIZATION_URL',
+  'KDJX_SSO_SHARED_SECRET',
+  'KDJX_SESSION_TTL_DAYS',
+  'KDJX_SESSION_MAX_PER_USER',
+  'KDJX_DEVICE_CODE_TTL_SECONDS',
+  'KDJX_DEVICE_POLL_INTERVAL_SECONDS',
+  'KDJX_PAYMENT_CATALOG_FILE',
+  'KDJX_PAYMENT_CATALOG_JSON',
+  'KDJX_PAYMENT_VERIFY_URL',
+  'KDJX_PAYMENT_FULFILLMENT_URL',
+  'KDJX_PAYMENT_HMAC_SECRET',
+  'KDJX_PAYMENT_MAX_ATTEMPTS',
+  'KDJX_PAYMENT_TIMEOUT_MS',
+  'KDJX_PAYMENT_CLAIM_TTL_MS',
+]);
+if (Object.keys(values).some(
+  (key) => key.startsWith('KDJX_') && !allowedKdjxKeys.has(key),
+)) {
+  process.stderr.write('kdjx_configuration_invalid=unsupported_kdjx_key\n');
+  process.exit(1);
+}
+if ((values.KDJX_PAYMENT_CATALOG_JSON || '') !== '') {
+  process.stderr.write('kdjx_configuration_invalid=KDJX_PAYMENT_CATALOG_JSON\n');
+  process.exit(1);
+}
+if (/\b(?:192\.168\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(source)) {
+  process.stderr.write('kdjx_configuration_invalid=legacy_private_address\n');
+  process.exit(1);
+}
+const catalog = JSON.parse(fs.readFileSync(catalogFile, 'utf8'));
+if (catalog.conversion !== '10_SAKURA_COINS_EQUAL_1_CNY' ||
+    catalog.productCount !== 27 ||
+    !Array.isArray(catalog.products) || catalog.products.length !== 27) {
+  process.stderr.write('kdjx_catalog_invalid\n');
+  process.exit(1);
+}
+NODE
+}
+
 wait_for_health() {
   for _ in $(seq 1 20); do
     healthy && return 0
@@ -54,7 +140,7 @@ actual_checksum="$(sha256sum "$archive" | awk '{print $1}')"
 [[ "$actual_checksum" == "$expected_checksum" ]] || fail "checksum_mismatch"
 
 archive_entries="$(tar -tzf "$archive")"
-for required in backend/package.json backend/package-lock.json backend/src/server.js backend/admin-dist/index.html; do
+for required in backend/package.json backend/package-lock.json backend/src/server.js backend/admin-dist/index.html backend/catalogs/kdjx-payment-catalog.json; do
   grep -Fxq "$required" <<<"$archive_entries" || fail "archive_layout_invalid"
 done
 while IFS= read -r entry; do
@@ -320,6 +406,7 @@ mv "$staged_dir" "$new_release"
 ln -s "$shared_root/.env" "$new_release/.env"
 ln -s "$shared_root/data" "$new_release/data"
 chown -R "$app_user:$app_user" "$new_release"
+validate_kdjx_production_config
 
 [[ -f "$new_release/scripts/mihomo-admin-control.py" ]] || fail "mihomo_helper_missing"
 [[ -f "$new_release/scripts/mihomo-subscription-update.py" ]] || fail "mihomo_updater_missing"

@@ -121,6 +121,8 @@ sudo -u "$app_user" sudo -n "$helper_target" modao status >/dev/null \
   || fail "installed_helper_check_failed"
 sudo -u "$app_user" sudo -n "$helper_target" bailian status >/dev/null \
   || fail "installed_helper_check_failed"
+sudo -u "$app_user" sudo -n "$helper_target" kdjx status >/dev/null \
+  || fail "installed_helper_check_failed"
 committed=true
 
 echo "game_control_install_status=ok"

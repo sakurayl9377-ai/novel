@@ -1,0 +1,17 @@
+[Unit]
+Description=KDJX local NSQ lookupd
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+ExecStartPre=-/usr/bin/docker rm -f kdjx-nsqlookupd
+ExecStart=/usr/bin/docker run --rm --name kdjx-nsqlookupd --network host nsqio/nsq:v1.2.1 /nsqlookupd --tcp-address=127.0.0.1:4160 --http-address=127.0.0.1:4161
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused --max-time 35 http://127.0.0.1:4161/ping
+ExecStop=/usr/bin/docker stop --time 30 kdjx-nsqlookupd
+
+[Install]
+WantedBy=kdjx-runtime.target

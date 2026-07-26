@@ -34,6 +34,17 @@ const definitions = [
     defaultSortOrder: 30,
     serviceGroup: "modao",
   },
+  {
+    id: "kdjx",
+    route: "kdjx",
+    name: "口袋觉醒",
+    description: "通过 Sakura App 下载、安装并授权登录的精灵冒险游戏。",
+    entryType: "apk",
+    requiresLogin: true,
+    defaultVisible: true,
+    defaultSortOrder: 40,
+    serviceGroup: "kdjx",
+  },
 ];
 
 export const GAME_CATALOG_DEFINITIONS = Object.freeze(

@@ -1,0 +1,17 @@
+[Unit]
+Description=KDJX local MongoDB 3.6
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+ExecStartPre=-/usr/bin/docker rm -f kdjx-mongodb
+ExecStartPre=/usr/bin/install -d -m 0700 /var/lib/kdjx/mongo
+ExecStart=/usr/bin/docker run --rm --name kdjx-mongodb --network host --mount type=bind,source=/var/lib/kdjx/mongo,target=/data/db mongo:3.6.23 mongod --bind_ip 127.0.0.1 --port 27159 --noauth
+ExecStop=/usr/bin/docker stop --time 30 kdjx-mongodb
+
+[Install]
+WantedBy=kdjx-runtime.target

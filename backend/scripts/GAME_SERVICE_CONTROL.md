@@ -1,7 +1,7 @@
 # Game service control
 
 The backend exposes a read-only game catalog and authenticated administrator
-operations for the fixed `bailian` and `modao` service groups.
+operations for the fixed `bailian`, `modao`, and `kdjx` service groups.
 
 ## API
 
@@ -17,8 +17,10 @@ operations for the fixed `bailian` and `modao` service groups.
 - `POST /admin/games/control/:id/action` accepts only
   `{"action":"start"|"stop"|"restart"}`.
 
-The initial catalog shows `horse-race` and `modao`; `bailian` starts hidden.
-Unknown game IDs, routes, service names, and actions are rejected.
+The initial catalog includes `horse-race`, `modao`, and `kdjx`; each managed
+entry is returned only while its fixed service group is running. `bailian`
+starts hidden. Unknown game IDs, routes, service names, and actions are
+rejected.
 
 ## Installation
 
@@ -37,7 +39,7 @@ The installer creates:
   mode `0440`.
 
 The installer stages both files, backs up any existing installation, and
-validates status access for both fixed service groups. A failed validation or
+validates status access for all fixed service groups. A failed validation or
 interrupted install restores the previous helper and sudoers file; a failed
 first install removes the new files.
 
@@ -53,6 +55,8 @@ sudo -u ubuntu sudo -n \
   /usr/local/sbin/novel-game-service-control modao status
 sudo -u ubuntu sudo -n \
   /usr/local/sbin/novel-game-service-control bailian status
+sudo -u ubuntu sudo -n \
+  /usr/local/sbin/novel-game-service-control kdjx status
 ```
 
 Stopping a game through the API also hides it from the App catalog. Starting a

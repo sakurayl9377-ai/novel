@@ -1,0 +1,20 @@
+[Unit]
+Description=KDJX Go login server
+After=kdjx-game@1.service
+Requires=kdjx-game@1.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/kdjx/runtime.env
+WorkingDirectory=/opt/kdjx/runtime/current/login
+ExecStartPre=/opt/kdjx/runtime/current/scripts/validate-runtime-env.py --env-file /etc/kdjx/runtime.env
+ExecStart=/opt/kdjx/runtime/current/bin/login_server -config=login.cn.1 -language=cn
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=kdjx-runtime.target

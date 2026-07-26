@@ -1,0 +1,18 @@
+[Unit]
+Description=KDJX local NSQ daemon
+After=kdjx-nsqlookupd.service
+Requires=kdjx-nsqlookupd.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+ExecStartPre=-/usr/bin/docker rm -f kdjx-nsqd
+ExecStartPre=/usr/bin/install -d -m 0700 /var/lib/kdjx/nsq
+ExecStart=/usr/bin/docker run --rm --name kdjx-nsqd --network host --mount type=bind,source=/var/lib/kdjx/nsq,target=/data nsqio/nsq:v1.2.1 /nsqd --broadcast-address=127.0.0.1 --tcp-address=127.0.0.1:4150 --http-address=127.0.0.1:4151 --lookupd-tcp-address=127.0.0.1:4160 --data-path=/data --max-msg-size=67108864 --snappy
+ExecStartPost=/usr/bin/curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused --max-time 35 http://127.0.0.1:4151/ping
+ExecStop=/usr/bin/docker stop --time 30 kdjx-nsqd
+
+[Install]
+WantedBy=kdjx-runtime.target

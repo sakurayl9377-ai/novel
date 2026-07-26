@@ -1,0 +1,20 @@
+[Unit]
+Description=KDJX online fight forward service
+After=kdjx-nsqd.service kdjx-anti-cheat.service
+Requires=kdjx-nsqd.service kdjx-anti-cheat.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/kdjx/runtime.env
+WorkingDirectory=/opt/kdjx/runtime/current/online-fight-forward
+ExecStartPre=/usr/bin/env sh -c 'command -v luajit >/dev/null'
+ExecStart=/opt/kdjx/runtime/current/bin/online_fight_forward_server -config=online_fight_forward.cn.1 -address=0.0.0.0:32888 -language=cn -scripts=/opt/kdjx/runtime/current/anti-cheat-scripts -metrics-address=127.0.0.1:2113
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=kdjx-runtime.target
