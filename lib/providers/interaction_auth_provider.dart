@@ -29,6 +29,8 @@ class InteractionAuthProvider extends ChangeNotifier {
   static const String _userKey = 'interaction_auth_user';
   static const String _accountsKey = 'interaction_auth_accounts';
   static const String _sessionKey = 'interaction_auth_session_v2';
+  static const String _kdjxRevocationQueueKey =
+      'interaction_auth_kdjx_revocation_queue_v1';
 
   final InteractionAuthService _authService;
   final AppInstallReportService _appInstallReportService;
@@ -42,6 +44,9 @@ class InteractionAuthProvider extends ChangeNotifier {
   String _token = '';
   InteractionUser? _user;
   List<InteractionAccountSession> _accounts = const [];
+  List<_PendingKdjxRevocation> _pendingKdjxRevocations = const [];
+  bool _pendingKdjxRevocationsLoaded = false;
+  Future<void>? _kdjxRevocationDrain;
 
   bool get isLoading => _isLoading;
   bool get betaTestAccountEnabled => _betaTestAccountEnabled;
@@ -60,6 +65,8 @@ class InteractionAuthProvider extends ChangeNotifier {
       _token = persisted.token;
       _user = persisted.user;
       _accounts = persisted.accounts;
+      await _loadPendingKdjxRevocations();
+      if (!isCurrent()) return;
       _restoreCachedAppSession();
       if (_token.isNotEmpty) {
         try {
@@ -90,6 +97,8 @@ class InteractionAuthProvider extends ChangeNotifier {
           // login screen when its local/test backend is not yet reachable.
         }
       }
+      if (!isCurrent()) return;
+      await _drainPendingKdjxRevocations();
       if (!isCurrent()) return;
       _scheduleAppInstallReport();
     } finally {
@@ -138,6 +147,7 @@ class InteractionAuthProvider extends ChangeNotifier {
       _user = result.user;
       _upsertCurrentAccount();
       await _saveSession();
+      await _drainPendingKdjxRevocations();
       _scheduleAppInstallReport();
     } finally {
       _setLoading(false);
@@ -152,6 +162,7 @@ class InteractionAuthProvider extends ChangeNotifier {
       _user = result.user;
       _upsertCurrentAccount();
       await _saveSession();
+      await _drainPendingKdjxRevocations();
       _scheduleAppInstallReport();
     } finally {
       _setLoading(false);
@@ -187,6 +198,7 @@ class InteractionAuthProvider extends ChangeNotifier {
       _user = result.user;
       _upsertCurrentAccount();
       await _saveSession();
+      await _drainPendingKdjxRevocations();
       _scheduleAppInstallReport();
     } finally {
       _setLoading(false);
@@ -199,13 +211,16 @@ class InteractionAuthProvider extends ChangeNotifier {
       final user = await _authService.me(account.token);
       final previousToken = _token;
       final previousUserId = _user?.id;
-      if (previousToken.isNotEmpty && previousUserId != user.id) {
-        await _revokeKdjxSessionsSafely(previousToken);
+      if (previousToken.isNotEmpty &&
+          previousUserId != null &&
+          previousUserId != user.id) {
+        await _enqueueKdjxRevocation(previousUserId, previousToken);
       }
       _token = account.token;
       _user = user;
       _upsertCurrentAccount();
       await _saveSession();
+      await _drainPendingKdjxRevocations();
       _scheduleAppInstallReport();
     } on InteractionAuthException catch (error) {
       if (error.statusCode == 401 || error.statusCode == 403) {
@@ -229,6 +244,7 @@ class InteractionAuthProvider extends ChangeNotifier {
     final token = isCurrentAccount && _token.isNotEmpty
         ? _token
         : account.token;
+    await _enqueueKdjxRevocation(account.user.id, token);
     _accounts = _accounts
         .where((item) => item.user.id != account.user.id)
         .toList();
@@ -240,7 +256,7 @@ class InteractionAuthProvider extends ChangeNotifier {
         notifyListeners();
       }
     }
-    await _revokeKdjxSessionsSafely(token);
+    await _drainPendingKdjxRevocations();
   }
 
   Future<void> updateCachedUser(InteractionUser user) async {
@@ -254,6 +270,9 @@ class InteractionAuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     final token = _token;
     final userId = _user?.id;
+    if (userId != null && token.isNotEmpty) {
+      await _enqueueKdjxRevocation(userId, token);
+    }
     if (userId != null) {
       _accounts = _accounts.where((item) => item.user.id != userId).toList();
     }
@@ -263,8 +282,9 @@ class InteractionAuthProvider extends ChangeNotifier {
     if (token.isNotEmpty) {
       try {
         await _authService.logout(token);
+        if (userId != null) await _removePendingKdjxRevocation(userId);
       } catch (_) {
-        // Local logout should still complete if the network is unavailable.
+        // The encrypted queue retries revocation on later app starts.
       }
     }
   }
@@ -280,6 +300,7 @@ class InteractionAuthProvider extends ChangeNotifier {
     _user = result.user;
     _upsertCurrentAccount();
     await _saveSession();
+    await _drainPendingKdjxRevocations();
   }
 
   Future<void> _persistClearedSession() async {
@@ -489,12 +510,105 @@ class InteractionAuthProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _revokeKdjxSessionsSafely(String token) async {
-    if (token.isEmpty) return;
+  Future<void> _loadPendingKdjxRevocations() async {
+    if (_pendingKdjxRevocationsLoaded) return;
+    _pendingKdjxRevocationsLoaded = true;
+    final raw = await _sessionStorage.read(_kdjxRevocationQueueKey);
+    if (raw == null || raw.isEmpty) return;
     try {
-      await _authService.revokeKdjxSessions(token);
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['version'] != 1) {
+        throw const FormatException('Invalid KDJX revocation queue');
+      }
+      final items = decoded['items'];
+      if (items is! List) {
+        throw const FormatException('Invalid KDJX revocation queue');
+      }
+      final pending = <_PendingKdjxRevocation>[];
+      for (final item in items) {
+        if (item is! Map) {
+          throw const FormatException('Invalid KDJX revocation entry');
+        }
+        pending.add(
+          _PendingKdjxRevocation.fromJson(item.cast<String, dynamic>()),
+        );
+      }
+      _pendingKdjxRevocations = pending.take(5).toList();
     } catch (_) {
-      // Local account changes must still complete if revocation is offline.
+      _pendingKdjxRevocations = const [];
+      await _sessionStorage.delete(_kdjxRevocationQueueKey);
+    }
+  }
+
+  Future<void> _enqueueKdjxRevocation(int userId, String token) async {
+    if (userId <= 0 || token.isEmpty) return;
+    await _loadPendingKdjxRevocations();
+    _pendingKdjxRevocations = [
+      _PendingKdjxRevocation(userId: userId, token: token),
+      ..._pendingKdjxRevocations.where((item) => item.userId != userId),
+    ].take(5).toList();
+    await _persistPendingKdjxRevocations();
+  }
+
+  Future<void> _removePendingKdjxRevocation(int userId) async {
+    await _loadPendingKdjxRevocations();
+    final next = _pendingKdjxRevocations
+        .where((item) => item.userId != userId)
+        .toList();
+    if (next.length == _pendingKdjxRevocations.length) return;
+    _pendingKdjxRevocations = next;
+    await _persistPendingKdjxRevocations();
+  }
+
+  Future<void> _persistPendingKdjxRevocations() {
+    if (_pendingKdjxRevocations.isEmpty) {
+      return _sessionStorage.delete(_kdjxRevocationQueueKey);
+    }
+    return _sessionStorage.write(
+      _kdjxRevocationQueueKey,
+      jsonEncode({
+        'version': 1,
+        'items': _pendingKdjxRevocations.map((item) => item.toJson()).toList(),
+      }),
+    );
+  }
+
+  Future<void> _drainPendingKdjxRevocations() {
+    final inFlight = _kdjxRevocationDrain;
+    if (inFlight != null) return inFlight;
+    final drain = _drainPendingKdjxRevocationsImpl();
+    _kdjxRevocationDrain = drain;
+    return drain.whenComplete(() {
+      if (identical(_kdjxRevocationDrain, drain)) {
+        _kdjxRevocationDrain = null;
+      }
+    });
+  }
+
+  Future<void> _drainPendingKdjxRevocationsImpl() async {
+    await _loadPendingKdjxRevocations();
+    final currentUser = _user;
+    if (currentUser != null && _token.isNotEmpty) {
+      final index = _pendingKdjxRevocations.indexWhere(
+        (item) => item.userId == currentUser.id,
+      );
+      if (index >= 0 && _pendingKdjxRevocations[index].token != _token) {
+        final next = [..._pendingKdjxRevocations];
+        next[index] = _PendingKdjxRevocation(
+          userId: currentUser.id,
+          token: _token,
+        );
+        _pendingKdjxRevocations = next;
+        await _persistPendingKdjxRevocations();
+      }
+    }
+    for (final pending in [..._pendingKdjxRevocations]) {
+      try {
+        await _authService.revokeKdjxSessions(pending.token);
+      } catch (_) {
+        continue;
+      }
+      await _removePendingKdjxRevocation(pending.userId);
     }
   }
 
@@ -523,4 +637,22 @@ class _PersistedAuthSession {
   final String token;
   final InteractionUser? user;
   final List<InteractionAccountSession> accounts;
+}
+
+class _PendingKdjxRevocation {
+  const _PendingKdjxRevocation({required this.userId, required this.token});
+
+  factory _PendingKdjxRevocation.fromJson(Map<String, dynamic> json) {
+    final userId = json['userId'];
+    final token = json['token'];
+    if (userId is! int || userId <= 0 || token is! String || token.isEmpty) {
+      throw const FormatException('Invalid KDJX revocation entry');
+    }
+    return _PendingKdjxRevocation(userId: userId, token: token);
+  }
+
+  final int userId;
+  final String token;
+
+  Map<String, dynamic> toJson() => {'userId': userId, 'token': token};
 }

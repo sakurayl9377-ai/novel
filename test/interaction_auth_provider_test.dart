@@ -287,6 +287,55 @@ void main() {
   });
 
   test(
+    'offline logout persists and retries KDJX revocation on restart',
+    () async {
+      sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+        'version': 2,
+        'token': account.token,
+        'user': account.user.toJson(),
+        'accounts': [account.toJson()],
+      });
+      final offlineService = _OfflineLogoutInteractionAuthService(account.user);
+      final firstProvider = InteractionAuthProvider(
+        authService: offlineService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      await firstProvider.loadSession();
+
+      await firstProvider.logout();
+      firstProvider.dispose();
+
+      expect(offlineService.logoutToken, account.token);
+      final queued =
+          jsonDecode(
+                sessionStorage
+                    .values['interaction_auth_kdjx_revocation_queue_v1']!,
+              )
+              as Map<String, dynamic>;
+      expect(queued['items'], [
+        {'userId': account.user.id, 'token': account.token},
+      ]);
+
+      final onlineService = _LifecycleInteractionAuthService(usersByToken: {});
+      final secondProvider = InteractionAuthProvider(
+        authService: onlineService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      addTearDown(secondProvider.dispose);
+
+      await secondProvider.loadSession();
+
+      expect(onlineService.revokeTokens, [account.token]);
+      expect(
+        sessionStorage.values['interaction_auth_kdjx_revocation_queue_v1'],
+        isNull,
+      );
+    },
+  );
+
+  test(
     'switchAccount revokes the outgoing game sessions without blocking locally',
     () async {
       const otherAccount = InteractionAccountSession(
@@ -327,6 +376,15 @@ void main() {
           jsonDecode(sessionStorage.values['interaction_auth_session_v2']!)
               as Map<String, dynamic>;
       expect(envelope['token'], otherAccount.token);
+      final queue =
+          jsonDecode(
+                sessionStorage
+                    .values['interaction_auth_kdjx_revocation_queue_v1']!,
+              )
+              as Map<String, dynamic>;
+      expect(queue['items'], [
+        {'userId': account.user.id, 'token': account.token},
+      ]);
     },
   );
 
@@ -375,6 +433,92 @@ void main() {
             .map((item) => (item as Map<String, dynamic>)['user'])
             .map((item) => (item as Map<String, dynamic>)['id']),
         [account.user.id],
+      );
+      final queue =
+          jsonDecode(
+                sessionStorage
+                    .values['interaction_auth_kdjx_revocation_queue_v1']!,
+              )
+              as Map<String, dynamic>;
+      expect(queue['items'], [
+        {'userId': otherAccount.user.id, 'token': otherAccount.token},
+      ]);
+    },
+  );
+
+  test('startup retries a persisted KDJX revocation and clears it', () async {
+    const otherAccount = InteractionAccountSession(
+      token: 'other-token',
+      user: InteractionUser(
+        id: 77,
+        email: 'other@example.com',
+        nickname: 'Other',
+      ),
+    );
+    sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+      'version': 2,
+      'token': otherAccount.token,
+      'user': otherAccount.user.toJson(),
+      'accounts': [otherAccount.toJson()],
+    });
+    sessionStorage.values['interaction_auth_kdjx_revocation_queue_v1'] =
+        jsonEncode({
+          'version': 1,
+          'items': [
+            {'userId': account.user.id, 'token': account.token},
+          ],
+        });
+    final authService = _LifecycleInteractionAuthService(
+      usersByToken: {otherAccount.token: otherAccount.user},
+    );
+    final provider = InteractionAuthProvider(
+      authService: authService,
+      appInstallReportService: _NoopAppInstallReportService(),
+      sessionStorage: sessionStorage,
+    );
+    addTearDown(provider.dispose);
+
+    await provider.loadSession();
+
+    expect(authService.revokeTokens, [account.token]);
+    expect(
+      sessionStorage.values['interaction_auth_kdjx_revocation_queue_v1'],
+      isNull,
+    );
+  });
+
+  test(
+    'a fresh login token replaces an expired queued revocation token',
+    () async {
+      sessionStorage.values['interaction_auth_session_v2'] = jsonEncode({
+        'version': 2,
+        'token': account.token,
+        'user': account.user.toJson(),
+        'accounts': [account.toJson()],
+      });
+      sessionStorage.values['interaction_auth_kdjx_revocation_queue_v1'] =
+          jsonEncode({
+            'version': 1,
+            'items': [
+              {'userId': account.user.id, 'token': 'expired-token'},
+            ],
+          });
+      final authService = _LifecycleInteractionAuthService(
+        usersByToken: {account.token: account.user},
+      );
+      final provider = InteractionAuthProvider(
+        authService: authService,
+        appInstallReportService: _NoopAppInstallReportService(),
+        sessionStorage: sessionStorage,
+      );
+      addTearDown(provider.dispose);
+
+      await provider.loadSession();
+
+      expect(authService.revokeTokens, [account.token]);
+      expect(
+        sessionStorage.values['interaction_auth_kdjx_revocation_queue_v1'],
+        isNull,
       );
     },
   );
@@ -592,6 +736,22 @@ class _BlockingLogoutInteractionAuthService extends InteractionAuthService {
   @override
   Future<void> revokeKdjxSessions(String token) async {
     revokeTokens.add(token);
+  }
+}
+
+class _OfflineLogoutInteractionAuthService extends InteractionAuthService {
+  _OfflineLogoutInteractionAuthService(this.savedUser);
+
+  final InteractionUser savedUser;
+  String logoutToken = '';
+
+  @override
+  Future<InteractionUser> me(String token) async => savedUser;
+
+  @override
+  Future<void> logout(String token) async {
+    logoutToken = token;
+    throw const SocketException('offline');
   }
 }
 
