@@ -14,15 +14,18 @@ Do not use `patch/<number>/src/app.*` as source input. Those are flattened
 historic release files and do not contain the complete modules needed for a
 safe replacement.
 
-Use a checked-out KDJX tree with a complete `application/src` hierarchy. This
-workspace currently resolves it from:
+Use a checked-out KDJX tree with complete `application/src` and
+`framework/MyLuaGame/src` hierarchies. This workspace currently resolves them
+from:
 
 ```text
 E:\workSpace\kdjx\mnt\pokemon\release\anti_cheat\game_scripts\application\src
+E:\workSpace\kdjx\mnt\pokemon\release\anti_cheat\game_scripts\framework\MyLuaGame\src
 ```
 
-The preparation helper copies only the five required Lua source files into a
-disposable input directory:
+The preparation helper copies only the seven required Lua source files into a
+disposable input directory. It preserves the minimal `application/src` and
+`framework/MyLuaGame/src` layout required by the builder:
 
 ```powershell
 python E:\workSpace\novel\deploy\kdjx-client\prepare_kdjx_client_source.py `

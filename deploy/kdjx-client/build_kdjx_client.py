@@ -165,6 +165,7 @@ REQUIRED_GAME_SOURCE_FILES = (
     "app/sdk/init.lua",
     "app/views/login/view.lua",
     "app/game_app.lua",
+    "app/game_ui.lua",
     "app/defines/app_defines.lua",
 )
 
@@ -798,12 +799,28 @@ def transform_login_view(source: Path) -> str:
     text = replace_once(
         text,
         "\tself.btnProtocol:hide()\n",
-        "\tself.btnProtocol:hide()\n"
-        "\tself.btnRegister:setVisible(false)\n"
-        "\tself.btnReturn:setVisible(false)\n"
+        "\tif self.btnProtocol then self.btnProtocol:hide() end\n"
+        "\tif self.btnRegister then self.btnRegister:setVisible(false) end\n"
+        "\tif self.btnReturn then self.btnReturn:setVisible(false) end\n"
         "\tself.btnLogin:get(\"login\"):setText(\"Sakura 登录\")\n",
         "sakura_login_button",
     )
+    for button, expected_count in (
+        ("btnRegister", 3),
+        ("btnReturn", 4),
+    ):
+        pattern = rf"^(\s*)self\.{button}:setVisible\((true|false)\)$"
+        text, count = re.subn(
+            pattern,
+            lambda match: (
+                f"{match.group(1)}if self.{button} then "
+                f"self.{button}:setVisible({match.group(2)}) end"
+            ),
+            text,
+            flags=re.MULTILINE,
+        )
+        if count != expected_count:
+            fail(f"source_marker_not_unique:optional_{button}:{count}")
     text = replace_once(
         text,
         "\t\t\t\t\tself:onServerLogin(info)",
@@ -864,9 +881,86 @@ def transform_app_defines(source: Path, game_origin: str) -> str:
 
 
 def transform_game_app(source: Path) -> str:
-    # This copy keeps its runtime search-path behavior while the adapter in
-    # app.sdk.init owns all payment routing.
-    return source.read_text(encoding="utf-8")
+    text = source.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        "display.director:setDirtyDrawEnable(true)",
+        "display.director:setDirtyDrawEnable(false)",
+        "game_app_dirty_draw",
+    )
+    return replace_once(
+        text,
+        "function GameApp:onCreate()\n",
+        """local function applyFullWidthBounds()
+	if type(CC_DESIGN_RESOLUTION) ~= "table"
+			or CC_DESIGN_RESOLUTION.autoscale ~= "FIXED_HEIGHT"
+			or type(display) ~= "table"
+			or display.uiOrigin == nil
+			or display.uiOriginMax == nil
+			or display.director == nil then
+		return
+	end
+
+	local fullWidth = 1560 * 2
+	local designHeight = CC_DESIGN_RESOLUTION.height
+	local originX = (fullWidth - CC_DESIGN_RESOLUTION.width) / 2
+	local view = display.director:getOpenGLView()
+	if view == nil then
+		return
+	end
+
+	view:setDesignResolutionSize(
+		fullWidth,
+		designHeight,
+		cc.ResolutionPolicy.EXACT_FIT
+	)
+	-- The updater may leave its old wide-screen side boards attached to the
+	-- director. They otherwise survive scene changes and cover the left edge.
+	display.director:setNotificationNode(nil)
+	CC_DESIGN_RESOLUTION.maxWidth = fullWidth
+	display.sizeInView.width = fullWidth
+	display.sizeInView.height = designHeight
+	display.maxWidth = fullWidth
+	display.uiOrigin.x = originX
+	display.uiOriginMax.x = originX
+	display.board_left = -originX
+	display.board_right = CC_DESIGN_RESOLUTION.width + originX
+	display.sizeInViewRect = cc.rect(
+		0,
+		0,
+		fullWidth,
+		designHeight
+	)
+end
+
+function GameApp:onCreate()
+	applyFullWidthBounds()
+""",
+        "game_app_full_width_bounds",
+    )
+
+
+def transform_game_ui(source: Path) -> str:
+    text = source.read_text(encoding="utf-8")
+    return replace_once(
+        text,
+        "if self.outSceneNode == nil and display.uiOrigin.x > display.uiOriginMax.x then",
+        """local coverUnsupportedWideArea = false
+	if coverUnsupportedWideArea
+			and self.outSceneNode == nil
+			and display.uiOrigin.x > display.uiOriginMax.x then""",
+        "game_ui_wide_side_boards",
+    )
+
+
+def transform_framework_defines(source: Path) -> str:
+    text = source.read_text(encoding="utf-8")
+    return replace_once(
+        text,
+        "local maxWidth = 1560 * 2",
+        "local maxWidth = 1600 * 2",
+        "framework_max_width",
+    )
 
 
 def version_plist(game_origin: str, login_patch_value: str) -> bytes:
@@ -899,6 +993,18 @@ def source_file(root: Path, relative: str) -> Path:
     path = root.joinpath(*relative.split("/"))
     if not path.is_file():
         fail(f"game_source_file_missing:{relative}")
+    return path
+
+
+def framework_source_file(application_root: Path, relative: str) -> Path:
+    path = (
+        application_root.parent.parent
+        / "framework"
+        / "MyLuaGame"
+        / "src"
+    ).joinpath(*relative.split("/"))
+    if not path.is_file():
+        fail(f"game_framework_source_file_missing:{relative}")
     return path
 
 
@@ -968,11 +1074,21 @@ def build_hot_assets(
         "src/app.sdk.helper": transform_helper(source_file(source_root, "app/sdk/helper.lua")),
         "src/app.sdk.init": transform_sdk_init(source_file(source_root, "app/sdk/init.lua")),
         "src/app.views.login.view": transform_login_view(source_file(source_root, "app/views/login/view.lua")),
-        "src/app.game_app": transform_game_app(source_file(source_root, "app/game_app.lua")),
+        "src/app.game_app": source_file(source_root, "app/game_app.lua").read_text(encoding="utf-8"),
         "src/app.defines.app_defines": transform_app_defines(
             source_file(source_root, "app/defines/app_defines.lua"), game_origin),
         "res/version.plist": version_plist(game_origin, login_patch_value),
     }
+    if int(login_patch_value) > int(FIRST_SAKURA_LOGIN_PATCH):
+        generated["src/app.game_app"] = transform_game_app(
+            source_file(source_root, "app/game_app.lua")
+        )
+        generated["src/app.game_ui"] = transform_game_ui(
+            source_file(source_root, "app/game_ui.lua")
+        )
+        generated["src/defines"] = transform_framework_defines(
+            framework_source_file(source_root, "defines.lua")
+        )
     # The legacy updater exposes architecture-specific Lua names as ordinary
     # catalog entries. Overlay both namespaces so x64 clients cannot retain
     # the historical login or payment implementation from patch 8.
@@ -1816,7 +1932,12 @@ def prepare_output(path: Path, force: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apk", type=Path, required=True, help="Original KDJX APK; never modified in place")
-    parser.add_argument("--game-source", type=Path, required=True, help="KDJX application/src directory")
+    parser.add_argument(
+        "--game-source",
+        type=Path,
+        required=True,
+        help="KDJX source root or prepared source directory",
+    )
     parser.add_argument("--output", type=Path, required=True, help="New, dedicated output directory")
     parser.add_argument(
         "--server-patch-catalog-dir",

@@ -306,6 +306,13 @@ class KdjxClientVersionContractTest(unittest.TestCase):
     def test_login_overlay_uses_the_requested_sakura_label(self) -> None:
         source_text = (
             "\tself.btnProtocol:hide()\n"
+            "\tself.btnRegister:setVisible(false)\n"
+            "\tself.btnReturn:setVisible(true)\n"
+            "\tself.btnRegister:setVisible(true)\n"
+            "\tself.btnReturn:setVisible(false)\n"
+            "\t\tself.btnRegister:setVisible(false)\n"
+            "\t\tself.btnReturn:setVisible(false)\n"
+            "\t\tself.btnReturn:setVisible(false)\n"
             "\t\t\t\t\tself:onServerLogin(info)\n"
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -313,6 +320,27 @@ class KdjxClientVersionContractTest(unittest.TestCase):
             source.write_text(source_text, encoding="utf-8")
             transformed = builder.transform_login_view(source)
         self.assertIn("Sakura \u767b\u5f55", transformed)
+        self.assertIn(
+            "if self.btnProtocol then self.btnProtocol:hide() end",
+            transformed,
+        )
+        self.assertEqual(
+            4,
+            transformed.count(
+                "if self.btnRegister then self.btnRegister:setVisible("
+            ),
+        )
+        self.assertEqual(
+            5,
+            transformed.count(
+                "if self.btnReturn then self.btnReturn:setVisible("
+            ),
+        )
+        self.assertNotRegex(
+            transformed,
+            r"(?m)^\s*self\.btn(?:Register|Return):setVisible",
+        )
+        self.assertIn("self:onServerLogin(info, info)", transformed)
 
     def test_lua_login_accepts_only_the_native_one_time_ticket(self) -> None:
         adapter = builder.sakura_none_lua()
@@ -451,6 +479,126 @@ versionInfo:
             "cocos_activity_lifecycle_already_patched",
         ):
             builder.patch_cocos_activity_lifecycle_smali(patched_activity)
+
+    def test_render_safety_transforms_disable_dirty_draw_and_fill_surface(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            game_app = root / "game_app.lua"
+            game_app.write_text(
+                "before\n"
+                "display.director:setDirtyDrawEnable(true)\n"
+                "function GameApp:onCreate()\n"
+                "end\n"
+                "after\n",
+                encoding="utf-8",
+            )
+            defines = root / "defines.lua"
+            defines.write_text(
+                "local width = 1280 * 2\n"
+                "local maxWidth = 1560 * 2\n",
+                encoding="utf-8",
+            )
+            game_ui = root / "game_ui.lua"
+            game_ui.write_text(
+                "before\n"
+                "if self.outSceneNode == nil "
+                "and display.uiOrigin.x > display.uiOriginMax.x then\n"
+                "end\n"
+                "after\n",
+                encoding="utf-8",
+            )
+
+            patched_game_app = builder.transform_game_app(game_app)
+            patched_game_ui = builder.transform_game_ui(game_ui)
+            patched_defines = builder.transform_framework_defines(defines)
+
+            self.assertNotIn(
+                "setDirtyDrawEnable(true)",
+                patched_game_app,
+            )
+            self.assertIn(
+                "setDirtyDrawEnable(false)",
+                patched_game_app,
+            )
+            self.assertIn(
+                "CC_DESIGN_RESOLUTION.maxWidth = fullWidth",
+                patched_game_app,
+            )
+            self.assertIn(
+                "display.uiOriginMax.x = originX",
+                patched_game_app,
+            )
+            self.assertIn(
+                "display.sizeInViewRect = cc.rect(",
+                patched_game_app,
+            )
+            self.assertIn(
+                "view:setDesignResolutionSize(",
+                patched_game_app,
+            )
+            self.assertIn(
+                "cc.ResolutionPolicy.EXACT_FIT",
+                patched_game_app,
+            )
+            self.assertIn(
+                "display.director:setNotificationNode(nil)",
+                patched_game_app,
+            )
+            self.assertIn(
+                "local fullWidth = 1560 * 2",
+                patched_game_app,
+            )
+            self.assertLess(
+                patched_game_app.index("applyFullWidthBounds()"),
+                patched_game_app.index("after"),
+            )
+            self.assertIn(
+                "local coverUnsupportedWideArea = false",
+                patched_game_ui,
+            )
+            self.assertIn(
+                "if coverUnsupportedWideArea",
+                patched_game_ui,
+            )
+            self.assertNotIn("maxWidth = 1560 * 2", patched_defines)
+            self.assertIn("maxWidth = 1600 * 2", patched_defines)
+
+            game_app.write_text("no dirty draw marker\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "source_marker_not_unique:game_app_dirty_draw",
+            ):
+                builder.transform_game_app(game_app)
+
+            game_app.write_text(
+                "display.director:setDirtyDrawEnable(true)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "source_marker_not_unique:game_app_full_width_bounds",
+            ):
+                builder.transform_game_app(game_app)
+
+            defines.write_text(
+                "local maxWidth = 1560 * 2\n"
+                "local maxWidth = 1560 * 2\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "source_marker_not_unique:framework_max_width",
+            ):
+                builder.transform_framework_defines(defines)
+
+            game_ui.write_text("no wide board marker\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "source_marker_not_unique:game_ui_wide_side_boards",
+            ):
+                builder.transform_game_ui(game_ui)
 
     def test_apktool_only_version_code_matches_real_apktool_three_output(
         self,

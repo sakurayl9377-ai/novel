@@ -2,10 +2,10 @@
 """Materialize the minimal full-source input needed by build_kdjx_client.py.
 
 KDJX's historical `patch/<number>/src/app.*` files are flattened release
-artifacts, not a source tree. This helper copies only the Lua modules the
-Sakura build transforms from a checked-out KDJX tree into a disposable input
-directory. It never copies APKs, databases, server configuration, keys, or
-legacy payment/admin files.
+artifacts, not a source tree. This helper copies only the application and
+framework Lua modules the Sakura build transforms from a checked-out KDJX tree
+into a disposable input directory. It never copies APKs, databases, server
+configuration, keys, or legacy payment/admin files.
 """
 
 from __future__ import annotations
@@ -18,13 +18,15 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_FILES = (
+APPLICATION_FILES = (
     "app/sdk/helper.lua",
     "app/sdk/init.lua",
     "app/views/login/view.lua",
     "app/game_app.lua",
+    "app/game_ui.lua",
     "app/defines/app_defines.lua",
 )
+FRAMEWORK_FILES = ("defines.lua",)
 MARKER = ".kdjx-client-source"
 
 
@@ -45,15 +47,49 @@ def find_source(root: Path) -> Path:
         root / "mnt" / "pokemon" / "release" / "anti_cheat" / "game_scripts" / "application" / "src",
     )
     for candidate in candidates:
-        if candidate.is_dir() and all(
-            candidate.joinpath(*item.split("/")).is_file()
-            for item in REQUIRED_FILES
+        if (
+            candidate.is_dir()
+            and all(
+                candidate.joinpath(*item.split("/")).is_file()
+                for item in APPLICATION_FILES
+            )
+            and all(
+                framework_source(candidate, item).is_file()
+                for item in FRAMEWORK_FILES
+            )
         ):
             return candidate
     raise ValueError("full_application_src_not_found")
 
 
+def framework_source(application_source: Path, relative: str) -> Path:
+    return (
+        application_source.parent.parent
+        / "framework"
+        / "MyLuaGame"
+        / "src"
+        / relative
+    )
+
+
 def prepare(source: Path, output: Path, force: bool) -> None:
+    inputs = [
+        (
+            f"application/src/{relative}",
+            source.joinpath(*relative.split("/")),
+        )
+        for relative in APPLICATION_FILES
+    ]
+    inputs.extend(
+        (
+            f"framework/MyLuaGame/src/{relative}",
+            framework_source(source, relative),
+        )
+        for relative in FRAMEWORK_FILES
+    )
+    if any(not source_file.is_file() for _, source_file in inputs):
+        raise ValueError("full_application_src_not_found")
+
     if output.exists():
         if not force:
             raise ValueError("output_exists_use_force")
@@ -64,8 +100,7 @@ def prepare(source: Path, output: Path, force: bool) -> None:
     (output / MARKER).write_text("generated KDJX client source input\n", encoding="utf-8")
 
     files: list[dict[str, str]] = []
-    for relative in REQUIRED_FILES:
-        source_file = source.joinpath(*relative.split("/"))
+    for relative, source_file in inputs:
         destination = output.joinpath(*relative.split("/"))
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source_file, destination)
@@ -89,7 +124,13 @@ def main() -> int:
             "ok": True,
             "source": str(source),
             "output": str(args.output.resolve()),
-            "files": list(REQUIRED_FILES),
+            "files": [
+                f"application/src/{relative}"
+                for relative in APPLICATION_FILES
+            ] + [
+                f"framework/MyLuaGame/src/{relative}"
+                for relative in FRAMEWORK_FILES
+            ],
         }))
         return 0
     except ValueError as error:
