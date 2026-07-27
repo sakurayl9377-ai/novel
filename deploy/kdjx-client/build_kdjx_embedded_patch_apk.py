@@ -88,7 +88,7 @@ def main() -> int:
             unsigned_apk,
             game_origin,
             api_origin,
-            builder.version_plist(game_origin, target_patch),
+            builder.version_plist(game_origin, source_patch),
             target_version_code,
             apktool,
             android_jar,
@@ -98,6 +98,7 @@ def main() -> int:
             bundled_patch_root=patch_root,
             bundled_patch_number=target_patch,
             bundled_patch_version=version,
+            bundled_patch_base_number=source_patch,
         )
         bundle = builder.verify_bundled_patch_archive(
             unsigned_apk,
@@ -105,6 +106,7 @@ def main() -> int:
             patch_root,
             target_patch,
             version,
+            source_patch,
         )
         endpoint_violations = builder.zip_entry_violations(unsigned_apk)
         if endpoint_violations:
@@ -118,6 +120,7 @@ def main() -> int:
             "sourceApkLoginPatch": source_patch,
             "apkSha256": builder.sha256(unsigned_apk),
             "apkVersionCode": target_version_code,
+            "apkBasePatch": source_patch,
             "hotVersion": version,
             "loginPatch": target_patch,
             "bundledPatch": bundle,

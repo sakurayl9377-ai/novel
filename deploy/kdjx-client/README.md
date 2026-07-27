@@ -128,6 +128,13 @@ manifest, replaces only the owned Sakura bridge dex, and decodes the rebuilt
 manifest to prove the Android version increase. It then reopens the final APK
 and verifies every embedded file again.
 
+The APK's packaged `assets/res/version.plist` must keep the source APK patch
+baseline (`patch=1` for the current source). Only the bundled snapshot carries
+the target patch (`patch=17` in the example). Relabeling the packaged baseline
+as the target changes Cocos resource precedence and is not equivalent to the
+known-good `patch=1` APK plus an installed `patch=17` update. The archive
+verification fails if these two versions are conflated.
+
 At startup, a lightweight bootstrap Activity immediately shows a progress
 indicator and runs `BundledPatchInstaller` on a worker thread before opening
 the Cocos Activity. It copies the snapshot into the writable

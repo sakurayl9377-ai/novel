@@ -1572,7 +1572,12 @@ def verify_bundled_patch_archive(
     patch_root: Path,
     expected_patch: str,
     expected_version: str,
+    expected_base_patch: str,
 ) -> dict[str, object]:
+    expected_patch = login_patch(expected_patch)
+    expected_base_patch = login_patch(expected_base_patch)
+    if int(expected_base_patch) >= int(expected_patch):
+        fail("bundled_patch_must_exceed_apk_base_patch")
     manifest, entries, total_bytes, _version_diff = bundled_patch_manifest_bytes(
         catalog_path,
         patch_root,
@@ -1606,8 +1611,8 @@ def verify_bundled_patch_archive(
             )["patch"])
         except (KeyError, plistlib.InvalidFileException) as error:
             fail(f"apk_version_plist_invalid:{error.__class__.__name__}")
-        if apk_patch != login_patch(expected_patch):
-            fail("apk_bundled_patch_version_mismatch")
+        if apk_patch != expected_base_patch:
+            fail("apk_base_patch_version_mismatch")
 
         for entry in entries:
             name = f"assets/{BUNDLED_PATCH_FILES_ROOT}/{entry['name']}"
@@ -1657,6 +1662,7 @@ def build_apk(
     bundled_patch_root: Path | None = None,
     bundled_patch_number: str | None = None,
     bundled_patch_version: str | None = None,
+    bundled_patch_base_number: str | None = None,
 ) -> Path:
     if not apk.is_file() or apk.suffix.lower() != ".apk":
         fail("input_apk_missing")
@@ -1665,6 +1671,7 @@ def build_apk(
         bundled_patch_root,
         bundled_patch_number,
         bundled_patch_version,
+        bundled_patch_base_number,
     )
     if any(value is not None for value in bundled_values) and not all(
         value is not None for value in bundled_values
@@ -1725,6 +1732,7 @@ def build_apk(
                 bundled_patch_root,
                 bundled_patch_number,
                 bundled_patch_version,
+                bundled_patch_base_number,
             )
         shutil.copyfile(unsigned, output)
     return output

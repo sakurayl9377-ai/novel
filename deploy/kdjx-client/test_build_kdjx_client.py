@@ -583,7 +583,10 @@ versionInfo:
 
             version_path = decoded / "assets" / "res" / "version.plist"
             version_path.parent.mkdir(parents=True, exist_ok=True)
-            version_path.write_bytes(payloads["res/version.plist"])
+            version_path.write_bytes(builder.version_plist(
+                builder.DEFAULT_GAME_ORIGIN,
+                "1",
+            ))
             apk = root / "embedded.apk"
             with zipfile.ZipFile(apk, "w") as archive:
                 for path in sorted((decoded / "assets").rglob("*")):
@@ -595,8 +598,34 @@ versionInfo:
                 patch_root,
                 "17",
                 "47",
+                "1",
             )
             self.assertEqual(report, verified)
+            self.assertEqual("1", builder.source_apk_login_patch(apk))
+            with zipfile.ZipFile(apk) as archive:
+                bundled_version = plistlib.loads(archive.read(
+                    "assets/sakura-bootstrap/files/res/version.plist"
+                ))
+            self.assertEqual("17", bundled_version["patch"])
+
+            version_path.write_bytes(payloads["res/version.plist"])
+            wrong_base_apk = root / "wrong-base.apk"
+            with zipfile.ZipFile(wrong_base_apk, "w") as archive:
+                for path in sorted((decoded / "assets").rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(decoded).as_posix())
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "apk_base_patch_version_mismatch",
+            ):
+                builder.verify_bundled_patch_archive(
+                    wrong_base_apk,
+                    catalog_path,
+                    patch_root,
+                    "17",
+                    "47",
+                    "1",
+                )
 
             (patch_root / "res" / "example.bin").write_bytes(b"tampered")
             with self.assertRaisesRegex(
@@ -609,6 +638,7 @@ versionInfo:
                     patch_root,
                     "17",
                     "47",
+                    "1",
                 )
 
 
