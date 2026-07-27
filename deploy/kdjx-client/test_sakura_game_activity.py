@@ -10,6 +10,9 @@ class KdjxNativeAuthorizationContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = builder.NATIVE_SOURCE.read_text(encoding="utf-8")
+        cls.bootstrap_source = builder.BUNDLED_PATCH_BOOTSTRAP_SOURCE.read_text(
+            encoding="utf-8"
+        )
 
     def test_user_code_is_server_bound_before_sakura_is_opened(self) -> None:
         self.assertIn('body.optString("userCode", "")', self.source)
@@ -103,6 +106,79 @@ class KdjxNativeAuthorizationContractTest(unittest.TestCase):
             self.source.index("destroyed = true"),
             self.source.index("io.shutdownNow()"),
         )
+
+    def test_bundled_patch_is_installed_off_main_before_native_engine(self) -> None:
+        installer_source = builder.BUNDLED_PATCH_INSTALLER_SOURCE.read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("BundledPatchInstaller.install", self.source)
+        self.assertLess(
+            self.bootstrap_source.index("super.onCreate(savedInstanceState)"),
+            self.bootstrap_source.index("beginInstall()"),
+        )
+        self.assertLess(
+            self.bootstrap_source.index("showProgress()"),
+            self.bootstrap_source.index("configureWindow()"),
+        )
+        self.assertIn("new Thread(new Runnable()", self.bootstrap_source)
+        install_index = self.bootstrap_source.index(
+            "BundledPatchInstaller.install(getApplicationContext())"
+        )
+        launch_index = self.bootstrap_source.index("launchGame()", install_index)
+        self.assertLess(install_index, launch_index)
+        self.assertIn(
+            "new Intent(launchIntent).setClass(this, SakuraGameActivity.class)",
+            self.bootstrap_source,
+        )
+        self.assertIn('new File(context.getFilesDir(), "patch")', installer_source)
+        self.assertIn('new File(storageRoot, parsedHeader.patch)', installer_source)
+        self.assertIn('"sakura-bootstrap/manifest.tsv"', installer_source)
+        self.assertIn('"sakura-bootstrap/files/"', installer_source)
+        self.assertIn('MessageDigest.getInstance("MD5")', installer_source)
+        self.assertIn("writeMarker(marker, header)", installer_source)
+        self.assertIn('"Cocos2dxPrefsFile"', installer_source)
+        self.assertIn('"8e58ea257ca802d186cba7f07d287f00"', installer_source)
+        self.assertIn('"96773f3f45bb6396332b079593367c71"', installer_source)
+        self.assertIn(
+            '".preload-" + parsedHeader.patch + ".tmp"',
+            installer_source,
+        )
+        self.assertIn("publishDirectory(staging, patchRoot)", installer_source)
+        self.assertIn(
+            "synchronizePatchState(preferences, targetPatch)",
+            installer_source,
+        )
+        self.assertLess(
+            installer_source.index("publishDirectory(staging, patchRoot)"),
+            installer_source.rindex(
+                "synchronizePatchState(preferences, targetPatch)"
+            ),
+        )
+        self.assertLess(
+            installer_source.index("copyVerified(assets, target, entry)"),
+            installer_source.index("writeMarker(marker, header)"),
+        )
+        copy_start = installer_source.index(
+            "for (Entry entry : entries)",
+            installer_source.index('".preload-" + parsedHeader.patch + ".tmp"'),
+        )
+        publish_index = installer_source.index(
+            "publishDirectory(staging, patchRoot)",
+            copy_start,
+        )
+        self.assertNotIn(
+            "directoryMatches(staging, entries)",
+            installer_source[copy_start:publish_index],
+        )
+
+    def test_candidate_display_layout_fix_is_preserved(self) -> None:
+        self.assertIn("configureGameWindowLayout()", self.source)
+        self.assertNotIn("BundledPatchInstaller.install", self.source)
+        self.assertIn("hideSystemBars()", self.source)
+        self.assertIn("LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS", self.source)
+        self.assertIn("BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE", self.source)
+        self.assertIn("SYSTEM_UI_FLAG_IMMERSIVE_STICKY", self.source)
+        self.assertIn("onWindowFocusChanged(boolean hasFocus)", self.source)
 
     def test_payment_pending_is_single_flight_and_expires_after_fifteen_minutes(self) -> None:
         self.assertIn(

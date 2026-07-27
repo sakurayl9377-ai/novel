@@ -104,6 +104,42 @@ The output contains:
 The output directory is marked by the script. `--force` removes only a
 previously marked output directory.
 
+## Embed A Complete Patch In An Existing Sakura APK
+
+After a cumulative hot update has been validated, a new APK can carry the
+entire snapshot so a fresh install does not download thousands of legacy
+updater files. Use the already signed Sakura APK only as the repack input; the
+output remains unsigned and must pass the normal server-only signing gate.
+
+```powershell
+python deploy\kdjx-client\build_kdjx_embedded_patch_apk.py `
+  --apk E:\workSpace\novel\tmp\kdjx-client-renderfix-build-14\kdjx-sakura-v6-signed.apk `
+  --patch-root E:\workSpace\novel\tmp\kdjx-renderfix-hot47\hot-staging\17 `
+  --patch-catalog E:\workSpace\novel\tmp\kdjx-renderfix-hot47\login-patch\cn\17.json `
+  --hot-version 47 `
+  --login-patch 17 `
+  --apk-version-code 7 `
+  --output E:\workSpace\novel\tmp\kdjx-embedded-patch17-build
+```
+
+The builder verifies every catalog entry, copies the exact files beneath the
+APK's `assets/sakura-bootstrap/files/` tree, writes a deterministic TSV
+manifest, replaces only the owned Sakura bridge dex, and decodes the rebuilt
+manifest to prove the Android version increase. It then reopens the final APK
+and verifies every embedded file again.
+
+At startup, a lightweight bootstrap Activity immediately shows a progress
+indicator and runs `BundledPatchInstaller` on a worker thread before opening
+the Cocos Activity. It copies the snapshot into the writable
+`patch/<number>/` directory using a same-directory temporary file, checks byte
+count and MD5 during the copy, and writes the completion marker only after all
+files pass. The bundle includes a generated `version.diff` matching the legacy
+server response, then commits the Cocos `tianji_version2` preference without
+lowering a newer installed patch. Existing files with the exact catalog digest
+are reused. A matching marker makes later starts constant-time. When an APK
+has no bundled manifest, the installer is a no-op and the legacy network
+updater behavior remains unchanged.
+
 Run the version-contract regression tests with:
 
 ```powershell

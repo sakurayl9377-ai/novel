@@ -1,3 +1,4 @@
+import hashlib
 import json
 import plistlib
 import tempfile
@@ -413,6 +414,202 @@ versionInfo:
                 .get(builder.ANDROID + "versionCode")
             )
             self.assertIn("versionCode: 4", metadata_path.read_text("utf-8"))
+
+    def test_existing_sakura_bridge_can_be_refreshed_without_duplicate_launcher(
+        self,
+    ) -> None:
+        manifest = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kd.kdjxcs" android:versionCode="6" android:versionName="2.1.0.0">
+  <application>
+    <activity android:name="com.novel.kdjx.SakuraGameActivity">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "AndroidManifest.xml"
+            path.write_text(manifest, encoding="utf-8")
+            builder.modify_manifest(
+                path,
+                6,
+                7,
+                refresh_existing_bridge=True,
+                bundled_patch_bootstrap=True,
+            )
+            root = ET.parse(path).getroot()
+            app = root.find("application")
+            self.assertIsNotNone(app)
+            bridges = [
+                activity
+                for activity in app.findall("activity")
+                if activity.get(builder.ANDROID + "name")
+                == "com.novel.kdjx.SakuraGameActivity"
+            ]
+            self.assertEqual(1, len(bridges))
+            launchers = []
+            for activity in app.findall("activity"):
+                for intent_filter in activity.findall("intent-filter"):
+                    actions = {
+                        item.get(builder.ANDROID + "name")
+                        for item in intent_filter.findall("action")
+                    }
+                    categories = {
+                        item.get(builder.ANDROID + "name")
+                        for item in intent_filter.findall("category")
+                    }
+                    if (
+                        "android.intent.action.MAIN" in actions
+                        and "android.intent.category.LAUNCHER" in categories
+                    ):
+                        launchers.append(activity)
+            self.assertEqual(1, len(launchers))
+            self.assertEqual(
+                "com.novel.kdjx.KdjxBootstrapActivity",
+                launchers[0].get(builder.ANDROID + "name"),
+            )
+            self.assertEqual(0, len(bridges[0].findall("intent-filter")))
+            self.assertEqual("7", root.get(builder.ANDROID + "versionCode"))
+
+    def test_existing_bridge_dex_is_replaced_only_when_it_is_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            decoded = Path(temporary)
+            bridge = decoded / "smali_classes2" / "com" / "novel" / "kdjx"
+            bridge.mkdir(parents=True)
+            (bridge / "SakuraGameActivity.smali").write_text("owned")
+            (bridge / "SakuraGameActivity$1.smali").write_text("owned")
+            (bridge / "BundledPatchInstaller.smali").write_text("owned")
+            (bridge / "BundledPatchInstaller$Entry.smali").write_text("owned")
+            (bridge / "KdjxBootstrapActivity.smali").write_text("owned")
+            (bridge / "KdjxBootstrapActivity$1.smali").write_text("owned")
+            (bridge / "PaymentRecovery.smali").write_text("owned")
+            builder.remove_existing_bridge_smali(decoded)
+            self.assertFalse((decoded / "smali_classes2").exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            decoded = Path(temporary)
+            foreign = decoded / "smali_classes2" / "com" / "example"
+            foreign.mkdir(parents=True)
+            (foreign / "Other.smali").write_text("foreign")
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "apk_bridge_dex_contents_invalid",
+            ):
+                builder.remove_existing_bridge_smali(decoded)
+
+    def test_complete_hot_snapshot_is_embedded_and_archive_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patch_root = root / "17"
+            payloads = {
+                "res/example.bin": b"embedded resource",
+                "res/version.plist": builder.version_plist(
+                    builder.DEFAULT_GAME_ORIGIN,
+                    "17",
+                ),
+                "src/app.sdk.none": b"embedded lua",
+            }
+            entries = []
+            revision = hashlib.sha1()
+            for name, payload in sorted(payloads.items()):
+                path = patch_root.joinpath(*name.split("/"))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+                digest = builder.md5(path)
+                entry = {
+                    "name": name,
+                    "size": len(payload),
+                    "md5": digest,
+                    "patch": 17,
+                }
+                entries.append(entry)
+                revision.update(
+                    f"{name}\0{len(payload)}\0{digest}\n".encode("utf-8")
+                )
+            catalog_path = root / "17.json"
+            catalog_path.write_text(
+                json.dumps({
+                    "files": entries,
+                    "svn_version": "47",
+                    "git_version": revision.hexdigest(),
+                }),
+                encoding="utf-8",
+            )
+
+            decoded = root / "decoded"
+            stale_bundle = (
+                decoded
+                / "assets"
+                / builder.BUNDLED_PATCH_ASSET_ROOT
+                / "stale.bin"
+            )
+            stale_bundle.parent.mkdir(parents=True)
+            stale_bundle.write_bytes(b"old bundle")
+            report = builder.stage_bundled_patch(
+                decoded,
+                catalog_path,
+                patch_root,
+                "17",
+                "47",
+            )
+            self.assertFalse(stale_bundle.exists())
+            self.assertEqual(4, report["files"])
+            version_diff_path = (
+                decoded
+                / "assets"
+                / builder.BUNDLED_PATCH_FILES_ROOT
+                / "version.diff"
+            )
+            version_diff = json.loads(version_diff_path.read_text("utf-8"))
+            self.assertEqual(17, version_diff["patch"])
+            self.assertEqual(False, version_diff["update_close"])
+            self.assertEqual(entries, version_diff["files"])
+            self.assertEqual(
+                sum(map(len, payloads.values())) + version_diff_path.stat().st_size,
+                report["bytes"],
+            )
+            manifest = (
+                decoded / "assets" / builder.BUNDLED_PATCH_MANIFEST
+            ).read_text(encoding="utf-8")
+            self.assertTrue(manifest.startswith(
+                "sakura-bundled-patch\t1\t17\t"
+            ))
+            self.assertIn("res/version.plist\t", manifest)
+            self.assertIn("version.diff\t", manifest)
+
+            version_path = decoded / "assets" / "res" / "version.plist"
+            version_path.parent.mkdir(parents=True, exist_ok=True)
+            version_path.write_bytes(payloads["res/version.plist"])
+            apk = root / "embedded.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                for path in sorted((decoded / "assets").rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(decoded).as_posix())
+            verified = builder.verify_bundled_patch_archive(
+                apk,
+                catalog_path,
+                patch_root,
+                "17",
+                "47",
+            )
+            self.assertEqual(report, verified)
+
+            (patch_root / "res" / "example.bin").write_bytes(b"tampered")
+            with self.assertRaisesRegex(
+                builder.BuildError,
+                "legacy_patch_digest_mismatch",
+            ):
+                builder.verify_bundled_patch_archive(
+                    apk,
+                    catalog_path,
+                    patch_root,
+                    "17",
+                    "47",
+                )
 
 
 if __name__ == "__main__":

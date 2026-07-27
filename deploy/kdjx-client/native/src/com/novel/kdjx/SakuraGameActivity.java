@@ -15,6 +15,11 @@ import android.security.KeyPairGeneratorSpec;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 
 import org.cocos2dx.lua.AppActivity;
 import org.json.JSONObject;
@@ -81,9 +86,17 @@ public final class SakuraGameActivity extends AppActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        configureGameWindowLayout();
         super.onCreate(savedInstanceState);
+        hideSystemBars();
         captureExpectedUserId(getIntent());
         handleSakuraReturn(getIntent());
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
     }
 
     @Override
@@ -626,6 +639,43 @@ public final class SakuraGameActivity extends AppActivity {
         } catch (RejectedExecutionException ignored) {
             // The activity may be destroyed between the gate and submission.
         }
+    }
+
+    private void configureGameWindowLayout() {
+        Window window = getWindow();
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            int cutoutMode = Build.VERSION.SDK_INT >= 30
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            if (attributes.layoutInDisplayCutoutMode != cutoutMode) {
+                attributes.layoutInDisplayCutoutMode = cutoutMode;
+                window.setAttributes(attributes);
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false);
+        }
+    }
+
+    private void hideSystemBars() {
+        Window window = getWindow();
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(WindowInsets.Type.systemBars());
+            }
+            return;
+        }
+        window.getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN);
     }
 
     private boolean isPendingLogin(PendingLogin request) {

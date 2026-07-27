@@ -30,6 +30,11 @@ from xml.etree import ElementTree as ET
 ROOT = Path(__file__).resolve().parent
 NATIVE_SOURCE = ROOT / "native" / "src" / "com" / "novel" / "kdjx" / "SakuraGameActivity.java"
 PAYMENT_RECOVERY_SOURCE = NATIVE_SOURCE.with_name("PaymentRecovery.java")
+BUNDLED_PATCH_INSTALLER_SOURCE = NATIVE_SOURCE.with_name("BundledPatchInstaller.java")
+BUNDLED_PATCH_BOOTSTRAP_SOURCE = NATIVE_SOURCE.with_name("KdjxBootstrapActivity.java")
+BUNDLED_PATCH_ASSET_ROOT = "sakura-bootstrap"
+BUNDLED_PATCH_MANIFEST = f"{BUNDLED_PATCH_ASSET_ROOT}/manifest.tsv"
+BUNDLED_PATCH_FILES_ROOT = f"{BUNDLED_PATCH_ASSET_ROOT}/files"
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 ET.register_namespace("android", ANDROID_NS)
 ANDROID = "{%s}" % ANDROID_NS
@@ -1129,7 +1134,12 @@ public class MessageHandler { public void callbackToLua(int id, String value) {}
 
 
 def compile_bridge(work: Path, api_origin: str, android_jar: Path, d8: Path) -> Path:
-    if not NATIVE_SOURCE.is_file() or not PAYMENT_RECOVERY_SOURCE.is_file():
+    if not all(path.is_file() for path in (
+        NATIVE_SOURCE,
+        PAYMENT_RECOVERY_SOURCE,
+        BUNDLED_PATCH_INSTALLER_SOURCE,
+        BUNDLED_PATCH_BOOTSTRAP_SOURCE,
+    )):
         fail("native_bridge_source_missing")
     javac = resolve_tool(None, ("javac.exe", "javac"), ())
     source_root = work / "java-source"
@@ -1137,6 +1147,8 @@ def compile_bridge(work: Path, api_origin: str, android_jar: Path, d8: Path) -> 
     bridge_root = source_root / "bridge" / "com" / "novel" / "kdjx"
     bridge_source = bridge_root / "SakuraGameActivity.java"
     payment_recovery_source = bridge_root / "PaymentRecovery.java"
+    bundled_patch_installer_source = bridge_root / "BundledPatchInstaller.java"
+    bundled_patch_bootstrap_source = bridge_root / "KdjxBootstrapActivity.java"
     write_compile_stubs(stub_source)
     bridge_text = NATIVE_SOURCE.read_text(encoding="utf-8")
     api_origin = owned_api_origin(api_origin)
@@ -1147,6 +1159,14 @@ def compile_bridge(work: Path, api_origin: str, android_jar: Path, d8: Path) -> 
     if "__KDJX_API_ORIGIN__" in payment_recovery_text:
         fail("native_bridge_placeholder_invalid")
     write_text(payment_recovery_source, payment_recovery_text)
+    write_text(
+        bundled_patch_installer_source,
+        BUNDLED_PATCH_INSTALLER_SOURCE.read_text(encoding="utf-8"),
+    )
+    write_text(
+        bundled_patch_bootstrap_source,
+        BUNDLED_PATCH_BOOTSTRAP_SOURCE.read_text(encoding="utf-8"),
+    )
 
     stub_classes = work / "stub-classes"
     bridge_classes = work / "bridge-classes"
@@ -1157,7 +1177,10 @@ def compile_bridge(work: Path, api_origin: str, android_jar: Path, d8: Path) -> 
         [
             "-source", "8", "-target", "8", "-cp", f"{android_jar}{os.pathsep}{stub_classes}",
             "-d", str(bridge_classes),
-            str(bridge_source), str(payment_recovery_source),
+            str(bridge_source),
+            str(payment_recovery_source),
+            str(bundled_patch_installer_source),
+            str(bundled_patch_bootstrap_source),
         ],
     )
     dex_output = work / "dex"
@@ -1195,6 +1218,8 @@ def modify_manifest(
     path: Path,
     source_version_code: int,
     target_version_code: int,
+    refresh_existing_bridge: bool = False,
+    bundled_patch_bootstrap: bool = False,
 ) -> None:
     source_version_code = apk_version_code(str(source_version_code))
     target_version_code = apk_version_code(str(target_version_code))
@@ -1227,9 +1252,21 @@ def modify_manifest(
                 child.remove(intent_filter)
 
     bridge_name = "com.novel.kdjx.SakuraGameActivity"
-    if any(item.get(ANDROID + "name") == bridge_name for item in app.findall("activity")):
-        fail("apk_manifest_bridge_already_present")
-    bridge = ET.Element("activity", {
+    existing_bridges = [
+        item
+        for item in app.findall("activity")
+        if item.get(ANDROID + "name") == bridge_name
+    ]
+    if refresh_existing_bridge:
+        if len(existing_bridges) != 1:
+            fail("apk_manifest_bridge_refresh_invalid")
+        bridge = existing_bridges[0]
+    else:
+        if existing_bridges:
+            fail("apk_manifest_bridge_already_present")
+        bridge = ET.Element("activity")
+        app.insert(0, bridge)
+    bridge.attrib.update({
         ANDROID + "name": bridge_name,
         ANDROID + "configChanges": "keyboardHidden|orientation|screenSize",
         ANDROID + "label": "@string/app_name",
@@ -1238,10 +1275,33 @@ def modify_manifest(
         ANDROID + "theme": "@android:style/Theme.NoTitleBar.Fullscreen",
         ANDROID + "exported": "true",
     })
-    intent_filter = ET.SubElement(bridge, "intent-filter")
+    launcher = bridge
+    if bundled_patch_bootstrap:
+        bootstrap_name = "com.novel.kdjx.KdjxBootstrapActivity"
+        existing_bootstraps = [
+            item
+            for item in app.findall("activity")
+            if item.get(ANDROID + "name") == bootstrap_name
+        ]
+        if len(existing_bootstraps) > 1:
+            fail("apk_manifest_bootstrap_invalid")
+        if existing_bootstraps:
+            launcher = existing_bootstraps[0]
+        else:
+            launcher = ET.Element("activity")
+            app.insert(0, launcher)
+        launcher.attrib.update({
+            ANDROID + "name": bootstrap_name,
+            ANDROID + "configChanges": "keyboardHidden|orientation|screenSize",
+            ANDROID + "label": "@string/app_name",
+            ANDROID + "launchMode": "singleTask",
+            ANDROID + "screenOrientation": "sensorLandscape",
+            ANDROID + "theme": "@android:style/Theme.Black.NoTitleBar.Fullscreen",
+            ANDROID + "exported": "true",
+        })
+    intent_filter = ET.SubElement(launcher, "intent-filter")
     ET.SubElement(intent_filter, "action", {ANDROID + "name": "android.intent.action.MAIN"})
     ET.SubElement(intent_filter, "category", {ANDROID + "name": "android.intent.category.LAUNCHER"})
-    app.insert(0, bridge)
 
     # Disable the bundled legacy telemetry SDKs. Their classes may remain in
     # the immutable upstream dex, but no component or configuration can start
@@ -1365,6 +1425,214 @@ def remove_legacy_native_libraries(decoded: Path) -> None:
         library.unlink()
 
 
+def remove_existing_bridge_smali(decoded: Path) -> None:
+    bridge_root = decoded / "smali_classes2"
+    if not bridge_root.is_dir() or bridge_root.is_symlink():
+        fail("apk_bridge_dex_missing")
+    smali_files = [
+        path.relative_to(bridge_root).as_posix()
+        for path in bridge_root.rglob("*.smali")
+        if path.is_file()
+    ]
+    allowed = re.compile(
+        r"com/novel/kdjx/(?:"
+        r"SakuraGameActivity(?:\$[^/]+)?|"
+        r"BundledPatchInstaller(?:\$[^/]+)?|"
+        r"KdjxBootstrapActivity(?:\$[^/]+)?|"
+        r"PaymentRecovery)\.smali"
+    )
+    if not smali_files or any(not allowed.fullmatch(name) for name in smali_files):
+        fail("apk_bridge_dex_contents_invalid")
+    shutil.rmtree(bridge_root)
+
+
+def bundled_patch_manifest_bytes(
+    catalog_path: Path,
+    patch_root: Path,
+    expected_patch: str,
+    expected_version: str,
+) -> tuple[bytes, list[dict[str, object]], int, bytes]:
+    expected_patch = login_patch(expected_patch)
+    expected_version = hot_version(expected_version)
+    verify_legacy_patch(
+        catalog_path,
+        patch_root,
+        expected_patch,
+        expected_version,
+    )
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_entries = catalog["files"]
+    version_diff = json.dumps(
+        {
+            "app_version": "2.1.0.0",
+            "version": "2.1.0.0",
+            "patch": int(expected_patch),
+            "patch_url": DEFAULT_DOWNLOAD_BASE + "/",
+            "shenhe_version": "",
+            "update_close": False,
+            "files": catalog_entries,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    entries = sorted(
+        [
+            *catalog_entries,
+            {
+                "name": "version.diff",
+                "size": len(version_diff),
+                "md5": hashlib.md5(version_diff).hexdigest(),
+                "patch": int(expected_patch),
+            },
+        ],
+        key=lambda entry: entry["name"],
+    )
+    total_bytes = 0
+    lines: list[str] = []
+    for entry in entries:
+        name = entry["name"]
+        size = entry["size"]
+        digest = entry["md5"]
+        if (
+            not isinstance(size, int)
+            or isinstance(size, bool)
+            or size <= 0
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", digest)
+        ):
+            fail(f"bundled_patch_catalog_metadata_invalid:{name}")
+        total_bytes += size
+        lines.append(f"{name}\t{size}\t{digest}")
+
+    version_path = patch_root / "res" / "version.plist"
+    try:
+        embedded_patch = str(plistlib.loads(version_path.read_bytes())["patch"])
+    except (KeyError, OSError, plistlib.InvalidFileException) as error:
+        fail(f"bundled_patch_version_plist_invalid:{error.__class__.__name__}")
+    if embedded_patch != expected_patch:
+        fail("bundled_patch_version_plist_mismatch")
+
+    header = "\t".join((
+        "sakura-bundled-patch",
+        "1",
+        expected_patch,
+        catalog["git_version"],
+        str(len(entries)),
+        str(total_bytes),
+    ))
+    payload = ("\n".join((header, *lines)) + "\n").encode("utf-8")
+    return payload, entries, total_bytes, version_diff
+
+
+def stage_bundled_patch(
+    decoded: Path,
+    catalog_path: Path,
+    patch_root: Path,
+    expected_patch: str,
+    expected_version: str,
+) -> dict[str, object]:
+    manifest, entries, total_bytes, version_diff = bundled_patch_manifest_bytes(
+        catalog_path,
+        patch_root,
+        expected_patch,
+        expected_version,
+    )
+    asset_root = decoded / "assets" / BUNDLED_PATCH_ASSET_ROOT
+    if asset_root.exists():
+        if not asset_root.is_dir() or asset_root.is_symlink():
+            fail("apk_bundled_patch_path_invalid")
+        shutil.rmtree(asset_root)
+    files_root = asset_root / "files"
+    for entry in entries:
+        name = str(entry["name"])
+        target = files_root.joinpath(*name.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if name == "version.diff":
+            target.write_bytes(version_diff)
+        else:
+            source = patch_root.joinpath(*name.split("/"))
+            shutil.copyfile(source, target)
+    manifest_path = decoded / "assets" / BUNDLED_PATCH_MANIFEST
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_bytes(manifest)
+    return {
+        "patch": login_patch(expected_patch),
+        "version": hot_version(expected_version),
+        "files": len(entries),
+        "catalogFiles": len(entries) - 1,
+        "metadataFiles": 1,
+        "bytes": total_bytes,
+        "revision": json.loads(catalog_path.read_text(encoding="utf-8"))["git_version"],
+    }
+
+
+def verify_bundled_patch_archive(
+    apk: Path,
+    catalog_path: Path,
+    patch_root: Path,
+    expected_patch: str,
+    expected_version: str,
+) -> dict[str, object]:
+    manifest, entries, total_bytes, _version_diff = bundled_patch_manifest_bytes(
+        catalog_path,
+        patch_root,
+        expected_patch,
+        expected_version,
+    )
+    expected_names = {
+        f"assets/{BUNDLED_PATCH_MANIFEST}",
+        *(
+            f"assets/{BUNDLED_PATCH_FILES_ROOT}/{entry['name']}"
+            for entry in entries
+        ),
+    }
+    with zipfile.ZipFile(apk, "r") as archive:
+        archive_names = archive.namelist()
+        if len(archive_names) != len(set(archive_names)):
+            fail("apk_duplicate_zip_entry")
+        actual_names = {
+            name
+            for name in archive_names
+            if name.startswith(f"assets/{BUNDLED_PATCH_ASSET_ROOT}/")
+            and not name.endswith("/")
+        }
+        if actual_names != expected_names:
+            fail("apk_bundled_patch_file_set_mismatch")
+        if archive.read(f"assets/{BUNDLED_PATCH_MANIFEST}") != manifest:
+            fail("apk_bundled_patch_manifest_mismatch")
+        try:
+            apk_patch = str(plistlib.loads(
+                archive.read("assets/res/version.plist")
+            )["patch"])
+        except (KeyError, plistlib.InvalidFileException) as error:
+            fail(f"apk_version_plist_invalid:{error.__class__.__name__}")
+        if apk_patch != login_patch(expected_patch):
+            fail("apk_bundled_patch_version_mismatch")
+
+        for entry in entries:
+            name = f"assets/{BUNDLED_PATCH_FILES_ROOT}/{entry['name']}"
+            info = archive.getinfo(name)
+            if info.file_size != entry["size"]:
+                fail(f"apk_bundled_patch_size_mismatch:{entry['name']}")
+            digest = hashlib.md5()
+            with archive.open(info, "r") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != entry["md5"]:
+                fail(f"apk_bundled_patch_digest_mismatch:{entry['name']}")
+
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    return {
+        "patch": login_patch(expected_patch),
+        "version": hot_version(expected_version),
+        "files": len(entries),
+        "catalogFiles": len(entries) - 1,
+        "metadataFiles": 1,
+        "bytes": total_bytes,
+        "revision": catalog["git_version"],
+    }
+
+
 def append_bridge_dex(apk: Path, dex: Path) -> None:
     with zipfile.ZipFile(apk, "r") as archive:
         existing = [name for name in archive.namelist() if re.fullmatch(r"classes(?:[2-9][0-9]*)?\.dex", name)]
@@ -1384,9 +1652,24 @@ def build_apk(
     apktool: Path,
     android_jar: Path,
     d8: Path,
+    refresh_existing_bridge: bool = False,
+    bundled_patch_catalog: Path | None = None,
+    bundled_patch_root: Path | None = None,
+    bundled_patch_number: str | None = None,
+    bundled_patch_version: str | None = None,
 ) -> Path:
     if not apk.is_file() or apk.suffix.lower() != ".apk":
         fail("input_apk_missing")
+    bundled_values = (
+        bundled_patch_catalog,
+        bundled_patch_root,
+        bundled_patch_number,
+        bundled_patch_version,
+    )
+    if any(value is not None for value in bundled_values) and not all(
+        value is not None for value in bundled_values
+    ):
+        fail("bundled_patch_arguments_incomplete")
     with tempfile.TemporaryDirectory(prefix="novel-kdjx-client-") as temporary:
         work = Path(temporary)
         decoded = work / "decoded"
@@ -1399,13 +1682,25 @@ def build_apk(
             decoded / "AndroidManifest.xml",
             source_version_code,
             target_version_code,
+            refresh_existing_bridge,
+            bundled_patch_catalog is not None,
         )
+        if refresh_existing_bridge:
+            remove_existing_bridge_smali(decoded)
         version_path = decoded / "assets" / "res" / "version.plist"
         version_path.parent.mkdir(parents=True, exist_ok=True)
         version_path.write_bytes(version_plist_bytes)
         sanitize_tivicloud_config(decoded / "assets" / "TivicloudSDK.xml", game_origin)
         patch_legacy_sdk_endpoints(decoded, game_origin)
         remove_legacy_native_libraries(decoded)
+        if bundled_patch_catalog is not None:
+            stage_bundled_patch(
+                decoded,
+                bundled_patch_catalog,
+                bundled_patch_root,
+                bundled_patch_number,
+                bundled_patch_version,
+            )
         bridge_dex = compile_bridge(work, api_origin, android_jar, d8)
         unsigned = work / "unsigned.apk"
         run_tool(apktool, ["b", str(decoded), "-o", str(unsigned)])
@@ -1423,6 +1718,14 @@ def build_apk(
             manifest_check / "apktool.yml",
             target_version_code,
         )
+        if bundled_patch_catalog is not None:
+            verify_bundled_patch_archive(
+                unsigned,
+                bundled_patch_catalog,
+                bundled_patch_root,
+                bundled_patch_number,
+                bundled_patch_version,
+            )
         shutil.copyfile(unsigned, output)
     return output
 
