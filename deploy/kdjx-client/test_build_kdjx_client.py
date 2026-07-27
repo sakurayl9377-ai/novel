@@ -371,6 +371,86 @@ versionInfo:
                 root_element.get(builder.ANDROID + "versionCode"),
             )
             self.assertIn("versionCode: '4'", metadata_path.read_text("utf-8"))
+            bridge = next(
+                activity
+                for activity in root_element.find("application").findall("activity")
+                if activity.get(builder.ANDROID + "name")
+                == "com.novel.kdjx.SakuraGameActivity"
+            )
+            self.assertEqual(
+                "true",
+                bridge.get(builder.ANDROID + "resizeableActivity"),
+            )
+            self.assertEqual(
+                "3.0",
+                bridge.get(builder.ANDROID + "maxAspectRatio"),
+            )
+
+    def test_cocos_surface_lifecycle_patch_is_symmetric_and_single_resume(
+        self,
+    ) -> None:
+        gl_surface = """.class public Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;
+.method public onPause()V
+    .locals 0
+    return-void
+.end method
+.method public onResume()V
+    .locals 0
+    return-void
+.end method
+"""
+        patched_surface = builder.patch_gl_surface_lifecycle_smali(gl_surface)
+        self.assertIn(
+            "invoke-super {p0}, Landroid/opengl/GLSurfaceView;->onPause()V",
+            patched_surface,
+        )
+        self.assertIn(
+            "invoke-super {p0}, Landroid/opengl/GLSurfaceView;->onResume()V",
+            patched_surface,
+        )
+        self.assertIn(
+            "invoke-virtual {p0}, "
+            "Landroid/opengl/GLSurfaceView;->requestRender()V",
+            patched_surface,
+        )
+
+        activity = """.class public abstract Lorg/cocos2dx/lib/Cocos2dxActivity;
+.field private gainAudioFocus:Z
+
+.field private hasFocus:Z
+
+.method private resumeIfHasFocus()V
+    .locals 0
+    return-void
+.end method
+
+.method protected onPause()V
+    .locals 0
+    return-void
+.end method
+"""
+        patched_activity = builder.patch_cocos_activity_lifecycle_smali(activity)
+        self.assertIn(".field private engineResumed:Z", patched_activity)
+        self.assertIn(
+            "iget-boolean v0, p0, "
+            "Lorg/cocos2dx/lib/Cocos2dxActivity;->paused:Z",
+            patched_activity,
+        )
+        self.assertIn(
+            "iget-boolean v0, p0, "
+            "Lorg/cocos2dx/lib/Cocos2dxActivity;->engineResumed:Z",
+            patched_activity,
+        )
+        self.assertIn(
+            "iput-boolean v0, p0, "
+            "Lorg/cocos2dx/lib/Cocos2dxActivity;->engineResumed:Z",
+            patched_activity,
+        )
+        with self.assertRaisesRegex(
+            builder.BuildError,
+            "cocos_activity_lifecycle_already_patched",
+        ):
+            builder.patch_cocos_activity_lifecycle_smali(patched_activity)
 
     def test_apktool_only_version_code_matches_real_apktool_three_output(
         self,

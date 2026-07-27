@@ -104,6 +104,38 @@ class KdjxNativeAuthorizationContractTest(unittest.TestCase):
             self.source.index("io.shutdownNow()"),
         )
 
+    def test_fullscreen_layout_is_configured_before_cocos_creates_its_surface(
+        self,
+    ) -> None:
+        create_start = self.source.index(
+            "protected void onCreate(Bundle savedInstanceState)"
+        )
+        create_end = self.source.index(
+            "public void onWindowFocusChanged",
+            create_start,
+        )
+        create_source = self.source[create_start:create_end]
+        self.assertLess(
+            create_source.index("configureGameWindowLayout();"),
+            create_source.index("super.onCreate(savedInstanceState);"),
+        )
+        self.assertIn("hideSystemBars();", create_source)
+        self.assertEqual(
+            1,
+            self.source.count("configureGameWindowLayout();"),
+        )
+        self.assertNotIn("protected void onResume()", self.source)
+        self.assertIn(
+            "LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS",
+            self.source,
+        )
+        self.assertIn(
+            "LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES",
+            self.source,
+        )
+        self.assertIn("window.setDecorFitsSystemWindows(false)", self.source)
+        self.assertIn("WindowInsets.Type.systemBars()", self.source)
+
     def test_payment_pending_is_single_flight_and_expires_after_fifteen_minutes(self) -> None:
         self.assertIn(
             "MAX_PAYMENT_WAIT_MS = 15L * 60L * 1000L",

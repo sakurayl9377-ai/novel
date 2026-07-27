@@ -419,6 +419,229 @@ def replace_regex_once(text: str, pattern: str, replacement: str, name: str) -> 
     return text
 
 
+def replace_smali_method_once(
+    text: str,
+    declaration: str,
+    replacement: str,
+    name: str,
+) -> str:
+    pattern = (
+        rf"^\.method {re.escape(declaration)}\n"
+        r".*?"
+        r"^\.end method$"
+    )
+    text, count = re.subn(
+        pattern,
+        replacement.rstrip("\n"),
+        text,
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if count != 1:
+        fail(f"source_marker_not_unique:{name}")
+    return text
+
+
+def patch_gl_surface_lifecycle_smali(text: str) -> str:
+    if (
+        "invoke-super {p0}, "
+        "Landroid/opengl/GLSurfaceView;->onPause()V" in text
+        or "Landroid/opengl/GLSurfaceView;->requestRender()V" in text
+    ):
+        fail("cocos_gl_surface_lifecycle_already_patched")
+    text = replace_smali_method_once(
+        text,
+        "public onPause()V",
+        """.method public onPause()V
+    .locals 2
+
+    sget-object v0, Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;->TAG:Ljava/lang/String;
+
+    const-string v1, "onPause()"
+
+    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    new-instance v0, Lorg/cocos2dx/lib/V;
+
+    invoke-direct {v0, p0}, Lorg/cocos2dx/lib/V;-><init>(Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;)V
+
+    invoke-virtual {p0, v0}, Landroid/opengl/GLSurfaceView;->queueEvent(Ljava/lang/Runnable;)V
+
+    const/4 v0, 0x0
+
+    invoke-virtual {p0, v0}, Landroid/opengl/GLSurfaceView;->setRenderMode(I)V
+
+    invoke-super {p0}, Landroid/opengl/GLSurfaceView;->onPause()V
+
+    return-void
+.end method
+""",
+        "cocos_gl_surface_pause",
+    )
+    return replace_smali_method_once(
+        text,
+        "public onResume()V",
+        """.method public onResume()V
+    .locals 2
+
+    sget-object v0, Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;->TAG:Ljava/lang/String;
+
+    const-string v1, "onResume()"
+
+    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    invoke-super {p0}, Landroid/opengl/GLSurfaceView;->onResume()V
+
+    new-instance v0, Lorg/cocos2dx/lib/U;
+
+    invoke-direct {v0, p0}, Lorg/cocos2dx/lib/U;-><init>(Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;)V
+
+    invoke-virtual {p0, v0}, Landroid/opengl/GLSurfaceView;->queueEvent(Ljava/lang/Runnable;)V
+
+    const/4 v0, 0x1
+
+    invoke-virtual {p0, v0}, Landroid/opengl/GLSurfaceView;->setRenderMode(I)V
+
+    invoke-virtual {p0}, Landroid/opengl/GLSurfaceView;->requestRender()V
+
+    return-void
+.end method
+""",
+        "cocos_gl_surface_resume",
+    )
+
+
+def patch_cocos_activity_lifecycle_smali(text: str) -> str:
+    if ".field private engineResumed:Z" in text:
+        fail("cocos_activity_lifecycle_already_patched")
+    text = replace_once(
+        text,
+        ".field private gainAudioFocus:Z\n\n.field private hasFocus:Z",
+        ".field private engineResumed:Z\n\n"
+        ".field private gainAudioFocus:Z\n\n"
+        ".field private hasFocus:Z",
+        "cocos_activity_engine_resumed_field",
+    )
+    text = replace_smali_method_once(
+        text,
+        "private resumeIfHasFocus()V",
+        """.method private resumeIfHasFocus()V
+    .locals 1
+
+    iget-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->paused:Z
+
+    if-nez v0, :cond_return
+
+    iget-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->hasFocus:Z
+
+    if-eqz v0, :cond_return
+
+    iget-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->engineResumed:Z
+
+    if-nez v0, :cond_return
+
+    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxActivity;->isDeviceLocked()Z
+
+    move-result v0
+
+    if-nez v0, :cond_return
+
+    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxActivity;->isDeviceAsleep()Z
+
+    move-result v0
+
+    if-nez v0, :cond_return
+
+    invoke-virtual {p0}, Lorg/cocos2dx/lib/Cocos2dxActivity;->hideVirtualButton()V
+
+    const/4 v0, 0x1
+
+    iput-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->engineResumed:Z
+
+    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxHelper;->onResume()V
+
+    iget-object v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->mGLSurfaceView:Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;
+
+    invoke-virtual {v0}, Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;->onResume()V
+
+    :cond_return
+    return-void
+.end method
+""",
+        "cocos_activity_resume_guard",
+    )
+    return replace_smali_method_once(
+        text,
+        "protected onPause()V",
+        """.method protected onPause()V
+    .locals 2
+
+    sget-object v0, Lorg/cocos2dx/lib/Cocos2dxActivity;->TAG:Ljava/lang/String;
+
+    const-string v1, "onPause()"
+
+    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    const/4 v0, 0x1
+
+    iput-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->paused:Z
+
+    const/4 v0, 0x0
+
+    iput-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->engineResumed:Z
+
+    invoke-super {p0}, Landroid/app/Activity;->onPause()V
+
+    iget-boolean v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->gainAudioFocus:Z
+
+    if-eqz v0, :cond_0
+
+    invoke-static {p0}, Lorg/cocos2dx/lib/Cocos2dxAudioFocusManager;->b(Landroid/content/Context;)V
+
+    :cond_0
+    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxHelper;->onPause()V
+
+    iget-object v0, p0, Lorg/cocos2dx/lib/Cocos2dxActivity;->mGLSurfaceView:Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;
+
+    invoke-virtual {v0}, Lorg/cocos2dx/lib/Cocos2dxGLSurfaceView;->onPause()V
+
+    return-void
+.end method
+""",
+        "cocos_activity_pause_guard_reset",
+    )
+
+
+def patch_cocos_render_lifecycle(decoded: Path) -> None:
+    classes = (
+        "Cocos2dxGLSurfaceView.smali",
+        "Cocos2dxActivity.smali",
+    )
+    located: dict[str, Path] = {}
+    for class_name in classes:
+        matches = list(
+            decoded.glob(f"smali*/org/cocos2dx/lib/{class_name}")
+        )
+        if len(matches) != 1:
+            fail(f"cocos_smali_not_unique:{class_name}")
+        located[class_name] = matches[0]
+
+    gl_surface = located["Cocos2dxGLSurfaceView.smali"]
+    write_text(
+        gl_surface,
+        patch_gl_surface_lifecycle_smali(
+            gl_surface.read_text(encoding="utf-8")
+        ),
+    )
+    activity = located["Cocos2dxActivity.smali"]
+    write_text(
+        activity,
+        patch_cocos_activity_lifecycle_smali(
+            activity.read_text(encoding="utf-8")
+        ),
+    )
+
+
 def sakura_none_lua() -> str:
     """No legacy web payment fallback is retained in the Sakura adapter."""
     return '''-- Sakura channel adapter. This module is loaded from channel=none once,
@@ -1234,6 +1457,8 @@ def modify_manifest(
         ANDROID + "configChanges": "keyboardHidden|orientation|screenSize",
         ANDROID + "label": "@string/app_name",
         ANDROID + "launchMode": "singleTask",
+        ANDROID + "maxAspectRatio": "3.0",
+        ANDROID + "resizeableActivity": "true",
         ANDROID + "screenOrientation": "sensorLandscape",
         ANDROID + "theme": "@android:style/Theme.NoTitleBar.Fullscreen",
         ANDROID + "exported": "true",
@@ -1405,6 +1630,7 @@ def build_apk(
         version_path.write_bytes(version_plist_bytes)
         sanitize_tivicloud_config(decoded / "assets" / "TivicloudSDK.xml", game_origin)
         patch_legacy_sdk_endpoints(decoded, game_origin)
+        patch_cocos_render_lifecycle(decoded)
         remove_legacy_native_libraries(decoded)
         bridge_dex = compile_bridge(work, api_origin, android_jar, d8)
         unsigned = work / "unsigned.apk"
