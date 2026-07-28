@@ -3,6 +3,7 @@ import {
   Coin,
   Connection,
   DocumentChecked,
+  Present,
   Refresh,
   Search,
   Tickets,
@@ -21,7 +22,10 @@ import {
 import { useRouter } from 'vue-router';
 
 import MetricCard from '@/components/MetricCard.vue';
+import KdjxGmDeliveryDialog from '@/components/kdjx-gm/KdjxGmDeliveryDialog.vue';
 import {
+  getKdjxGmCatalog,
+  getKdjxGmDeliveries,
   getKdjxGmPayments,
   getKdjxGmPlayer,
   getKdjxGmWorkbench,
@@ -30,6 +34,11 @@ import {
 } from '@/services/kdjx-gm';
 import type {
   KdjxGmActionLog,
+  KdjxGmCatalogItem,
+  KdjxGmCreateDeliveryResponse,
+  KdjxGmDelivery,
+  KdjxGmDeliveryStatus,
+  KdjxGmDeliveryType,
   KdjxGmPayment,
   KdjxGmPlayer,
   KdjxGmPlayerDetailResponse,
@@ -44,6 +53,8 @@ import {
   kdjxGmActionLabel,
   kdjxGmActionResultLabel,
   kdjxGmActionResultTone,
+  kdjxGmDeliveryStatusLabel,
+  kdjxGmDeliveryStatusTone,
   kdjxPaymentStatusLabel,
   kdjxPaymentStatusTone,
   kdjxSessionStatusLabel,
@@ -52,11 +63,13 @@ import {
   kdjxUserStatusTone,
 } from '@/utils/kdjx-gm';
 
-type WorkbenchTab = 'players' | 'payments' | 'audit';
+type WorkbenchTab = 'players' | 'deliveries' | 'payments' | 'audit';
 
 const router = useRouter();
 const loadingPlayers = ref(false);
 const loadingPayments = ref(false);
+const loadingCatalog = ref(false);
+const loadingDeliveries = ref(false);
 const initialized = ref(false);
 const activeTab = ref<WorkbenchTab>('players');
 const busyKey = ref('');
@@ -97,6 +110,20 @@ const paymentQuery = reactive({
 const payments = ref<KdjxGmPayment[]>([]);
 const paymentTotal = ref(0);
 const paymentsLoaded = ref(false);
+const catalog = ref<KdjxGmCatalogItem[]>([]);
+const catalogLoaded = ref(false);
+const deliveries = ref<KdjxGmDelivery[]>([]);
+const deliveryTotal = ref(0);
+const deliveriesLoaded = ref(false);
+const deliveryDialogOpen = ref(false);
+const deliveryPlayer = ref<KdjxGmPlayer | null>(null);
+const deliveryQuery = reactive({
+  q: '',
+  status: '' as '' | KdjxGmDeliveryStatus,
+  userId: '' as '' | number,
+  page: 1,
+  pageSize: 20,
+});
 
 const detailOpen = ref(false);
 const detailLoading = ref(false);
@@ -112,7 +139,7 @@ const failedRate = computed(() => workbench.value.summary.paymentOrders
 
 onMounted(async () => {
   compactMedia.addEventListener('change', updateCompactLayout);
-  await loadPlayers();
+  await Promise.all([loadPlayers(), loadCatalog()]);
 });
 
 onBeforeUnmount(() => {
@@ -125,6 +152,10 @@ watch(detailOpen, (open) => {
   detailRequestVersion += 1;
   detailLoading.value = false;
   detail.value = null;
+});
+
+watch(deliveryDialogOpen, (open) => {
+  if (!open) deliveryPlayer.value = null;
 });
 
 function updateCompactLayout(event: MediaQueryListEvent): void {
@@ -157,10 +188,39 @@ async function loadPayments(silent = false): Promise<void> {
   }
 }
 
+async function loadCatalog(): Promise<void> {
+  if (loadingCatalog.value) return;
+  loadingCatalog.value = true;
+  try {
+    const response = await getKdjxGmCatalog();
+    catalog.value = response.items;
+    catalogLoaded.value = true;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, 'KDJX 物品目录加载失败'));
+  } finally {
+    loadingCatalog.value = false;
+  }
+}
+
+async function loadDeliveries(silent = false): Promise<void> {
+  if (!silent) loadingDeliveries.value = true;
+  try {
+    const response = await getKdjxGmDeliveries(deliveryQuery);
+    deliveries.value = response.deliveries;
+    deliveryTotal.value = response.total;
+    deliveriesLoaded.value = true;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, 'KDJX 物品发放记录加载失败'));
+  } finally {
+    if (!silent) loadingDeliveries.value = false;
+  }
+}
+
 function changeTab(name: string | number): void {
   const next = String(name) as WorkbenchTab;
   activeTab.value = next;
   if (next === 'payments' && !paymentsLoaded.value) void loadPayments();
+  if (next === 'deliveries' && !deliveriesLoaded.value) void loadDeliveries();
 }
 
 function searchPlayers(): void {
@@ -191,6 +251,46 @@ function resetPayments(): void {
 function changePaymentPage(page: number): void {
   paymentQuery.page = page;
   void loadPayments();
+}
+
+function searchDeliveries(): void {
+  deliveryQuery.page = 1;
+  void loadDeliveries();
+}
+
+function resetDeliveries(): void {
+  Object.assign(deliveryQuery, {
+    q: '',
+    status: '',
+    userId: '',
+    page: 1,
+  });
+  void loadDeliveries();
+}
+
+function changeDeliveryPage(page: number): void {
+  deliveryQuery.page = page;
+  void loadDeliveries();
+}
+
+function openDelivery(player: KdjxGmPlayer): void {
+  if (!player.canDeliverItems) {
+    ElMessage.warning('玩家的游戏身份关联不完整，请先让玩家重新登录一次游戏');
+    return;
+  }
+  deliveryPlayer.value = player;
+  deliveryDialogOpen.value = true;
+  if (!catalogLoaded.value) void loadCatalog();
+}
+
+async function deliverySent(response: KdjxGmCreateDeliveryResponse): Promise<void> {
+  await Promise.all([
+    loadPlayers(true),
+    loadDeliveries(true),
+    detail.value?.player.userId === response.delivery.userId
+      ? refreshDetail()
+      : Promise.resolve(),
+  ]);
 }
 
 async function openPlayer(player: KdjxGmPlayer): Promise<void> {
@@ -370,8 +470,16 @@ function asPayment(row: unknown): KdjxGmPayment {
   return row as KdjxGmPayment;
 }
 
+function asDelivery(row: unknown): KdjxGmDelivery {
+  return row as KdjxGmDelivery;
+}
+
 function asAction(row: unknown): KdjxGmActionLog {
   return row as KdjxGmActionLog;
+}
+
+function deliveryTypeLabel(type: KdjxGmDeliveryType): string {
+  return type === 'mail' ? '邮件附件' : '直接到账';
 }
 
 function formatCoins(value: number): string {
@@ -398,7 +506,7 @@ function errorMessage(error: unknown, fallback: string): string {
       <div>
         <span class="eyebrow">KDJX GAME MASTER</span>
         <h2>KDJX 安全运营工作台</h2>
-        <p>查询 Sakura 用户与游戏角色的关联、处理独立游戏会话和失败支付订单。账号封禁、余额调整及服务启停仍由现有管理模块完成。</p>
+        <p>查询 Sakura 用户与游戏角色的关联、安全发放白名单物品、处理独立游戏会话和失败支付订单。账号封禁、余额调整及服务启停仍由现有管理模块完成。</p>
       </div>
       <div class="hero-actions">
         <ElButton @click="openGameControls">游戏服务</ElButton>
@@ -442,7 +550,13 @@ function errorMessage(error: unknown, fallback: string): string {
               <ElButton @click="resetPlayers">重置</ElButton>
             </div>
 
-            <ElTable v-loading="loadingPlayers" :data="workbench.players" row-key="userId" class="gm-table">
+            <ElTable
+              v-if="!compactLayout"
+              v-loading="loadingPlayers"
+              :data="workbench.players"
+              row-key="userId"
+              class="gm-table"
+            >
               <ElTableColumn label="Sakura 用户" min-width="230">
                 <template #default="{ row }">
                   <button class="identity-link" type="button" @click="openPlayer(asPlayer(row))">
@@ -485,10 +599,20 @@ function errorMessage(error: unknown, fallback: string): string {
                   </div>
                 </template>
               </ElTableColumn>
-              <ElTableColumn label="操作" width="205" align="right" fixed="right">
+              <ElTableColumn label="操作" width="290" align="right" fixed="right">
                 <template #default="{ row }">
                   <div class="table-actions">
                     <ElButton size="small" @click="openPlayer(asPlayer(row))">详情</ElButton>
+                    <ElButton
+                      size="small"
+                      type="primary"
+                      plain
+                      :icon="Present"
+                      :disabled="!asPlayer(row).canDeliverItems"
+                      @click="openDelivery(asPlayer(row))"
+                    >
+                      发物品
+                    </ElButton>
                     <ElButton
                       size="small"
                       type="warning"
@@ -504,6 +628,54 @@ function errorMessage(error: unknown, fallback: string): string {
               </ElTableColumn>
             </ElTable>
 
+            <div v-else v-loading="loadingPlayers" class="mobile-player-list">
+              <article v-for="player in workbench.players" :key="player.userId" class="mobile-player">
+                <button class="identity-link" type="button" @click="openPlayer(player)">
+                  <strong>{{ player.nickname || '未设置昵称' }}</strong>
+                  <span>{{ player.email }}</span>
+                  <small>ID {{ player.userId }} · {{ formatCoins(player.sakuraCoins) }} 樱花币</small>
+                </button>
+                <div class="mobile-player-status">
+                  <ElTag :type="kdjxUserStatusTone(player.userStatus)" size="small" effect="plain">
+                    {{ kdjxUserStatusLabel(player.userStatus) }}
+                  </ElTag>
+                  <span>{{ player.activeGameSessions }} 个有效会话</span>
+                </div>
+                <dl>
+                  <div><dt>角色</dt><dd>{{ player.lastRoleId || '尚未同步' }}</dd></div>
+                  <div><dt>服务器</dt><dd>{{ player.lastServerKey || '尚未同步' }}</dd></div>
+                </dl>
+                <div class="mobile-player-actions">
+                  <ElButton size="small" @click="openPlayer(player)">详情</ElButton>
+                  <ElButton
+                    size="small"
+                    type="primary"
+                    plain
+                    :icon="Present"
+                    :disabled="!player.canDeliverItems"
+                    @click="openDelivery(player)"
+                  >
+                    发物品
+                  </ElButton>
+                  <ElButton
+                    size="small"
+                    type="warning"
+                    plain
+                    :disabled="player.activeGameSessions <= 0 || Boolean(busyKey)"
+                    :loading="busyKey === `revoke:${player.userId}`"
+                    @click="confirmRevoke(player)"
+                  >
+                    吊销会话
+                  </ElButton>
+                </div>
+              </article>
+              <ElEmpty
+                v-if="!loadingPlayers && !workbench.players.length"
+                :image-size="56"
+                description="没有符合条件的关联玩家"
+              />
+            </div>
+
             <div class="pagination-row">
               <span>共 {{ workbench.total }} 位关联玩家</span>
               <ElPagination
@@ -513,6 +685,105 @@ function errorMessage(error: unknown, fallback: string): string {
                 :page-size="playerQuery.pageSize"
                 :total="workbench.total"
                 @current-change="changePlayerPage"
+              />
+            </div>
+          </ElTabPane>
+
+          <ElTabPane name="deliveries" label="物品发放">
+            <div class="filter-bar delivery-filter">
+              <ElInput
+                v-model="deliveryQuery.q"
+                clearable
+                placeholder="玩家、物品、角色、服务器或请求号"
+                :prefix-icon="Search"
+                @keyup.enter="searchDeliveries"
+              />
+              <ElSelect v-model="deliveryQuery.status" clearable placeholder="发放状态">
+                <ElOption label="发放中" value="pending" />
+                <ElOption label="已发送" value="succeeded" />
+                <ElOption label="发送失败" value="failed" />
+                <ElOption label="结果待核对" value="unknown" />
+              </ElSelect>
+              <ElInput v-model="deliveryQuery.userId" clearable placeholder="用户 ID" />
+              <ElButton type="primary" :loading="loadingDeliveries" @click="searchDeliveries">查询</ElButton>
+              <ElButton @click="resetDeliveries">重置</ElButton>
+            </div>
+
+            <ElTable
+              v-loading="loadingDeliveries"
+              :data="deliveries"
+              row-key="id"
+              class="gm-table delivery-table"
+            >
+              <ElTableColumn label="时间 / 请求" min-width="190">
+                <template #default="{ row }">
+                  <div class="stacked-cell mono-cell">
+                    <strong>{{ formatDateTime(asDelivery(row).createdAt) }}</strong>
+                    <small>{{ shortId(asDelivery(row).requestId, 24) }}</small>
+                  </div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="玩家" min-width="210">
+                <template #default="{ row }">
+                  <button class="identity-link compact" type="button" @click="openUserWorkbench(asDelivery(row).userId)">
+                    <strong>{{ asDelivery(row).nickname || asDelivery(row).email }}</strong>
+                    <span>{{ asDelivery(row).email }}</span>
+                    <small>ID {{ asDelivery(row).userId }} · {{ asDelivery(row).roleId }}</small>
+                  </button>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="物品" min-width="205">
+                <template #default="{ row }">
+                  <div class="stacked-cell">
+                    <strong>{{ asDelivery(row).itemName }} × {{ asDelivery(row).quantity }}</strong>
+                    <span>{{ asDelivery(row).itemQuality }} · {{ asDelivery(row).itemType }}</span>
+                    <small>ID {{ asDelivery(row).itemId }}</small>
+                  </div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="目标" min-width="170">
+                <template #default="{ row }">
+                  <div class="stacked-cell mono-cell">
+                    <strong>{{ asDelivery(row).roleId }}</strong>
+                    <small>{{ asDelivery(row).serverKey }}</small>
+                  </div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="方式" width="105">
+                <template #default="{ row }">
+                  <ElTag size="small" effect="plain">
+                    {{ deliveryTypeLabel(asDelivery(row).deliveryType) }}
+                  </ElTag>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="状态" width="120">
+                <template #default="{ row }">
+                  <ElTooltip :content="asDelivery(row).errorCode || asDelivery(row).remoteReference || '发放记录已完成'">
+                    <ElTag :type="kdjxGmDeliveryStatusTone(asDelivery(row).status)" effect="plain">
+                      {{ kdjxGmDeliveryStatusLabel(asDelivery(row).status) }}
+                    </ElTag>
+                  </ElTooltip>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="原因 / 管理员" min-width="230">
+                <template #default="{ row }">
+                  <div class="stacked-cell">
+                    <span class="reason-copy">{{ asDelivery(row).reason }}</span>
+                    <small>{{ asDelivery(row).adminEmail || `管理员 ID ${asDelivery(row).adminUserId ?? '—'}` }}</small>
+                  </div>
+                </template>
+              </ElTableColumn>
+            </ElTable>
+
+            <div class="pagination-row">
+              <span>共 {{ deliveryTotal }} 条发放记录</span>
+              <ElPagination
+                background
+                layout="prev, pager, next"
+                :current-page="deliveryQuery.page"
+                :page-size="deliveryQuery.pageSize"
+                :total="deliveryTotal"
+                @current-change="changeDeliveryPage"
               />
             </div>
           </ElTabPane>
@@ -671,6 +942,15 @@ function errorMessage(error: unknown, fallback: string): string {
         <div class="drawer-actions">
           <ElButton @click="openUserWorkbench(detail.player.userId)">打开用户管理</ElButton>
           <ElButton
+            type="primary"
+            plain
+            :icon="Present"
+            :disabled="!detail.player.canDeliverItems"
+            @click="openDelivery(detail.player)"
+          >
+            发放物品
+          </ElButton>
+          <ElButton
             type="warning"
             plain
             :disabled="detail.player.activeGameSessions <= 0 || Boolean(busyKey)"
@@ -697,6 +977,33 @@ function errorMessage(error: unknown, fallback: string): string {
           <ElDescriptionsItem label="关联时间">{{ formatDateTime(detail.player.linkedAt) }}</ElDescriptionsItem>
           <ElDescriptionsItem label="最后同步">{{ formatDateTime(detail.player.linkedUpdatedAt) }}</ElDescriptionsItem>
         </ElDescriptions>
+
+        <section class="detail-section">
+          <header><h4>物品发放</h4><span>最近 {{ detail.deliveries.length }} 条</span></header>
+          <ElTable :data="detail.deliveries" row-key="id" size="small">
+            <ElTableColumn label="物品" min-width="170">
+              <template #default="{ row }">
+                <div class="stacked-cell">
+                  <strong>{{ asDelivery(row).itemName }} × {{ asDelivery(row).quantity }}</strong>
+                  <small>{{ asDelivery(row).itemQuality }} · {{ asDelivery(row).itemType }} · ID {{ asDelivery(row).itemId }}</small>
+                </div>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="方式" width="100">
+              <template #default="{ row }">{{ deliveryTypeLabel(asDelivery(row).deliveryType) }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="状态" width="115">
+              <template #default="{ row }">
+                <ElTag :type="kdjxGmDeliveryStatusTone(asDelivery(row).status)" size="small" effect="plain">
+                  {{ kdjxGmDeliveryStatusLabel(asDelivery(row).status) }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="时间" width="120">
+              <template #default="{ row }">{{ formatDateTime(asDelivery(row).createdAt) }}</template>
+            </ElTableColumn>
+          </ElTable>
+        </section>
 
         <section class="detail-section">
           <header><h4>游戏会话</h4><span>最近 {{ detail.sessions.length }} 条</span></header>
@@ -741,6 +1048,14 @@ function errorMessage(error: unknown, fallback: string): string {
         </section>
       </div>
     </ElDrawer>
+
+    <KdjxGmDeliveryDialog
+      v-model="deliveryDialogOpen"
+      :player="deliveryPlayer"
+      :catalog="catalog"
+      :catalog-loading="loadingCatalog"
+      @sent="deliverySent"
+    />
   </div>
 </template>
 
@@ -758,6 +1073,7 @@ function errorMessage(error: unknown, fallback: string): string {
 .gm-tabs :deep(.el-tab-pane) { padding: 16px 18px 18px; }
 .filter-bar { display: grid; grid-template-columns: minmax(260px, 1fr) 160px auto auto; gap: 9px; margin-bottom: 14px; }
 .payment-filter { grid-template-columns: minmax(240px, 1fr) 170px 130px auto auto; }
+.delivery-filter { grid-template-columns: minmax(250px, 1fr) 145px 115px auto auto; }
 .gm-table { width: 100%; }
 .identity-link { width: 100%; display: grid; gap: 3px; border: 0; padding: 0; text-align: left; color: inherit; background: transparent; cursor: pointer; }
 .identity-link:hover strong { color: var(--sakura-600); }
@@ -773,10 +1089,20 @@ function errorMessage(error: unknown, fallback: string): string {
 .pagination-row { min-height: 58px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-top: 16px; }
 .pagination-row > span { color: var(--ink-500); font-size: 11px; }
 .audit-note { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 13px 15px; border-radius: 7px; color: #315b75; background: #f0f7fb; }
-.audit-note > .el-icon { font-size: 24px; }
+.audit-note > .el-icon { flex: 0 0 auto; font-size: 24px; }
 .audit-note > div { display: grid; gap: 3px; }
 .audit-note strong { font-size: 12px; }
 .audit-note span { font-size: 10px; }
+.reason-copy { overflow: hidden; max-width: 100%; color: var(--ink-600); font-size: 10px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-player-list { display: grid; gap: 10px; }
+.mobile-player { display: grid; gap: 11px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.mobile-player-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--ink-500); font-size: 10px; }
+.mobile-player dl { display: grid; gap: 7px; margin: 0; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.mobile-player dl > div { min-width: 0; display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; }
+.mobile-player dt { color: var(--ink-400); font-size: 10px; }
+.mobile-player dd { overflow-wrap: anywhere; margin: 0; color: var(--ink-700); font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.mobile-player-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.mobile-player-actions > .el-button { min-width: 0; margin: 0; padding-inline: 8px; }
 .drawer-heading { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .drawer-heading h3 { margin: 5px 0 0; color: var(--ink-900); font-size: 19px; }
 .drawer-body { min-width: 0; display: grid; gap: 18px; }
@@ -794,6 +1120,14 @@ function errorMessage(error: unknown, fallback: string): string {
   .gm-tabs { min-width: 980px; }
 }
 @media (max-width: 720px) {
+  .gm-workbench { overflow: hidden; }
+  .gm-tabs { min-width: 0; }
+  .gm-tabs :deep(.el-tabs__header) { padding-inline: 12px; }
+  .gm-tabs :deep(.el-tab-pane) { padding: 13px 12px 15px; }
+  .filter-bar,
+  .payment-filter,
+  .delivery-filter { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-bar > :first-child { grid-column: 1 / -1; }
   .gm-hero { align-items: flex-start; flex-direction: column; }
   .hero-actions { width: 100%; }
   .hero-actions > .el-button { flex: 1; }
@@ -801,5 +1135,7 @@ function errorMessage(error: unknown, fallback: string): string {
   .drawer-actions { align-items: stretch; flex-wrap: wrap; }
   .drawer-actions > .el-button { min-width: 150px; flex: 1; }
   .player-descriptions code { overflow-wrap: anywhere; word-break: break-all; }
+  .pagination-row { align-items: center; flex-direction: column; }
+  .pagination-row > span { align-self: flex-start; }
 }
 </style>

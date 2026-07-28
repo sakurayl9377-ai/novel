@@ -5,8 +5,17 @@ export type KdjxPaymentStatus =
   | 'delivery_failed'
   | 'fulfilled';
 export type KdjxSessionStatus = 'active' | 'revoked' | 'expired';
-export type KdjxGmAction = 'revoke_sessions' | 'retry_payment';
+export type KdjxGmAction =
+  | 'revoke_sessions'
+  | 'retry_payment'
+  | 'deliver_item';
 export type KdjxGmActionResult = 'pending' | 'success' | 'failed';
+export type KdjxGmDeliveryStatus =
+  | 'pending'
+  | 'succeeded'
+  | 'failed'
+  | 'unknown';
+export type KdjxGmDeliveryType = 'direct' | 'mail';
 
 export interface KdjxGmSummary {
   linkedPlayers: number;
@@ -32,6 +41,8 @@ export interface KdjxGmPlayer {
   lastServerKey: string;
   linkedAt: string;
   linkedUpdatedAt: string;
+  canDeliverItems: boolean;
+  deliveryBlockCode: '' | 'kdjx_player_identity_incomplete';
   activeGameSessions: number;
   paymentCount: number;
   lastPaymentStatus: '' | KdjxPaymentStatus;
@@ -80,12 +91,78 @@ export interface KdjxGmActionLog {
   adminEmail: string;
   adminNickname: string;
   action: KdjxGmAction;
-  targetType: 'player' | 'payment';
+  targetType: 'player' | 'payment' | 'delivery';
   targetId: string;
   reason: string;
   result: KdjxGmActionResult;
   errorCode: string;
   createdAt: string;
+}
+
+export interface KdjxGmCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  quality: string;
+  maxQuantity: number;
+  deliveryTypes: readonly KdjxGmDeliveryType[];
+}
+
+export interface KdjxGmCatalogResponse {
+  generatedAt: string;
+  items: KdjxGmCatalogItem[];
+}
+
+export interface KdjxGmDelivery {
+  id: number;
+  requestId: string;
+  userId: number;
+  email: string;
+  nickname: string;
+  adminUserId: number | null;
+  adminEmail: string;
+  adminNickname: string;
+  deliveryType: KdjxGmDeliveryType;
+  roleId: string;
+  serverKey: string;
+  itemId: string;
+  itemName: string;
+  itemType: string;
+  itemQuality: string;
+  quantity: number;
+  reason: string;
+  status: KdjxGmDeliveryStatus;
+  remoteReference: string;
+  errorCode: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string;
+}
+
+export interface KdjxGmDeliveriesResponse {
+  generatedAt: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  deliveries: KdjxGmDelivery[];
+}
+
+export interface KdjxGmCreateDeliveryPayload {
+  requestId: string;
+  deliveryType: KdjxGmDeliveryType;
+  itemId: string;
+  quantity: number;
+  expectedRoleId: string;
+  expectedServerKey: string;
+  expectedLinkUpdatedAt: string;
+  reason: string;
+}
+
+export interface KdjxGmCreateDeliveryResponse {
+  ok: boolean;
+  idempotent: boolean;
+  delivery: KdjxGmDelivery;
 }
 
 export interface KdjxGmWorkbenchResponse {
@@ -102,6 +179,7 @@ export interface KdjxGmPlayerDetailResponse {
   player: KdjxGmPlayer;
   sessions: KdjxGmSession[];
   payments: KdjxGmPayment[];
+  deliveries: KdjxGmDelivery[];
 }
 
 export interface KdjxGmPaymentsResponse {

@@ -123,6 +123,42 @@ export function ensureKdjxGameSchema() {
       ON kdjx_gm_action_logs(created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_kdjx_gm_action_logs_target
       ON kdjx_gm_action_logs(target_type, target_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS kdjx_gm_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT NOT NULL UNIQUE,
+      admin_user_id INTEGER,
+      user_id INTEGER NOT NULL,
+      game_open_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      server_key TEXT NOT NULL,
+      link_updated_at TEXT NOT NULL,
+      delivery_type TEXT NOT NULL
+        CHECK (delivery_type = 'mail'),
+      item_id TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      item_type TEXT NOT NULL DEFAULT '',
+      item_quality TEXT NOT NULL DEFAULT '',
+      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 999),
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
+      outcome_reference TEXT NOT NULL DEFAULT '',
+      error_code TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_kdjx_gm_deliveries_time
+      ON kdjx_gm_deliveries(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_kdjx_gm_deliveries_user
+      ON kdjx_gm_deliveries(user_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_kdjx_gm_deliveries_status
+      ON kdjx_gm_deliveries(status, created_at DESC, id DESC);
   `);
 
   schemaReady = true;

@@ -167,6 +167,15 @@ export const config = {
     30000,
     Math.min(600000, Math.trunc(envNumber('KDJX_PAYMENT_CLAIM_TTL_MS', 60000))),
   ),
+  kdjxGmDeliveryUrl: env(
+    'KDJX_GM_DELIVERY_URL',
+    'http://127.0.0.1:18080/internal/sakura/gm/deliveries',
+  ),
+  kdjxGmDeliveryHmacSecret: env('KDJX_GM_DELIVERY_HMAC_SECRET'),
+  kdjxGmDeliveryTimeoutMs: Math.max(
+    1000,
+    Math.min(30000, Math.trunc(envNumber('KDJX_GM_DELIVERY_TIMEOUT_MS', 5000))),
+  ),
   videoCoverDir: path.resolve(
     rootDir,
     env('VIDEO_COVER_DIR', './data/video-covers'),

@@ -25,6 +25,9 @@ export const kdjxConfig = {
   paymentMaxAttempts: config.kdjxPaymentMaxAttempts,
   paymentTimeoutMs: config.kdjxPaymentTimeoutMs,
   paymentClaimTtlMs: config.kdjxPaymentClaimTtlMs,
+  gmDeliveryUrl: config.kdjxGmDeliveryUrl.trim(),
+  gmDeliveryHmacSecret: config.kdjxGmDeliveryHmacSecret,
+  gmDeliveryTimeoutMs: config.kdjxGmDeliveryTimeoutMs,
 };
 
 export const kdjxProductionMode = config.nodeEnvironment === 'production';

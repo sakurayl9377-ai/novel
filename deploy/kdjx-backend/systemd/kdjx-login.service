@@ -6,6 +6,7 @@ Requires=kdjx-game@1.service
 [Service]
 Type=simple
 EnvironmentFile=/etc/kdjx/runtime.env
+EnvironmentFile=-/etc/kdjx/gm.env
 WorkingDirectory=/opt/kdjx/runtime/current/login
 ExecStartPre=/opt/kdjx/runtime/current/scripts/validate-runtime-env.py --env-file /etc/kdjx/runtime.env
 ExecStart=/opt/kdjx/runtime/current/bin/login_server -config=login.cn.1 -language=cn

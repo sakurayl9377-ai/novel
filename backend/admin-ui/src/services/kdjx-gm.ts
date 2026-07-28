@@ -1,5 +1,11 @@
 import { apiRequest, queryString } from '@/services/api';
 import type {
+  KdjxGmCatalogResponse,
+  KdjxGmCreateDeliveryPayload,
+  KdjxGmCreateDeliveryResponse,
+  KdjxGmDeliveriesResponse,
+  KdjxGmDeliveryStatus,
+  KdjxGmDeliveryType,
   KdjxGmPayment,
   KdjxGmPaymentsResponse,
   KdjxGmPlayerDetailResponse,
@@ -9,6 +15,10 @@ import type {
   KdjxPaymentStatus,
   KdjxUserStatus,
 } from '@/types/kdjx-gm';
+
+export function getKdjxGmCatalog(): Promise<KdjxGmCatalogResponse> {
+  return apiRequest('/admin/games/kdjx/gm/catalog');
+}
 
 export function getKdjxGmWorkbench(query: {
   q?: string;
@@ -33,6 +43,27 @@ export function getKdjxGmPayments(query: {
   pageSize?: number;
 }): Promise<KdjxGmPaymentsResponse> {
   return apiRequest(`/admin/games/kdjx/gm/payments${queryString(query)}`);
+}
+
+export function getKdjxGmDeliveries(query: {
+  q?: string;
+  status?: '' | KdjxGmDeliveryStatus;
+  deliveryType?: '' | KdjxGmDeliveryType;
+  userId?: '' | number;
+  page?: number;
+  pageSize?: number;
+}): Promise<KdjxGmDeliveriesResponse> {
+  return apiRequest(`/admin/games/kdjx/gm/deliveries${queryString(query)}`);
+}
+
+export function createKdjxGmDelivery(
+  userId: number,
+  payload: KdjxGmCreateDeliveryPayload,
+): Promise<KdjxGmCreateDeliveryResponse> {
+  return apiRequest(`/admin/games/kdjx/gm/players/${userId}/deliveries`, {
+    method: 'POST',
+    body: payload,
+  });
 }
 
 export function revokeKdjxGmSessions(

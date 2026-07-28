@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 runtime_root="${KDJX_RUNTIME_ROOT:-/opt/kdjx/runtime/current}"
 loopback_http_base="http://127.0.0.1"
+curl_options=(--connect-timeout 2 --max-time 5)
 
 fail() {
     printf 'error: %s\n' "$*" >&2
@@ -33,9 +34,21 @@ require_http_status() {
     local method="$2"
     local route="$3"
     local result
-    result="$(curl --silent --output /dev/null --write-out '%{http_code}|%{redirect_url}' \
+    result="$(curl "${curl_options[@]}" --silent --output /dev/null --write-out '%{http_code}|%{redirect_url}' \
         --request "$method" -H 'Host: 49.232.137.85' "${loopback_http_base}${route}")"
     [[ "$result" == "$expected|" ]] || fail "unexpected HTTP result for $route: $result"
+}
+
+require_loopback_json_status() {
+    local expected="$1"
+    local route="$2"
+    local result
+    result="$(curl "${curl_options[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+        --request POST \
+        --header 'Content-Type: application/json' \
+        --data '{}' \
+        "http://127.0.0.1:18080${route}")"
+    [[ "$result" == "$expected" ]] || fail "unexpected loopback HTTP result for $route: $result"
 }
 
 [[ -d "$runtime_root" ]] || fail "runtime root is invalid: $runtime_root"
@@ -44,8 +57,11 @@ audit_script="${KDJX_RUNTIME_AUDIT_SCRIPT:-$runtime_root/scripts/audit-runtime-a
 [[ -x "$audit_script" ]] || fail "runtime address audit is unavailable: $audit_script"
 runtime_env_validator="${KDJX_RUNTIME_ENV_VALIDATOR:-$runtime_root/scripts/validate-runtime-env.py}"
 [[ -x "$runtime_env_validator" ]] || fail "runtime environment validation is unavailable: $runtime_env_validator"
+gm_env_validator="${KDJX_GM_ENV_VALIDATOR:-$runtime_root/scripts/validate-gm-env.py}"
+[[ -x "$gm_env_validator" ]] || fail "GM environment validation is unavailable: $gm_env_validator"
 command -v luajit >/dev/null 2>&1 || fail "LuaJIT is unavailable"
 "$runtime_env_validator" --env-file /etc/kdjx/runtime.env
+"$gm_env_validator" --env-file /etc/kdjx/gm.env
 
 forward_patch="$runtime_root/online-fight-forward/cn_patch"
 cross_forward_patch="$runtime_root/online_fight_forward/cn_patch"
@@ -83,9 +99,10 @@ for port in 2113 27159 4150 4160 4161 18080 16666; do
 done
 require_udp_listener 32888
 
-curl --fail --silent --show-error --compressed http://127.0.0.1:18080/servers >/dev/null
-curl --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/servers >/dev/null
-version_payload="$(curl --fail --silent --show-error --compressed \
+curl "${curl_options[@]}" --fail --silent --show-error --compressed http://127.0.0.1:18080/servers >/dev/null
+require_loopback_json_status 401 /internal/sakura/gm/deliveries
+curl "${curl_options[@]}" --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/servers >/dev/null
+version_payload="$(curl "${curl_options[@]}" --fail --silent --show-error --compressed \
     -H 'Host: 49.232.137.85' \
     'http://127.0.0.1/kdjx/version?fake=true')"
 expected_app_version='2.1.'
@@ -94,7 +111,7 @@ expected_app_version+='0.0'
     || fail "unexpected KDJX app version response"
 [[ "$version_payload" == *'"patch_url":"https://novel.kxhub.xyz/games/kdjx/hot/"'* ]] \
     || fail "unexpected KDJX hot-update URL"
-curl --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/notice >/dev/null
+curl "${curl_options[@]}" --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/notice >/dev/null
 for route in report word-check feedback; do
     require_http_status 204 POST "/kdjx/$route"
 done
@@ -106,6 +123,7 @@ for route in /games/kdjx/telemetry /games/kdjx/telemetry/client; do
 done
 for route in \
     /kdjx/internal/sakura/payments/verify \
+    /kdjx/internal/sakura/gm/deliveries \
     /novel-api/games/kdjx/sessions/verify \
     /novel-api/games/kdjx/sessions/verify/; do
     require_http_status 404 GET "$route"

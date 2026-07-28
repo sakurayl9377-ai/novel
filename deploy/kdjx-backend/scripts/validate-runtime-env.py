@@ -4,11 +4,12 @@
 from __future__ import print_function
 
 import argparse
-import os
-import re
 import stat
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from kdjx_env import parse_environment
 
 
 EXPECTED_VALUES = {
@@ -22,31 +23,11 @@ SECRET_KEYS = {
     "KDJX_PAYMENT_HMAC_SECRET",
 }
 REQUIRED_KEYS = frozenset(set(EXPECTED_VALUES) | SECRET_KEYS)
-KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 def fail(message):
     print("error: {}".format(message), file=sys.stderr)
     raise SystemExit(2)
-
-
-def parse_environment(path):
-    values = {}
-    for number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in raw_line:
-            fail("runtime_env_line_{}_invalid".format(number))
-        key, value = raw_line.split("=", 1)
-        if key != key.strip() or not KEY_RE.fullmatch(key):
-            fail("runtime_env_line_{}_invalid".format(number))
-        if key in values:
-            fail("runtime_env_duplicate_key")
-        if value != value.strip() or "\x00" in value:
-            fail("runtime_env_line_{}_invalid".format(number))
-        values[key] = value
-    return values
 
 
 def validate_values(values):
@@ -79,7 +60,7 @@ def main():
     path = Path(args.env_file)
     validate_file_metadata(path)
     try:
-        values = parse_environment(path)
+        values = parse_environment(path, "runtime_env")
         validate_values(values)
     except (OSError, UnicodeError, ValueError) as exc:
         fail(str(exc))

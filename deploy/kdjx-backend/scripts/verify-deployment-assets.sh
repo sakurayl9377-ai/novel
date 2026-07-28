@@ -414,12 +414,15 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     runtime_audit = runtime / 'scripts' / 'audit-runtime-addresses.py'
     runtime_audit.parent.mkdir(parents=True)
     shutil.copyfile(root / 'scripts' / 'audit-runtime-addresses.py', runtime_audit)
+    shutil.copyfile(root / 'scripts' / 'kdjx_env.py', runtime / 'scripts' / 'kdjx_env.py')
     shutil.copyfile(
         root / 'scripts' / 'healthcheck-kdjx-runtime.sh',
         runtime / 'scripts' / 'healthcheck-kdjx-runtime.sh',
     )
     runtime_env_validator = runtime / 'scripts' / 'validate-runtime-env.py'
     shutil.copyfile(root / 'scripts' / 'validate-runtime-env.py', runtime_env_validator)
+    gm_env_validator = runtime / 'scripts' / 'validate-gm-env.py'
+    shutil.copyfile(root / 'scripts' / 'validate-gm-env.py', gm_env_validator)
     subprocess.run(
         [sys.executable, str(runtime_audit), '--runtime-root', str(runtime)],
         check=True,
@@ -444,6 +447,94 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         assert str(exc) == 'runtime_env_kdjx_novel_api_url_invalid'
     else:
         raise AssertionError('unexpected Novel verifier was accepted')
+    gm_module_spec = importlib.util.spec_from_file_location('gm_env_validator', gm_env_validator)
+    gm_env_module = importlib.util.module_from_spec(gm_module_spec)
+    gm_module_spec.loader.exec_module(gm_env_module)
+    valid_gm_environment = {
+        'KDJX_GM_HMAC_SECRET': 'g' * 32,
+        'KDJX_GM_ITEM_CATALOG_FILE': '/opt/kdjx/runtime/current/kdjx-gm-item-catalog.json',
+    }
+    gm_env_module.validate_values(valid_gm_environment)
+    catalog_spec = importlib.util.spec_from_file_location(
+        'gm_catalog_validator',
+        root / 'scripts' / 'validate-kdjx-gm-item-catalog.py',
+    )
+    catalog_module = importlib.util.module_from_spec(catalog_spec)
+    catalog_spec.loader.exec_module(catalog_module)
+    builder_spec = importlib.util.spec_from_file_location(
+        'gm_catalog_builder',
+        root / 'scripts' / 'build-kdjx-gm-item-catalog.py',
+    )
+    builder_module = importlib.util.module_from_spec(builder_spec)
+    builder_spec.loader.exec_module(builder_module)
+    fixture_items_lua = runtime / 'items.lua'
+    fixture_items_lua.write_text(
+        "csv['items'] = {\n"
+        "\t[1001] = {\n"
+        "\t\tid = 1001,\n"
+        "\t\tname = 'Fixture item',\n"
+        "\t\tdesc = 'Fixture item description',\n"
+        "\t\tquality = 1,\n"
+        "\t\ttype = 1,\n"
+        "\t\tstackMax = 99,\n"
+        "\t},\n"
+        "\t__size = 1,\n"
+        "}\n",
+        encoding='utf-8',
+    )
+    valid_catalog = builder_module.build_catalog(fixture_items_lua)
+    catalog_module.validate_catalog(valid_catalog)
+    catalog_module.validate_source(valid_catalog, fixture_items_lua)
+    invalid_catalog = dict(valid_catalog)
+    invalid_catalog['items'] = [dict(valid_catalog['items'][0], id=-1)]
+    try:
+        catalog_module.validate_catalog(invalid_catalog)
+    except ValueError as exc:
+        assert str(exc) == 'gm_catalog_item_invalid'
+    else:
+        raise AssertionError('invalid GM item catalog was accepted')
+    mismatched_catalog = json.loads(json.dumps(valid_catalog))
+    mismatched_catalog['items'][0]['name'] = 'Tampered item'
+    try:
+        catalog_module.validate_source(mismatched_catalog, fixture_items_lua)
+    except ValueError as exc:
+        assert str(exc) == 'gm_catalog_source_mismatch'
+    else:
+        raise AssertionError('mismatched GM item catalog was accepted')
+    with tempfile.TemporaryDirectory(prefix='kdjx-gm-patch-verify-') as gm_temp:
+        gm_source = pathlib.Path(gm_temp)
+        gm_server = gm_source / 'gosrc' / 'tjgame' / 'login' / 'server.go'
+        gm_rpc = gm_source / 'release' / 'src' / 'game' / 'rpc.py'
+        gm_server.parent.mkdir(parents=True)
+        gm_rpc.parent.mkdir(parents=True)
+        gm_server.write_text(
+            'package main\nfunc (s *Server) initServices() {\n'
+            '\ts.initSakuraPayments()\n}\n',
+            encoding='utf-8',
+        )
+        gm_rpc.write_text(
+            '\t@rpc_coroutine\n'
+            '\tdef gmSendMail(self, roleID, mailType, sender, subject, content, attachs):\n'
+            '\t\tpass\n',
+            encoding='utf-8',
+        )
+        gm_patch_command = [
+            sys.executable,
+            str(root / 'scripts' / 'apply-sakura-gm-delivery.py'),
+            '--source-root',
+            str(gm_source),
+            '--patch-root',
+            str(root / 'patches' / 'sakura-gm'),
+        ]
+        subprocess.run(gm_patch_command, check=True)
+        subprocess.run(gm_patch_command, check=True)
+        gm_server_text = gm_server.read_text(encoding='utf-8')
+        gm_rpc_text = gm_rpc.read_text(encoding='utf-8')
+        assert gm_server_text.count('s.initSakuraGMDelivery()') == 1
+        assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
+        assert gm_rpc_text.index("raise Return('ok:'") > gm_rpc_text.index(
+            "logger.exception('SakuraGMSendMail error"
+        )
     login = json.loads((runtime / 'login' / 'defines.json').read_text(encoding='utf-8'))
     assert login['login.cn.1']['patch_url'] == 'https://novel.kxhub.xyz/games/kdjx/hot/'
     game_defines = (runtime / 'release' / 'game_defines.py').read_text(encoding='utf-8')
@@ -832,13 +923,49 @@ grep -Fq 'http://127.0.0.1:4151/ping' "$root_dir/systemd/kdjx-nsqd.service"
 grep -Fq -- '--retry-connrefused' "$root_dir/systemd/kdjx-nsqlookupd.service"
 grep -Fq -- '--retry-connrefused' "$root_dir/systemd/kdjx-nsqd.service"
 grep -Fq 'validate-runtime-env.py --env-file /etc/kdjx/runtime.env' "$root_dir/systemd/kdjx-login.service"
+grep -Fq 'EnvironmentFile=-/etc/kdjx/gm.env' "$root_dir/systemd/kdjx-login.service"
+for service_file in "$root_dir"/systemd/*.service; do
+    if [[ "$service_file" != "$root_dir/systemd/kdjx-login.service" ]]; then
+        ! grep -Fq '/etc/kdjx/gm.env' "$service_file"
+    fi
+done
 grep -Fq 'runtime_env_validator' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'gm_env_validator' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'curl_options=(--connect-timeout 2 --max-time 5)' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'require_loopback_json_status 401 /internal/sakura/gm/deliveries' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version='2.1.'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version+='0.0'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '"patch_url":"https://novel.kxhub.xyz/games/kdjx/hot/"' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'install -d -m 0750 "$candidate_root/release/logs"' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq -- '--gm-catalog <validated-kdjx-gm-item-catalog.json>' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'apply-sakura-gm-delivery.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq '"$candidate_root/kdjx-gm-item-catalog.json"' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+! grep -Fq 'KDJX_GM_' "$root_dir/templates/runtime.env.example"
+grep -Fq 'KDJX_GM_HMAC_SECRET=' "$root_dir/templates/gm.env.example"
+grep -Fq 'KDJX_GM_ITEM_CATALOG_FILE=/opt/kdjx/runtime/current/kdjx-gm-item-catalog.json' \
+    "$root_dir/templates/gm.env.example"
+grep -Fq 'def SakuraGMSendMail(' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'def ensureVisible(mail):' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'Handle("/internal/sakura/gm/deliveries"' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Eq 'gmMailTemplate[[:space:]]+= 2' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'request.Quantity > item.MaxQuantity' \
+    "$root_dir/patches/sakura-gm/sakuragm/handler.go"
+grep -Fq 'request.ServerKey != "game.cn.1"' \
+    "$root_dir/patches/sakura-gm/sakuragm/handler.go"
+grep -Fq 'request.CatalogSHA256 != catalogSHA256' \
+    "$root_dir/patches/sakura-gm/sakuragm/handler.go"
 grep -Fq '[[ -d "$runtime_root/release/logs" && ! -L "$runtime_root/release/logs" ]]' "$root_dir/scripts/run-python-game.sh"
 ! grep -Fq '"$candidate_root/$target/crossdata.json"' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq '"$candidate_root/online_fight_forward"' "$root_dir/scripts/stage-kdjx-runtime.sh"

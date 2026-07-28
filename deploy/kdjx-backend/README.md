@@ -75,6 +75,7 @@ deploy/kdjx-backend/scripts/stage-kdjx-runtime.sh \
   --source /srv/kdjx-source/pokemon \
   --patch-source /srv/kdjx-source/pokemon/release/login/patch \
   --anti-cheat-scripts /srv/kdjx-source/pokemon/release/anti_cheat/game_scripts \
+  --gm-catalog /path/to/backend/catalogs/kdjx-gm-item-catalog.json \
   --output /opt/kdjx/runtime/releases/20260726-1 \
   --go /opt/kdjx/toolchain/go/bin/go
 ```
@@ -89,12 +90,20 @@ The Go login patch URL is generated as
 `https://novel.kxhub.xyz/games/kdjx/hot/`; it intentionally does not retain a
 direct-IP or `/kdjx/patch/` legacy path.
 
+The GM catalog is generated from the authoritative `items.lua` table with
+`scripts/build-kdjx-gm-item-catalog.py`. Staging regenerates and compares the
+complete allow-list against that exact source before it ships the same
+immutable JSON used by the admin API. Every delivery includes the catalog
+SHA-256 and is rejected if the admin backend and runtime disagree. The GM
+bridge is loopback-only and uses an independent HMAC secret.
+
 After reviewing the generated manifest and address audit, make
 `/opt/kdjx/runtime/current` point at the staged release using the host's
-normal release-switch procedure. Keep `/etc/kdjx/runtime.env` on the server;
-do not place that file in this repository. Start from
-`templates/runtime.env.example`, replace its placeholders with independently
-generated values, and set mode `0600`.
+normal release-switch procedure. Keep `/etc/kdjx/runtime.env` and
+`/etc/kdjx/gm.env` on the server; do not place either file in this repository.
+Start from `templates/runtime.env.example` and `templates/gm.env.example`,
+replace their placeholders with independently generated values, and set both
+files to mode `0600`. Only `kdjx-login.service` reads the GM file.
 
 Build the Python 2 runtime image from `templates/legacy-python.Dockerfile`:
 
@@ -120,6 +129,7 @@ The templates intentionally do not enable or restart any service.
 
 ```text
 /etc/kdjx/runtime.env                         mode 0600, root-readable only
+/etc/kdjx/gm.env                              mode 0600, login-only GM config
 /opt/kdjx/runtime/current                     approved staged release
 /var/lib/kdjx/mongo                           MongoDB data
 /var/lib/kdjx/nsq                             NSQ data
@@ -154,9 +164,9 @@ proxy; the long-lived credential never enters Lua or legacy TCP transport.
 ## Install Units
 
 Copy the files in `systemd/` to `/etc/systemd/system/`, build the Python image,
-and keep `/etc/kdjx/runtime.env` mode `0600`. Then run `systemctl daemon-reload`
-and enable `kdjx-runtime.target`. The target does not start the legacy Python
-payment listener. Before enabling it, run:
+and keep both private environment files mode `0600`. Then run
+`systemctl daemon-reload` and enable `kdjx-runtime.target`. The target does not
+start the legacy Python payment listener. Before enabling it, run:
 
 ```bash
 deploy/kdjx-backend/scripts/verify-deployment-assets.sh

@@ -9,6 +9,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_root=""
 patch_source=""
 anti_cheat_scripts=""
+gm_catalog=""
 output_root=""
 go_bin="/opt/kdjx/toolchain/go/bin/go"
 candidate_root=""
@@ -25,6 +26,7 @@ Usage:
     --source <pokemon-source-root> \
     --patch-source <release/login/patch-root> \
     --anti-cheat-scripts <release/anti_cheat/game_scripts-root> \
+    --gm-catalog <validated-kdjx-gm-item-catalog.json> \
     --output <new-release-directory> \
     [--go </path/to/go>]
 
@@ -62,6 +64,11 @@ while [[ $# -gt 0 ]]; do
             anti_cheat_scripts="$2"
             shift 2
             ;;
+        --gm-catalog)
+            require_value "$1" "${2:-}"
+            gm_catalog="$2"
+            shift 2
+            ;;
         --output)
             require_value "$1" "${2:-}"
             output_root="$2"
@@ -82,7 +89,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$source_root" && -n "$patch_source" && -n "$anti_cheat_scripts" && -n "$output_root" ]] \
+[[ -n "$source_root" && -n "$patch_source" && -n "$anti_cheat_scripts" \
+    && -n "$gm_catalog" && -n "$output_root" ]] \
     || { usage >&2; fail "all input paths are required"; }
 
 for required in rsync realpath python3 "$go_bin"; do
@@ -92,10 +100,15 @@ done
 source_root="$(realpath -e -- "$source_root")"
 patch_source="$(realpath -e -- "$patch_source")"
 anti_cheat_scripts="$(realpath -e -- "$anti_cheat_scripts")"
+[[ -f "$gm_catalog" && ! -L "$gm_catalog" ]] \
+    || fail "GM item catalog must be a regular file"
+gm_catalog="$(realpath -e -- "$gm_catalog")"
 [[ -d "$source_root/gosrc/tjgame" && -d "$source_root/release" ]] \
     || fail "source must contain gosrc/tjgame and release"
 [[ -d "$patch_source/cn" ]] || fail "patch source must contain cn/"
 [[ -d "$anti_cheat_scripts" ]] || fail "anti-cheat scripts must be a directory"
+[[ -f "$anti_cheat_scripts/config/items.lua" && ! -L "$anti_cheat_scripts/config/items.lua" ]] \
+    || fail "authoritative anti-cheat items.lua is missing or unsafe"
 [[ -z "$(find "$patch_source" -type l -print -quit)" ]] || fail "patch source must not contain symlinks"
 [[ -z "$(find "$anti_cheat_scripts" -type l -print -quit)" ]] || fail "anti-cheat scripts must not contain symlinks"
 
@@ -152,7 +165,14 @@ rsync -a --delete \
 
 python3 "$script_dir/apply-sakura-only-login.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-hardening.py" --source-root "$candidate_root"
+python3 "$script_dir/apply-sakura-gm-delivery.py" \
+    --source-root "$candidate_root" \
+    --patch-root "$script_dir/../patches/sakura-gm"
 python3 "$script_dir/generate-runtime-config.py" --runtime-root "$candidate_root"
+python3 "$script_dir/validate-kdjx-gm-item-catalog.py" \
+    --catalog "$gm_catalog" \
+    --items-lua "$anti_cheat_scripts/config/items.lua"
+install -m 0640 "$gm_catalog" "$candidate_root/kdjx-gm-item-catalog.json"
 
 rsync -a --delete "$clean_patch_source/cn/" "$candidate_root/login/patch/cn/"
 rsync -a --delete "$clean_anti_cheat_scripts/" "$candidate_root/anti-cheat-scripts/"
@@ -224,7 +244,7 @@ chmod 0640 "$candidate_root/loopback-metrics-gate.txt"
 # byte-for-byte identical to the verifier used during staging.
 python3 "$script_dir/sanitize-kdjx-runtime-inputs.py" --runtime-root "$candidate_root"
 mkdir -p "$candidate_root/scripts"
-for helper in audit-runtime-addresses.py run-host-service.sh run-python-game.sh healthcheck-kdjx-runtime.sh validate-runtime-env.py; do
+for helper in audit-runtime-addresses.py run-host-service.sh run-python-game.sh healthcheck-kdjx-runtime.sh kdjx_env.py validate-gm-env.py validate-runtime-env.py; do
     install -m 0750 "$script_dir/$helper" "$candidate_root/scripts/$helper"
 done
 python3 "$script_dir/audit-runtime-addresses.py" --runtime-root "$candidate_root"

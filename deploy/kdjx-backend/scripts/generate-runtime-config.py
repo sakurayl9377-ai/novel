@@ -463,6 +463,7 @@ def write_manifest(root, public_ip, mongo_uri):
             "legacy_payment_listener": "disabled",
             "legacy_sdk": "disabled",
             "login_channel": "sakura",
+            "gm_delivery": "loopback-hmac-mail-v1",
             "host_roles": [
                 "accountdb",
                 "giftdb",
