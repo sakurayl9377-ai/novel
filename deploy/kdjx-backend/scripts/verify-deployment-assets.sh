@@ -544,11 +544,21 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         "\t\ttype = 1,\n"
         "\t\tstackMax = 99,\n"
         "\t},\n"
-        "\t__size = 1,\n"
+        "\t[1002] = {\n"
+        "\t\tid = 1002,\n"
+        "\t\tname = 'Internal test item',\n"
+        "\t\tdesc = 'Must not enter the GM catalog',\n"
+        "\t\tquality = 6,\n"
+        "\t\ttype = 15,\n"
+        "\t},\n"
+        "\t__size = 2,\n"
         "}\n",
         encoding='utf-8',
     )
     valid_catalog = builder_module.build_catalog(fixture_items_lua)
+    assert valid_catalog['sourceItemCount'] == 2
+    assert valid_catalog['itemCount'] == 1
+    assert [item['id'] for item in valid_catalog['items']] == [1001]
     catalog_module.validate_catalog(valid_catalog)
     catalog_module.validate_source(valid_catalog, fixture_items_lua)
     invalid_catalog = dict(valid_catalog)
@@ -1092,7 +1102,11 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
         "\t\t\t\tmarkIDs.append(cfg.markID)\n"
         "\tdef calCardSkinAttr(self, skinID):\n"
         "\t\tcfg = csv.card_skin[skinID]\n"
-        "\t\tmarkID = cfg.markID if cfg.attrAddType == CardSkinDefs.sameMarkID else 0\n",
+        "\t\tmarkID = cfg.markID if cfg.attrAddType == CardSkinDefs.sameMarkID else 0\n"
+        "\tdef activeSkin(self, itemID):\n"
+        "\t\tspecialArgsMap = csv.items[itemID].specialArgsMap\n"
+        "\t\tskinID = specialArgsMap[\"skinID\"]\n"
+        "\t\tdays = specialArgsMap[\"days\"] or 0\n",
         encoding='utf-8',
     )
     session.write_text(
@@ -1116,6 +1130,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     assert role_content.count('if cfg is None:') == 2
     assert 'missing from card_skin csv during init' in role_content
     assert 'missing from card_skin csv during refresh' in role_content
+    assert 'ignored item %s with missing card skin %s' in role_content
     assert session_content.count('if cfg is None:') == 1
     assert 'missing from card_skin csv during expiry' in session_content
 PY

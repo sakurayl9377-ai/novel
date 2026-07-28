@@ -3,7 +3,7 @@
   "source": "KDJX generated items.lua",
   "sourceSha256": "1250e37f69c2eca5fef515a54454d5b67777aaea2cab8ee3c769e9a5dffd579b",
   "sourceItemCount": 1177,
-  "itemCount": 1144,
+  "itemCount": 1140,
   "items": [
     {
       "id": 19,
@@ -2305,14 +2305,6 @@
       "id": 7008,
       "name": "轻松鱼竿",
       "description": "碳化纤维特殊制作的鱼竿，自动钓鱼的成功率有着显著提升",
-      "type": 0,
-      "quality": 1,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 7009,
-      "name": "测试鱼竿10",
-      "description": "没啥，就是个测试鱼竿10",
       "type": 0,
       "quality": 1,
       "maxQuantity": 9999
@@ -5230,14 +5222,6 @@
       "maxQuantity": 999
     },
     {
-      "id": 8101,
-      "name": "雪人测试道具",
-      "description": "打开后可随机获得各种资源",
-      "type": 7,
-      "quality": 4,
-      "maxQuantity": 999
-    },
-    {
       "id": 501,
       "name": "翡翠星石",
       "description": "用于饰品升星",
@@ -6043,22 +6027,6 @@
       "description": "获得后可以使用一套超级耿鬼的限时体验时装",
       "type": 15,
       "quality": 6,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 8999,
-      "name": "测试神兽",
-      "description": "获得后可以使用一套神秘的测试神兽皮肤",
-      "type": 15,
-      "quality": 6,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 700,
-      "name": "测试二选一礼包",
-      "description": "打开后可在钻石抽卡中能获得的S+品质精灵任选一只",
-      "type": 16,
-      "quality": 5,
       "maxQuantity": 9999
     },
     {

@@ -36,6 +36,19 @@ def main():
 
     replace_once(
         role,
+        """\t\tskinID = specialArgsMap["skinID"]
+\t\tdays = specialArgsMap["days"] or 0""",
+        """\t\tskinID = specialArgsMap["skinID"]
+\t\tif csv.card_skin[skinID] is None:
+\t\t\tlogger.warning(
+\t\t\t\t'role %s ignored item %s with missing card skin %s',
+\t\t\t\tobjectid2string(self.id), itemID, skinID)
+\t\t\treturn
+\t\tdays = specialArgsMap["days"] or 0""",
+        "invalid card skin activation compatibility",
+    )
+    replace_once(
+        role,
         """\t\tfor skinID in skinIDs:
 \t\t\tcfg = csv.card_skin[skinID]
 \t\t\tif cfg.attrAddType == CardSkinDefs.sameMarkID:""",

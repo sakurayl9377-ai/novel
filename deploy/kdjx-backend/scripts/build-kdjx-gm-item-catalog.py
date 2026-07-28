@@ -28,6 +28,7 @@ INTEGER_FIELDS = {
     "stackMax": re.compile(r"^\t\tstackMax = (\d+),\s*$", re.MULTILINE),
 }
 HIDDEN_RE = re.compile(r"^\t\tisShow = false,\s*$", re.MULTILINE)
+INTERNAL_ITEM_RE = re.compile(r"测试|\btest(?:ing)?\b", re.IGNORECASE)
 
 
 def fail(message):
@@ -81,7 +82,7 @@ def build_catalog(source):
             fail("duplicate item id {}".format(item_id))
         seen.add(item_id)
         name = parse_lua_string(name_match.group(1))
-        if not name or HIDDEN_RE.search(body):
+        if not name or HIDDEN_RE.search(body) or INTERNAL_ITEM_RE.search(name):
             continue
         description_match = DESCRIPTION_RE.search(body)
         stack_max = integer_field(body, "stackMax", 9999)

@@ -86,7 +86,7 @@ test('KDJX GM catalog exposes the generated item allow-list', () => {
     actual.sourceSha256,
     '1250e37f69c2eca5fef515a54454d5b67777aaea2cab8ee3c769e9a5dffd579b',
   );
-  assert.equal(actual.items.length, 1144);
+  assert.equal(actual.items.length, 1140);
   assert.equal(actual.byId.size, actual.items.length);
   assert.deepEqual(actual.byId.get('19'), {
     id: '19',
