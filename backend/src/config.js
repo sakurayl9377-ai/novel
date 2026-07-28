@@ -79,6 +79,47 @@ export const config = {
     1,
     Math.min(60, Math.trunc(envNumber('BAILIAN_SSO_TTL_SECONDS', 60))),
   ),
+  kdjxDeviceAuthorizationUrl: env('KDJX_DEVICE_AUTHORIZATION_URL'),
+  kdjxSsoSharedSecret: env('KDJX_SSO_SHARED_SECRET'),
+  kdjxSessionTtlDays: Math.max(
+    30,
+    Math.min(3650, Math.trunc(envNumber('KDJX_SESSION_TTL_DAYS', 3650))),
+  ),
+  kdjxSessionMaxPerUser: Math.max(
+    1,
+    Math.min(50, Math.trunc(envNumber('KDJX_SESSION_MAX_PER_USER', 10))),
+  ),
+  kdjxDeviceCodeTtlSeconds: Math.max(
+    300,
+    Math.min(
+      900,
+      Math.trunc(envNumber('KDJX_DEVICE_CODE_TTL_SECONDS', 600)),
+    ),
+  ),
+  kdjxDevicePollIntervalSeconds: Math.max(
+    2,
+    Math.min(
+      15,
+      Math.trunc(envNumber('KDJX_DEVICE_POLL_INTERVAL_SECONDS', 5)),
+    ),
+  ),
+  kdjxPaymentCatalogFile: env('KDJX_PAYMENT_CATALOG_FILE'),
+  kdjxPaymentCatalogJson: env('KDJX_PAYMENT_CATALOG_JSON'),
+  kdjxPaymentVerifyUrl: env('KDJX_PAYMENT_VERIFY_URL'),
+  kdjxPaymentFulfillmentUrl: env('KDJX_PAYMENT_FULFILLMENT_URL'),
+  kdjxPaymentHmacSecret: env('KDJX_PAYMENT_HMAC_SECRET'),
+  kdjxPaymentMaxAttempts: Math.max(
+    1,
+    Math.min(10, Math.trunc(envNumber('KDJX_PAYMENT_MAX_ATTEMPTS', 3))),
+  ),
+  kdjxPaymentTimeoutMs: Math.max(
+    1000,
+    Math.min(30000, Math.trunc(envNumber('KDJX_PAYMENT_TIMEOUT_MS', 5000))),
+  ),
+  kdjxPaymentClaimTtlMs: Math.max(
+    30000,
+    Math.min(600000, Math.trunc(envNumber('KDJX_PAYMENT_CLAIM_TTL_MS', 60000))),
+  ),
   videoCoverDir: path.resolve(
     rootDir,
     env('VIDEO_COVER_DIR', './data/video-covers'),

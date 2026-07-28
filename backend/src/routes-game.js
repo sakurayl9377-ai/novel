@@ -11,8 +11,11 @@ import {
   verifyBailianSharedSecret,
 } from './bailian-sso.js';
 import { enforceRateLimits } from './rate-limit.js';
+import { kdjxGameRoutes } from './routes-kdjx-game.js';
 
 export async function gameRoutes(app) {
+  app.register(kdjxGameRoutes);
+
   app.post(
     '/games/bailian/sso-ticket',
     { preHandler: app.authRequired },
