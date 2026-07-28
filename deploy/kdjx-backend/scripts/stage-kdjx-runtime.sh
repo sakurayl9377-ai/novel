@@ -30,9 +30,10 @@ Usage:
     --output <new-release-directory> \
     [--go </path/to/go>]
 
-The patch root must contain cn/. Both input trees are copied into a temporary
-candidate, sanitized, then subjected to a strict owned-endpoint audit. The
-output path must not already exist.
+The patch root must contain cn/ and the complete production descriptor chain
+through patch 17. Both input trees are copied into a temporary candidate,
+sanitized, then subjected to a strict owned-endpoint audit. The output path
+must not already exist.
 EOF
 }
 
@@ -115,6 +116,11 @@ gm_catalog="$(realpath -e -- "$gm_catalog")"
 go_version="$($go_bin version)"
 [[ "$go_version" == *"go1.13."* ]] || fail "KDJX requires Go 1.13; got: $go_version"
 
+# Reject an incomplete source before the expensive runtime build. This catches
+# accidentally selecting the original legacy patch directory (which only has
+# 8.json) instead of the cumulative production input through patch 17.
+python3 "$script_dir/validate-kdjx-login-patches.py" --source "$patch_source"
+
 output_parent="$(dirname -- "$output_root")"
 [[ -d "$output_parent" ]] || fail "output parent does not exist: $output_parent"
 output_parent="$(realpath -e -- "$output_parent")"
@@ -142,6 +148,9 @@ python3 "$script_dir/sanitize-kdjx-runtime-inputs.py" \
     --output "$candidate_root/clean-inputs"
 clean_patch_source="$candidate_root/clean-inputs/patch"
 clean_anti_cheat_scripts="$candidate_root/clean-inputs/anti-cheat-scripts"
+python3 "$script_dir/validate-kdjx-login-patches.py" \
+    --source "$patch_source" \
+    --candidate "$clean_patch_source"
 
 rsync -a --delete \
     --exclude '.git/' \
@@ -176,6 +185,9 @@ install -m 0640 "$gm_catalog" "$candidate_root/kdjx-gm-item-catalog.json"
 
 rsync -a --delete "$clean_patch_source/cn/" "$candidate_root/login/patch/cn/"
 rsync -a --delete "$clean_anti_cheat_scripts/" "$candidate_root/anti-cheat-scripts/"
+python3 "$script_dir/validate-kdjx-login-patches.py" \
+    --source "$clean_patch_source" \
+    --candidate "$candidate_root/login/patch"
 # The verified copies above are now in their runtime locations. Do not retain a
 # second full Lua tree in the release artifact.
 rm -rf -- "$candidate_root/clean-inputs"

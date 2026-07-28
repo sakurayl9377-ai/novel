@@ -80,7 +80,11 @@ deploy/kdjx-backend/scripts/stage-kdjx-runtime.sh \
   --go /opt/kdjx/toolchain/go/bin/go
 ```
 
-The patch root must contain `cn/`. To review the sanitized input tree before a
+The patch root must contain `cn/` and the complete production descriptor chain
+`8.json`, `9.json`, and `11.json` through `17.json`. Staging validates that
+the sanitizer and final runtime copy preserve the exact numeric descriptor
+set, so choosing the original legacy source that only contains `8.json` fails
+before any binaries are built. To review the sanitized input tree before a
 release build, run `scripts/sanitize-kdjx-runtime-inputs.py` with those same
 two input paths and a new `--output` directory. The staging script builds `login_server`,
 `host_server`, `anti_cheat_server`, and `online_fight_forward_server` from the

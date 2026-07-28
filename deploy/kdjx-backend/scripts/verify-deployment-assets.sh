@@ -513,9 +513,11 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             encoding='utf-8',
         )
         gm_rpc.write_text(
+            'class GameRPC(object):\n'
             '\t@rpc_coroutine\n'
             '\tdef gmSendMail(self, roleID, mailType, sender, subject, content, attachs):\n'
-            '\t\tpass\n',
+            '\t\tself.original_mail_body = roleID\n'
+            '\t\treturn self.original_mail_body\n',
             encoding='utf-8',
         )
         gm_patch_command = [
@@ -532,6 +534,31 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         gm_rpc_text = gm_rpc.read_text(encoding='utf-8')
         assert gm_server_text.count('s.initSakuraGMDelivery()') == 1
         assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
+        gm_rpc_tree = ast.parse(gm_rpc_text, filename=str(gm_rpc))
+        gm_rpc_class = next(
+            node for node in gm_rpc_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == 'GameRPC'
+        )
+        gm_rpc_methods = [
+            node for node in gm_rpc_class.body if isinstance(node, ast.FunctionDef)
+        ]
+        assert [node.name for node in gm_rpc_methods] == [
+            'SakuraGMSendMail',
+            'gmSendMail',
+        ]
+        original_mail_method = gm_rpc_methods[1]
+        assert any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Attribute)
+                and target.attr == 'original_mail_body'
+                for target in node.targets
+            )
+            for node in original_mail_method.body
+        )
+        python2 = shutil.which('python2.7') or shutil.which('python2')
+        if python2:
+            subprocess.run([python2, '-m', 'py_compile', str(gm_rpc)], check=True)
         assert gm_rpc_text.index("raise Return('ok:'") > gm_rpc_text.index(
             "logger.exception('SakuraGMSendMail error"
         )
@@ -786,6 +813,51 @@ with tempfile.TemporaryDirectory(prefix='kdjx-input-sanitize-verify-') as temp:
     assert 'http://[legacy-endpoint' not in clean_malformed
     assert 'https://49.232.137.85/kdjx/feedback' in clean_malformed
 
+with tempfile.TemporaryDirectory(prefix='kdjx-login-patches-verify-') as temp:
+    fixture = pathlib.Path(temp)
+    source = fixture / 'source'
+    candidate = fixture / 'candidate'
+    source_channel = source / 'cn'
+    candidate_channel = candidate / 'cn'
+    source_channel.mkdir(parents=True)
+    candidate_channel.mkdir(parents=True)
+    required_descriptors = (8, 9, 11, 12, 13, 14, 15, 16, 17)
+    for number in required_descriptors:
+        payload = json.dumps({'files': [], 'patch': number})
+        (source_channel / '{}.json'.format(number)).write_text(payload, encoding='utf-8')
+        (candidate_channel / '{}.json'.format(number)).write_text(payload, encoding='utf-8')
+    validator = root / 'scripts' / 'validate-kdjx-login-patches.py'
+    validator_command = [
+        sys.executable,
+        str(validator),
+        '--source',
+        str(source),
+        '--candidate',
+        str(candidate),
+    ]
+    subprocess.run(validator_command, check=True)
+
+    (source_channel / '17.json').unlink()
+    missing_required = subprocess.run(
+        [sys.executable, str(validator), '--source', str(source)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert missing_required.returncode == 2
+    assert b'17.json' in missing_required.stderr
+    payload = json.dumps({'files': [], 'patch': 17})
+    (source_channel / '17.json').write_text(payload, encoding='utf-8')
+
+    (candidate_channel / '15.json').unlink()
+    not_preserved = subprocess.run(
+        validator_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert not_preserved.returncode == 2
+    assert b'not preserved' in not_preserved.stderr
+    assert b'15.json' in not_preserved.stderr
+
 with tempfile.TemporaryDirectory(prefix='kdjx-go-hardening-verify-') as temp:
     source = pathlib.Path(temp)
     main = source / 'gosrc' / 'tjgame' / 'anti_cheat' / 'main.go'
@@ -944,6 +1016,7 @@ grep -Fq -- '--gm-catalog <validated-kdjx-gm-item-catalog.json>' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-sakura-gm-delivery.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'validate-kdjx-login-patches.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq '"$candidate_root/kdjx-gm-item-catalog.json"' \

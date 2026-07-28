@@ -156,6 +156,15 @@ def patch_once(path, anchor, addition, label):
     path.write_text(content.replace(anchor, anchor + addition, 1), encoding="utf-8")
 
 
+def patch_before_once(path, anchor, addition, label):
+    content = path.read_text(encoding="utf-8")
+    if addition in content:
+        return
+    if content.count(anchor) != 1:
+        fail("{} source does not match the supported layout".format(label))
+    path.write_text(content.replace(anchor, addition + anchor, 1), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", required=True)
@@ -176,7 +185,12 @@ def main():
     copy_tree(patch_root / "sakuragm", login_root / "sakuragm")
     shutil.copy2(str(go_patch), str(login_root / "sakura_gm.go"))
     patch_once(server, SERVER_ANCHOR, SERVER_CALL, "login server")
-    patch_once(rpc, RPC_ANCHOR, RPC_METHOD, "game RPC")
+    # RPC_ANCHOR includes gmSendMail's decorator and function declaration.
+    # Inserting after it detaches the existing function body and leaves an
+    # empty method, which Python rejects when it reaches our next decorator.
+    # Install the Sakura method before the complete declaration so both
+    # methods remain siblings in the containing RPC class.
+    patch_before_once(rpc, RPC_ANCHOR, RPC_METHOD, "game RPC")
 
     if server.read_text(encoding="utf-8").count(SERVER_CALL) != 1:
         fail("Sakura GM login registration is incomplete")
