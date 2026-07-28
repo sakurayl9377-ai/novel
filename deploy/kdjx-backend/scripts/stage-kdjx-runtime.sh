@@ -176,6 +176,11 @@ python3 "$script_dir/apply-sakura-only-login.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-hardening.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-data-compatibility.py" \
     --source-root "$candidate_root"
+python3 "$script_dir/apply-sakura-payment-rpc.py" \
+    --source-root "$candidate_root"
+printf 'sakura-payment-rpc-gate-v1\n' \
+    > "$candidate_root/sakura-payment-rpc-gate.txt"
+chmod 0640 "$candidate_root/sakura-payment-rpc-gate.txt"
 python3 "$script_dir/apply-sakura-gm-delivery.py" \
     --source-root "$candidate_root" \
     --patch-root "$script_dir/../patches/sakura-gm"

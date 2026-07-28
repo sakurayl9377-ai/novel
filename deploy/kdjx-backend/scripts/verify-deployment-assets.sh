@@ -577,6 +577,95 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         assert str(exc) == 'gm_catalog_source_mismatch'
     else:
         raise AssertionError('mismatched GM item catalog was accepted')
+    with tempfile.TemporaryDirectory(prefix='kdjx-payment-rpc-verify-') as payment_temp:
+        payment_source = pathlib.Path(payment_temp)
+        payment_game_service = (
+            payment_source / 'gosrc' / 'tjgame' / 'services' / 'game' / 'service.go'
+        )
+        payment_bridge = (
+            payment_source / 'gosrc' / 'tjgame' / 'login' / 'sakura_payments.go'
+        )
+        payment_rpc = payment_source / 'release' / 'src' / 'game' / 'rpc.py'
+        payment_game_service.parent.mkdir(parents=True)
+        payment_bridge.parent.mkdir(parents=True)
+        payment_rpc.parent.mkdir(parents=True)
+        payment_game_service.write_text(
+            'package game\n\n'
+            'import (\n'
+            '\t"tjgame/document"\n'
+            '\t"tjgame/server_framework/tj/service"\n'
+            ')\n\n'
+            'type Service struct {\n\t*service.Service\n}\n\n'
+            'func (s *Service) GetOpenDays() (int, error) {\n'
+            '\treturn 0, nil\n'
+            '}\n\n'
+            'func NewService(option service.IOption, container service.IContainer) service.IService {\n'
+            '\ts := &Service{Service: service.NewService(option, container)}\n'
+            '\ts.Register(s, "GetOpenDays")\n'
+            '\treturn s\n'
+            '}\n',
+            encoding='utf-8',
+        )
+        payment_bridge.write_text(
+            'package main\n\n'
+            'func paymentBridgeMarkers() {\n'
+            '\tHandle("/internal/sakura/payments/verify")\n'
+            '\tHandle("/internal/sakura/payments/fulfill")\n'
+            '\tCall("VerifySakuraPayment")\n'
+            '\tCall("PayForRecharge")\n'
+            '}\n',
+            encoding='utf-8',
+        )
+        payment_rpc.write_text(
+            'class GameRPC(object):\n'
+            '\tdef VerifySakuraPayment(self, inl_pwd, rechargeID, amountYuan, yyID=0, csvID=0):\n'
+            '\t\tif inl_pwd != GameServInternalPassword:\n'
+            "\t\t\treturn 'no auth'\n"
+            '\t\tif rechargeID not in csv.recharges:\n'
+            "\t\t\treturn 'invalid product'\n"
+            "\t\treturn 'ok:600'\n"
+            '\n'
+            '\t@rpc_coroutine\n'
+            '\tdef PayForRecharge(self, inl_pwd, channel, accountID, roleID, rechargeID, orderID, amount, extInfo=None, yyID=0, csvID=0):\n'
+            '\t\tif inl_pwd != GameServInternalPassword:\n'
+            "\t\t\traise Return('no auth')\n"
+            "\t\traise Return('ok')\n",
+            encoding='utf-8',
+        )
+        payment_patch_command = [
+            sys.executable,
+            str(root / 'scripts' / 'apply-sakura-payment-rpc.py'),
+            '--source-root',
+            str(payment_source),
+        ]
+        subprocess.run(payment_patch_command, check=True)
+        subprocess.run(payment_patch_command, check=True)
+        payment_service_text = payment_game_service.read_text(encoding='utf-8')
+        for method in ('VerifySakuraPayment', 'PayForRecharge'):
+            assert payment_service_text.count(
+                'func (s *Service) {}('.format(method)
+            ) == 1
+            assert payment_service_text.count(
+                's.Register(s, "{}")'.format(method)
+            ) == 1
+            assert payment_service_text.index(
+                'func (s *Service) {}('.format(method)
+            ) < payment_service_text.index('func NewService(')
+        assert 'amountYuan string' in payment_service_text
+        assert 'accountID document.ID' in payment_service_text
+        assert 'orderID document.ID' in payment_service_text
+        payment_rpc_tree = ast.parse(
+            payment_rpc.read_text(encoding='utf-8'),
+            filename=str(payment_rpc),
+        )
+        payment_rpc_class = next(
+            node for node in payment_rpc_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == 'GameRPC'
+        )
+        assert [
+            node.name for node in payment_rpc_class.body
+            if isinstance(node, ast.FunctionDef)
+        ] == ['VerifySakuraPayment', 'PayForRecharge']
     with tempfile.TemporaryDirectory(prefix='kdjx-gm-patch-verify-') as gm_temp:
         gm_source = pathlib.Path(gm_temp)
         gm_server = gm_source / 'gosrc' / 'tjgame' / 'login' / 'server.go'
@@ -1168,6 +1257,12 @@ grep -Fq 'gm_env_validator' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'curl_options=(--connect-timeout 2 --max-time 5)' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'require_loopback_json_status 401 /internal/sakura/gm/deliveries' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'require_loopback_json_status 401 /internal/sakura/payments/verify' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'require_loopback_json_status 401 /internal/sakura/payments/fulfill' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'sakura-payment-rpc-gate-v1' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version='2.1.'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version+='0.0'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
@@ -1177,6 +1272,8 @@ grep -Fq 'install -d -m 0750 "$candidate_root/release/logs"' "$root_dir/scripts/
 grep -Fq -- '--gm-catalog <validated-kdjx-gm-item-catalog.json>' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-sakura-gm-delivery.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'apply-sakura-payment-rpc.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'sakura-payment-rpc-gate-v1' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-runtime-data-compatibility.py' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
@@ -1197,6 +1294,14 @@ grep -Fq 's.Register(s, "SakuraGMSendMail")' \
 grep -Fq 'def ensureVisible(mail):' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'func (s *Service) VerifySakuraPayment(' \
+    "$root_dir/scripts/apply-sakura-payment-rpc.py"
+grep -Fq 'func (s *Service) PayForRecharge(' \
+    "$root_dir/scripts/apply-sakura-payment-rpc.py"
+grep -Fq 's.Register(s, "VerifySakuraPayment")' \
+    "$root_dir/scripts/apply-sakura-payment-rpc.py"
+grep -Fq 's.Register(s, "PayForRecharge")' \
+    "$root_dir/scripts/apply-sakura-payment-rpc.py"
 grep -Fq 'Handle("/internal/sakura/gm/deliveries"' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"
 grep -Eq 'gmMailTemplate[[:space:]]+= 2' \

@@ -59,6 +59,15 @@ runtime_env_validator="${KDJX_RUNTIME_ENV_VALIDATOR:-$runtime_root/scripts/valid
 [[ -x "$runtime_env_validator" ]] || fail "runtime environment validation is unavailable: $runtime_env_validator"
 gm_env_validator="${KDJX_GM_ENV_VALIDATOR:-$runtime_root/scripts/validate-gm-env.py}"
 [[ -x "$gm_env_validator" ]] || fail "GM environment validation is unavailable: $gm_env_validator"
+payment_rpc_gate="$runtime_root/sakura-payment-rpc-gate.txt"
+[[ -f "$payment_rpc_gate" && ! -L "$payment_rpc_gate" ]] \
+    || fail "Sakura payment RPC gate is unavailable"
+[[ "$(tr -d '[:space:]' < "$payment_rpc_gate")" == "sakura-payment-rpc-gate-v1" ]] \
+    || fail "Sakura payment RPC gate is invalid"
+grep -Fq 'def VerifySakuraPayment(' "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura payment verification RPC is unavailable"
+grep -Fq 'def PayForRecharge(' "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura payment fulfillment RPC is unavailable"
 command -v luajit >/dev/null 2>&1 || fail "LuaJIT is unavailable"
 "$runtime_env_validator" --env-file /etc/kdjx/runtime.env
 "$gm_env_validator" --env-file /etc/kdjx/gm.env
@@ -100,6 +109,8 @@ done
 require_udp_listener 32888
 
 curl "${curl_options[@]}" --fail --silent --show-error --compressed http://127.0.0.1:18080/servers >/dev/null
+require_loopback_json_status 401 /internal/sakura/payments/verify
+require_loopback_json_status 401 /internal/sakura/payments/fulfill
 require_loopback_json_status 401 /internal/sakura/gm/deliveries
 curl "${curl_options[@]}" --fail --silent --show-error --compressed -H 'Host: 49.232.137.85' http://127.0.0.1/kdjx/servers >/dev/null
 version_payload="$(curl "${curl_options[@]}" --fail --silent --show-error --compressed \
