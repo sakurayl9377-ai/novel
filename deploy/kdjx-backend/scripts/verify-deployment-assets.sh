@@ -286,10 +286,17 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
     )
     verifier_source.write_text(
         'package sakuraauth\n\n'
-        'func verify(proof string) {\n'
-        '\tif !strings.HasPrefix(proof, "kdjx_session_") { return }\n'
+        'func (c *Client) Verify(clientName, clientPass string) (*Identity, error) {\n'
+        '\tproof := strings.TrimSpace(clientName)\n'
+        '\tif proof == "" || proof != strings.TrimSpace(clientPass) {\n'
+        '\t\treturn nil, errors.New("sakura proof mismatch")\n'
+        '\t}\n'
+        '\tif !strings.HasPrefix(proof, "kdjx_session_") {\n'
+        '\t\treturn nil, errors.New("unsupported sakura proof")\n'
+        '\t}\n'
         '\t_, _ = json.Marshal(map[string]string{"credential": proof})\n'
         '\t_ = c.BaseURL+"/games/kdjx/sessions/verify"\n'
+        '\treturn nil, nil\n'
         '}\n',
         encoding='utf-8',
     )
@@ -300,6 +307,19 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
         '\tbody := map[string]string{"credential": proof}\n'
         '\tif body["credential"] != proof {\n'
         '\t\tt.Fatal("credential was not forwarded")\n'
+        '\t}\n'
+        '}\n\n'
+        'func TestVerifyRejectsMismatchedProof(t *testing.T) {\n'
+        '\tclient := &Client{BaseURL: "https://example.invalid", SharedSecret: "secret"}\n'
+        '\tif _, err := client.Verify("kdjx_session_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", "different"); err == nil {\n'
+        '\t\tt.Fatal("expected mismatched proof to fail")\n'
+        '\t}\n'
+        '}\n\n'
+        'func TestVerifyRejectsLongLivedSessionCredential(t *testing.T) {\n'
+        '\tclient := &Client{BaseURL: "https://example.invalid", SharedSecret: "secret"}\n'
+        '\tproof := "kdjx_session_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"\n'
+        '\tif _, err := client.Verify(proof, proof); err == nil {\n'
+        '\t\tt.Fatal("expected long-lived session credential to be rejected")\n'
         '\t}\n'
         '}\n',
         encoding='utf-8',
@@ -319,11 +339,33 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
     assert all(path.read_bytes() == payload for path, payload in first_result.items())
     patched_verifier = verifier_source.read_text(encoding='utf-8')
     patched_tests = verifier_test.read_text(encoding='utf-8')
-    assert 'kdjx_login_' in patched_verifier
+    compatible_proof = (
+        '\tnameProof := strings.TrimSpace(clientName)\n'
+        '\tpassProof := strings.TrimSpace(clientPass)\n'
+        '\tnameIsTicket := strings.HasPrefix(nameProof, "kdjx_login_")\n'
+        '\tpassIsTicket := strings.HasPrefix(passProof, "kdjx_login_")\n'
+    )
+    assert patched_verifier.count(compatible_proof) == 1
+    assert patched_verifier.count('proof := ""') == 1
+    assert patched_verifier.count(
+        'case nameIsTicket && passIsTicket && nameProof == passProof:'
+    ) == 1
+    assert patched_verifier.count('case nameIsTicket && !passIsTicket:') == 1
+    assert patched_verifier.count('case passIsTicket && !nameIsTicket:') == 1
+    assert patched_verifier.count('errors.New("sakura proof mismatch")') == 1
     assert 'map[string]string{"ticket": proof}' in patched_verifier
     assert 'kdjx_session_' not in patched_verifier
     assert 'body["ticket"]' in patched_tests
-    assert 'TestVerifyRejectsLongLivedSessionCredential' in patched_tests
+    assert patched_tests.count(
+        'func TestVerifyAcceptsLoginTicketInEitherLegacyField('
+    ) == 1
+    assert patched_tests.count(
+        'func TestVerifyRejectsConflictingLoginTickets('
+    ) == 1
+    assert patched_tests.count(
+        'func TestVerifyRejectsLongLivedSessionCredential('
+    ) == 1
+    assert '{name: "both fields", clientName: proof, clientPass: proof}' in patched_tests
     assert 'if t.Channel != "sakura" {' in task_source.read_text(encoding='utf-8')
 
 with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
