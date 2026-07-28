@@ -18,6 +18,7 @@ PUBLIC_BACKEND_IP = "49.232.137.85"
 DOWNLOAD_HOST = "novel.kxhub.xyz"
 DOWNLOAD_BASE_URL = "https://novel.kxhub.xyz/games/kdjx/"
 HOT_UPDATE_BASE_URL = "https://novel.kxhub.xyz/games/kdjx/hot/"
+GUARDER_MD5 = "1b5a8aa9e7660d317d1eada5c37d2429"
 LOOPBACK = "127.0.0.1"
 MONGO_PORT = 27159
 ALLOWED_RUNTIME_IPS = {PUBLIC_BACKEND_IP, LOOPBACK, "0.0.0.0"}
@@ -287,7 +288,11 @@ def write_login_config(root, public_ip):
     )
     json_file(
         conf / "channel.json",
-        {"channels": {"sakura": ["game.cn"]}, "servers": {}, "guarder": ""},
+        {
+            "channels": {"sakura": ["game.cn"]},
+            "servers": {},
+            "guarder": GUARDER_MD5,
+        },
     )
     json_file(conf / "filter.json", {})
     json_file(conf / "notice.json", [])

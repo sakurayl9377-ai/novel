@@ -469,6 +469,30 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         [sys.executable, str(runtime_audit), '--runtime-root', str(runtime)],
         check=True,
     )
+    channel_path = runtime / 'login' / 'conf' / 'channel.json'
+    channel_payload = json.loads(channel_path.read_text(encoding='utf-8'))
+    assert channel_payload == {
+        'channels': {'sakura': ['game.cn']},
+        'guarder': '1b5a8aa9e7660d317d1eada5c37d2429',
+        'servers': {},
+    }
+    channel_payload['guarder'] = ''
+    channel_path.write_text(
+        json.dumps(channel_payload, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    guarder_blocked = subprocess.run(
+        [sys.executable, str(runtime_audit), '--runtime-root', str(runtime)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert guarder_blocked.returncode == 2
+    assert b'login guarder MD5' in guarder_blocked.stderr
+    channel_payload['guarder'] = '1b5a8aa9e7660d317d1eada5c37d2429'
+    channel_path.write_text(
+        json.dumps(channel_payload, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
     module_spec = importlib.util.spec_from_file_location('runtime_env_validator', runtime_env_validator)
     runtime_env_module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(runtime_env_module)

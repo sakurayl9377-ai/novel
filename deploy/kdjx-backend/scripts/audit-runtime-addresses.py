@@ -16,6 +16,7 @@ PUBLIC_BACKEND_IP = "49.232.137.85"
 DOWNLOAD_HOST = "novel.kxhub.xyz"
 DOWNLOAD_BASE_URL = "https://novel.kxhub.xyz/games/kdjx/"
 HOT_UPDATE_BASE_URL = "https://novel.kxhub.xyz/games/kdjx/hot/"
+GUARDER_MD5 = "1b5a8aa9e7660d317d1eada5c37d2429"
 LOOPBACK_IP = "127.0.0.1"
 WILDCARD_IP = "0.0.0.0"
 TEXT_SUFFIXES = {
@@ -382,6 +383,8 @@ def require_runtime_invariants(root):
         fail("login patch URL does not match the hot update channel")
     if channels.get("channels") != {"sakura": ["game.cn"]} or channels.get("servers") != {}:
         fail("login channel configuration is not Sakura-only")
+    if channels.get("guarder") != GUARDER_MD5:
+        fail("login guarder MD5 does not match the approved client")
 
     if (root / "release" / "payment_server.py").exists():
         fail("legacy Python payment listener is present in the staged runtime")
