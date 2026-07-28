@@ -129,6 +129,25 @@ RECHARGE_VALUE_REPLACEMENT = """		rePro = kwargs.get('rePro', 0) # 返利比例
 		def done():
 """
 
+# Some production source snapshots omit the historical comments in the
+# block above. Anchor this replacement to executable code instead.
+RECHARGE_VALUE_STABLE_ANCHOR = (
+    "\t\t\trmb += int(ceil(cfg.rmb * (rePro * 1.0 / 100)))\n"
+    "\n"
+    "\t\tdef done():\n"
+)
+RECHARGE_VALUE_STABLE_REPLACEMENT = (
+    "\t\t\trmb += int(ceil(cfg.rmb * (rePro * 1.0 / 100)))\n"
+    "\n"
+    "\t\tsakuraRMB = None\n"
+    "\t\tif kwargs.get('channel', None) == 'sakura':\n"
+    "\t\t\tsakuraRMB = SakuraRechargeRMB.get(rechargeID, None)\n"
+    "\t\t\tif sakuraRMB is not None:\n"
+    "\t\t\t\trmb = sakuraRMB\n"
+    "\n"
+    "\t\tdef done():\n"
+)
+
 RECHARGE_DONE_ANCHOR = """			if orderID != TestOrderID:
 				orders.append(orderID)
 """
@@ -209,8 +228,8 @@ def main():
     replace_once(role, VIP_LEVEL_ANCHOR, VIP_LEVEL_REPLACEMENT, "VIP floor")
     replace_once(
         role,
-        RECHARGE_VALUE_ANCHOR,
-        RECHARGE_VALUE_REPLACEMENT,
+        RECHARGE_VALUE_STABLE_ANCHOR,
+        RECHARGE_VALUE_STABLE_REPLACEMENT,
         "Sakura recharge value",
     )
     replace_once(
