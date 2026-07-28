@@ -312,6 +312,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
       lastError: '',
       canRetry: false,
     });
+    assert.equal(calls.length, 0);
 
     const paid = await request(
       app,
@@ -329,7 +330,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     assert.equal(paid.json().item.balance, 140);
     assert.equal(paid.json().item.channelOrderId, 'sakura_game-1');
     assert.equal(paid.json().item.sakuraOrderId, 'sakura_game-1');
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
 
     const fulfillmentCall = calls.find(
       (call) => call.url === process.env.KDJX_PAYMENT_FULFILLMENT_URL,
@@ -397,7 +398,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     );
     assert.equal(replay.statusCode, 200);
     assert.equal(replay.json().item.balance, 140);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
     assert.equal(
       one(
         `SELECT COUNT(*) count FROM user_reward_events
@@ -416,7 +417,7 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     );
     assert.equal(conflict.statusCode, 409);
     assert.equal(conflict.json().error, 'payment_idempotency_conflict');
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
 
     const reservedProduct = await request(
       app,
@@ -427,8 +428,72 @@ test('KDJX payments preserve the yuan price and debit Sakura coins once', async 
     );
     assert.equal(reservedProduct.statusCode, 404);
     assert.equal(reservedProduct.json().error, 'payment_product_not_found');
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
     assert.equal(userCoins(userId), 140);
+  } finally {
+    await app.close();
+  }
+});
+
+test('KDJX payment preview does not require the game verification endpoint', async () => {
+  const userId = seedUser({ coins: 100, nickname: 'preview-offline' });
+  const bearer = createSession(userId);
+  const app = await makeApp();
+  seedGameAccountLink(userId);
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('game offline');
+  };
+
+  try {
+    const preview = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments/preview',
+      paymentInput('preview-offline-1', 'preview-offline-1'),
+    );
+    assert.equal(preview.statusCode, 200);
+    assert.equal(preview.json().item.status, 'preview');
+    assert.equal(preview.json().item.balance, 100);
+    assert.equal(fetchCalls, 0);
+    assert.equal(userCoins(userId), 100);
+  } finally {
+    await app.close();
+  }
+});
+
+test('KDJX payments do not debit when game verification is unavailable', async () => {
+  const userId = seedUser({ coins: 100, nickname: 'verify-offline' });
+  const bearer = createSession(userId);
+  const app = await makeApp();
+  seedGameAccountLink(userId);
+  globalThis.fetch = async () => {
+    throw new Error('game offline');
+  };
+
+  try {
+    const rejected = await request(
+      app,
+      bearer,
+      'POST',
+      '/games/kdjx/payments',
+      paymentInput('verify-offline-1', 'verify-offline-1'),
+    );
+    assert.equal(rejected.statusCode, 503);
+    assert.equal(
+      rejected.json().error,
+      'game_order_verification_unavailable',
+    );
+    assert.equal(userCoins(userId), 100);
+    assert.equal(
+      one(
+        `SELECT COUNT(*) count FROM kdjx_payment_orders WHERE user_id = ?`,
+        [userId],
+      ).count,
+      0,
+    );
   } finally {
     await app.close();
   }

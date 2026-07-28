@@ -26,13 +26,7 @@ export async function previewKdjxPayment(input) {
   ensureKdjxGameSchema();
   const order = normalizeOrderInput(input);
   const product = requireProduct(input.productId);
-  const link = requireGameAccountLink(input.userId);
-  await verifyGameOrder({
-    userId: input.userId,
-    link,
-    order,
-    product,
-  });
+  requireGameAccountLink(input.userId);
   return paymentPreview(input.userId, order, product);
 }
 
