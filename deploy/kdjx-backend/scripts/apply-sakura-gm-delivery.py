@@ -11,6 +11,17 @@ from pathlib import Path
 
 SERVER_ANCHOR = "\ts.initSakuraPayments()\n"
 SERVER_CALL = "\ts.initSakuraGMDelivery()\n"
+GAME_SERVICE_CONSTRUCTOR_ANCHOR = (
+    "func NewService(option service.IOption, container service.IContainer) service.IService {\n"
+)
+GAME_SERVICE_REGISTER_ANCHOR = '\ts.Register(s, "GetOpenDays")\n'
+GAME_SERVICE_REGISTER = '\ts.Register(s, "SakuraGMSendMail")\n'
+GAME_SERVICE_METHOD = r'''
+func (s *Service) SakuraGMSendMail(inlPwd string, requestID string, roleID document.ID, mailType int, sender string, subject string, content string, attachs map[document.Integer]int) (response string, err error) {
+	return
+}
+
+'''
 RPC_ANCHOR = "\t@rpc_coroutine\n\tdef gmSendMail(self, roleID, mailType, sender, subject, content, attachs):\n"
 RPC_METHOD = r'''
 	@rpc_coroutine
@@ -174,8 +185,9 @@ def main():
     patch_root = Path(args.patch_root).resolve()
     login_root = root / "gosrc" / "tjgame" / "login"
     server = login_root / "server.go"
+    game_service = root / "gosrc" / "tjgame" / "services" / "game" / "service.go"
     rpc = root / "release" / "src" / "game" / "rpc.py"
-    for path in (server, rpc):
+    for path in (server, game_service, rpc):
         if not path.is_file():
             fail("required KDJX source is missing: {}".format(path))
     go_patch = patch_root / "sakura_gm.go"
@@ -185,6 +197,22 @@ def main():
     copy_tree(patch_root / "sakuragm", login_root / "sakuragm")
     shutil.copy2(str(go_patch), str(login_root / "sakura_gm.go"))
     patch_once(server, SERVER_ANCHOR, SERVER_CALL, "login server")
+    # Remote Go services are fail-closed: CallWithTimeout refuses any method
+    # absent from the static services/game stub before an NSQ request is sent.
+    # Keep the metadata-only method signature aligned with the Python RPC and
+    # register it in NewService so the login bridge can actually dispatch it.
+    patch_before_once(
+        game_service,
+        GAME_SERVICE_CONSTRUCTOR_ANCHOR,
+        GAME_SERVICE_METHOD,
+        "game service RPC stub",
+    )
+    patch_once(
+        game_service,
+        GAME_SERVICE_REGISTER_ANCHOR,
+        GAME_SERVICE_REGISTER,
+        "game service RPC registration",
+    )
     # RPC_ANCHOR includes gmSendMail's decorator and function declaration.
     # Inserting after it detaches the existing function body and leaves an
     # empty method, which Python rejects when it reaches our next decorator.
@@ -194,6 +222,14 @@ def main():
 
     if server.read_text(encoding="utf-8").count(SERVER_CALL) != 1:
         fail("Sakura GM login registration is incomplete")
+    game_service_content = game_service.read_text(encoding="utf-8")
+    if (
+        game_service_content.count("func (s *Service) SakuraGMSendMail(") != 1
+        or game_service_content.count(GAME_SERVICE_REGISTER) != 1
+        or game_service_content.index("func (s *Service) SakuraGMSendMail(")
+        > game_service_content.index(GAME_SERVICE_CONSTRUCTOR_ANCHOR)
+    ):
+        fail("Sakura GM game service RPC registration is incomplete")
     rpc_content = rpc.read_text(encoding="utf-8")
     if (
         rpc_content.count("def SakuraGMSendMail(") != 1

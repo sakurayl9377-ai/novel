@@ -174,7 +174,7 @@ export const config = {
   kdjxGmDeliveryHmacSecret: env('KDJX_GM_DELIVERY_HMAC_SECRET'),
   kdjxGmDeliveryTimeoutMs: Math.max(
     1000,
-    Math.min(30000, Math.trunc(envNumber('KDJX_GM_DELIVERY_TIMEOUT_MS', 5000))),
+    Math.min(30000, Math.trunc(envNumber('KDJX_GM_DELIVERY_TIMEOUT_MS', 20000))),
   ),
   videoCoverDir: path.resolve(
     rootDir,

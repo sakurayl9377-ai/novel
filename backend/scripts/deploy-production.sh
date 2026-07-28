@@ -64,6 +64,7 @@ const required = {
   KDJX_PAYMENT_VERIFY_URL: 'http://127.0.0.1:18080/internal/sakura/payments/verify',
   KDJX_PAYMENT_FULFILLMENT_URL: 'http://127.0.0.1:18080/internal/sakura/payments/fulfill',
   KDJX_GM_DELIVERY_URL: 'http://127.0.0.1:18080/internal/sakura/gm/deliveries',
+  KDJX_GM_DELIVERY_TIMEOUT_MS: '20000',
   KDJX_SESSION_TTL_DAYS: '3650',
   KDJX_LOGIN_TICKET_TTL_SECONDS: '60',
 };

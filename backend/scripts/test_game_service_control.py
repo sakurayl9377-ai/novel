@@ -282,6 +282,10 @@ class GameServiceDeploymentContractTest(unittest.TestCase):
             "'http://127.0.0.1:18080/internal/sakura/gm/deliveries'",
             required_block,
         )
+        self.assertIn(
+            "KDJX_GM_DELIVERY_TIMEOUT_MS: '20000'",
+            required_block,
+        )
         self.assertIn("'KDJX_GM_DELIVERY_HMAC_SECRET'", secret_block)
         for key in (
             "KDJX_GM_DELIVERY_URL",

@@ -504,12 +504,37 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     with tempfile.TemporaryDirectory(prefix='kdjx-gm-patch-verify-') as gm_temp:
         gm_source = pathlib.Path(gm_temp)
         gm_server = gm_source / 'gosrc' / 'tjgame' / 'login' / 'server.go'
+        gm_game_service = (
+            gm_source / 'gosrc' / 'tjgame' / 'services' / 'game' / 'service.go'
+        )
         gm_rpc = gm_source / 'release' / 'src' / 'game' / 'rpc.py'
         gm_server.parent.mkdir(parents=True)
+        gm_game_service.parent.mkdir(parents=True)
         gm_rpc.parent.mkdir(parents=True)
         gm_server.write_text(
             'package main\nfunc (s *Server) initServices() {\n'
             '\ts.initSakuraPayments()\n}\n',
+            encoding='utf-8',
+        )
+        # This is the smallest fixture that preserves the production game
+        # service constructor and registration anchors. The generated stub is
+        # metadata for the remote RPCCaller; without both the method and the
+        # Register call, CanCall rejects the request before NSQ dispatch.
+        gm_game_service.write_text(
+            'package game\n\n'
+            'import (\n'
+            '\t"tjgame/document"\n'
+            '\t"tjgame/server_framework/tj/service"\n'
+            ')\n\n'
+            'type Service struct {\n\t*service.Service\n}\n\n'
+            'func (s *Service) GetOpenDays() (int, error) {\n'
+            '\treturn 0, nil\n'
+            '}\n\n'
+            'func NewService(option service.IOption, container service.IContainer) service.IService {\n'
+            '\ts := &Service{Service: service.NewService(option, container)}\n'
+            '\ts.Register(s, "GetOpenDays")\n'
+            '\treturn s\n'
+            '}\n',
             encoding='utf-8',
         )
         gm_rpc.write_text(
@@ -531,8 +556,20 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         subprocess.run(gm_patch_command, check=True)
         subprocess.run(gm_patch_command, check=True)
         gm_server_text = gm_server.read_text(encoding='utf-8')
+        gm_game_service_text = gm_game_service.read_text(encoding='utf-8')
         gm_rpc_text = gm_rpc.read_text(encoding='utf-8')
         assert gm_server_text.count('s.initSakuraGMDelivery()') == 1
+        assert gm_game_service_text.count(
+            'func (s *Service) SakuraGMSendMail('
+        ) == 1
+        assert gm_game_service_text.count(
+            's.Register(s, "SakuraGMSendMail")'
+        ) == 1
+        assert gm_game_service_text.index(
+            'func (s *Service) SakuraGMSendMail('
+        ) < gm_game_service_text.index('func NewService(')
+        assert 'roleID document.ID' in gm_game_service_text
+        assert 'attachs map[document.Integer]int' in gm_game_service_text
         assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
         gm_rpc_tree = ast.parse(gm_rpc_text, filename=str(gm_rpc))
         gm_rpc_class = next(
@@ -1026,6 +1063,10 @@ grep -Fq 'KDJX_GM_HMAC_SECRET=' "$root_dir/templates/gm.env.example"
 grep -Fq 'KDJX_GM_ITEM_CATALOG_FILE=/opt/kdjx/runtime/current/kdjx-gm-item-catalog.json' \
     "$root_dir/templates/gm.env.example"
 grep -Fq 'def SakuraGMSendMail(' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'func (s *Service) SakuraGMSendMail(' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 's.Register(s, "SakuraGMSendMail")' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 'def ensureVisible(mail):' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"

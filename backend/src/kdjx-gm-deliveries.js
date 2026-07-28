@@ -126,7 +126,7 @@ export async function deliverKdjxGmItem(input, options = {}) {
     options.hmacSecret ?? kdjxConfig.gmDeliveryHmacSecret ?? '',
   ).trim();
   const timeoutMs = boundedTimeout(
-    options.timeoutMs ?? kdjxConfig.gmDeliveryTimeoutMs ?? 5000,
+    options.timeoutMs ?? kdjxConfig.gmDeliveryTimeoutMs ?? 20000,
   );
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const catalogSha256 = safeCatalogSha256(input.catalogSha256);
@@ -292,7 +292,7 @@ function strictCatalogMaximum(value) {
 
 function boundedTimeout(value) {
   const result = Number(value);
-  if (!Number.isFinite(result)) return 5000;
+  if (!Number.isFinite(result)) return 20000;
   return Math.max(1000, Math.min(30000, Math.trunc(result)));
 }
 
