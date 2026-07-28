@@ -174,6 +174,8 @@ rsync -a --delete \
 
 python3 "$script_dir/apply-sakura-only-login.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-hardening.py" --source-root "$candidate_root"
+python3 "$script_dir/apply-runtime-data-compatibility.py" \
+    --source-root "$candidate_root"
 python3 "$script_dir/apply-sakura-gm-delivery.py" \
     --source-root "$candidate_root" \
     --patch-root "$script_dir/../patches/sakura-gm"

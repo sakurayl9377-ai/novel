@@ -1074,6 +1074,50 @@ with tempfile.TemporaryDirectory(prefix='kdjx-go-hardening-verify-') as temp:
     rpc_content = rpcserver.read_text(encoding='utf-8')
     assert 'statsURL.String()' in rpc_content
     assert 'https://49.232.137.85/kdjx/feedback' not in rpc_content
+
+with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp:
+    source = pathlib.Path(temp)
+    role = source / 'release' / 'src' / 'game' / 'object' / 'game' / 'role.py'
+    session = source / 'release' / 'src' / 'game' / 'session.py'
+    role.parent.mkdir(parents=True)
+    session.parent.mkdir(parents=True, exist_ok=True)
+    role.write_text(
+        "class ObjectRole(object):\n"
+        "\tdef onCardSkinRefresh(self, skinIDs):\n"
+        "\t\trefreshAll = False\n"
+        "\t\tmarkIDs = []\n"
+        "\t\tfor skinID in skinIDs:\n"
+        "\t\t\tcfg = csv.card_skin[skinID]\n"
+        "\t\t\tif cfg.attrAddType == CardSkinDefs.sameMarkID:\n"
+        "\t\t\t\tmarkIDs.append(cfg.markID)\n"
+        "\tdef calCardSkinAttr(self, skinID):\n"
+        "\t\tcfg = csv.card_skin[skinID]\n"
+        "\t\tmarkID = cfg.markID if cfg.attrAddType == CardSkinDefs.sameMarkID else 0\n",
+        encoding='utf-8',
+    )
+    session.write_text(
+        "class Session(object):\n"
+        "\tdef refresh(self, skinsDeleted):\n"
+        "\t\t\t\tfor skinID in skinsDeleted:\n"
+        "\t\t\t\t\tcardMarkID = csv.card_skin[skinID].markID\n"
+        "\t\t\t\t\tcards = game.cards.getCardsByMarkID(cardMarkID)\n",
+        encoding='utf-8',
+    )
+    compatibility_command = [
+        sys.executable,
+        str(root / 'scripts' / 'apply-runtime-data-compatibility.py'),
+        '--source-root',
+        str(source),
+    ]
+    subprocess.run(compatibility_command, check=True)
+    subprocess.run(compatibility_command, check=True)
+    role_content = role.read_text(encoding='utf-8')
+    session_content = session.read_text(encoding='utf-8')
+    assert role_content.count('if cfg is None:') == 2
+    assert 'missing from card_skin csv during init' in role_content
+    assert 'missing from card_skin csv during refresh' in role_content
+    assert session_content.count('if cfg is None:') == 1
+    assert 'missing from card_skin csv during expiry' in session_content
 PY
 
 grep -Fq 'location = /kdjx/servers {' "$root_dir/nginx/kdjx-login-locations.conf"
@@ -1118,6 +1162,8 @@ grep -Fq 'install -d -m 0750 "$candidate_root/release/logs"' "$root_dir/scripts/
 grep -Fq -- '--gm-catalog <validated-kdjx-gm-item-catalog.json>' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-sakura-gm-delivery.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'apply-runtime-data-compatibility.py' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-login-patches.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
