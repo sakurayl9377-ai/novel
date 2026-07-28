@@ -196,6 +196,34 @@ describe('KdjxGmDeliveryDialog', () => {
     wrapper.unmount();
   });
 
+  it('accepts a catalog-backed quantity of 9999', async () => {
+    const player = samplePlayer();
+    serviceMocks.createKdjxGmDelivery.mockResolvedValue({
+      ok: true,
+      idempotent: false,
+      delivery: sampleDelivery(player, 'succeeded'),
+    });
+    messageMocks.confirm.mockResolvedValue('confirm');
+    const wrapper = await mountOpenDialog({
+      player,
+      catalog: [sampleCatalogItem({ maxQuantity: 9999 })],
+    });
+
+    await wrapper.find('.item-select-stub').setValue('19');
+    await wrapper.find('.quantity-stub').setValue('9999');
+    await wrapper.find('.reason-stub').setValue('大型活动批量补发');
+    await flushPromises();
+
+    expect(wrapper.find('.quantity-stub').attributes('max')).toBe('9999');
+    await sendButton(wrapper).trigger('click');
+    await flushPromises();
+    expect(serviceMocks.createKdjxGmDelivery).toHaveBeenCalledWith(
+      player.userId,
+      expect.objectContaining({ itemId: '19', quantity: 9999 }),
+    );
+    wrapper.unmount();
+  });
+
   it('blocks delivery when the player game identity is incomplete', async () => {
     const player = samplePlayer({
       canDeliverItems: false,

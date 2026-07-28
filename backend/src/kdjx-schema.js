@@ -140,7 +140,7 @@ export function ensureKdjxGameSchema() {
       item_name TEXT NOT NULL,
       item_type TEXT NOT NULL DEFAULT '',
       item_quality TEXT NOT NULL DEFAULT '',
-      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 999),
+      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 9999),
       reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
@@ -161,5 +161,80 @@ export function ensureKdjxGameSchema() {
       ON kdjx_gm_deliveries(status, created_at DESC, id DESC);
   `);
 
+  migrateKdjxGmDeliveryQuantityLimit();
+
   schemaReady = true;
+}
+
+function migrateKdjxGmDeliveryQuantityLimit() {
+  const table = db.prepare(
+    `SELECT sql FROM sqlite_master
+     WHERE type = 'table' AND name = 'kdjx_gm_deliveries'`,
+  ).get();
+  if (!/quantity\s*<=\s*999\b/i.test(String(table?.sql || ''))) return;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`
+      DROP TABLE IF EXISTS kdjx_gm_deliveries_v2;
+      CREATE TABLE kdjx_gm_deliveries_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL UNIQUE,
+        admin_user_id INTEGER,
+        user_id INTEGER NOT NULL,
+        game_open_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        server_key TEXT NOT NULL,
+        link_updated_at TEXT NOT NULL,
+        delivery_type TEXT NOT NULL CHECK (delivery_type = 'mail'),
+        item_id TEXT NOT NULL,
+        item_name TEXT NOT NULL,
+        item_type TEXT NOT NULL DEFAULT '',
+        item_quality TEXT NOT NULL DEFAULT '',
+        quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 9999),
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
+        outcome_reference TEXT NOT NULL DEFAULT '',
+        error_code TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT,
+        FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO kdjx_gm_deliveries_v2
+        (id, request_id, admin_user_id, user_id, game_open_id, account_id,
+         role_id, server_key, link_updated_at, delivery_type, item_id,
+         item_name, item_type, item_quality, quantity, reason, status,
+         outcome_reference, error_code, created_at, updated_at, completed_at)
+      SELECT id, request_id, admin_user_id, user_id, game_open_id, account_id,
+             role_id, server_key, link_updated_at, delivery_type, item_id,
+             item_name, item_type, item_quality, quantity, reason, status,
+             outcome_reference, error_code, created_at, updated_at, completed_at
+        FROM kdjx_gm_deliveries;
+
+      DROP TABLE kdjx_gm_deliveries;
+      ALTER TABLE kdjx_gm_deliveries_v2 RENAME TO kdjx_gm_deliveries;
+
+      CREATE INDEX idx_kdjx_gm_deliveries_time
+        ON kdjx_gm_deliveries(created_at DESC, id DESC);
+      CREATE INDEX idx_kdjx_gm_deliveries_user
+        ON kdjx_gm_deliveries(user_id, created_at DESC, id DESC);
+      CREATE INDEX idx_kdjx_gm_deliveries_status
+        ON kdjx_gm_deliveries(status, created_at DESC, id DESC);
+    `);
+    const foreignKeyViolation = db.prepare(
+      'PRAGMA foreign_key_check(kdjx_gm_deliveries)',
+    ).get();
+    if (foreignKeyViolation) {
+      throw new Error('KDJX GM delivery migration failed foreign key check');
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
 }

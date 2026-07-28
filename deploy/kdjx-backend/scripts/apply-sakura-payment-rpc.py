@@ -27,6 +27,30 @@ GAME_SERVICE_REGISTERS = (
 )
 RPC_VERIFY_METHOD = "\tdef VerifySakuraPayment("
 RPC_FULFILL_METHOD = "\tdef PayForRecharge("
+OFFLINE_CACHE_ANCHOR = (
+    "\t\t\t\trecharges_cache.append((rechargeID, orderID, yyID, csvID, rePro))\n"
+)
+OFFLINE_CACHE_REPLACEMENT = (
+    "\t\t\t\trecharges_cache.append((rechargeID, orderID, yyID, csvID, "
+    "rePro, channel))\n"
+)
+OFFLINE_REPLAY_ANCHOR = """\t\t\t\tif len(t)==4: # 可能存在的更新前的老订单
+\t\t\t\t\trechargeID, orderID, yyID, csvID = t
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID)
+\t\t\t\telse:
+\t\t\t\t\trechargeID, orderID, yyID, csvID, rePro = t
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro)
+"""
+OFFLINE_REPLAY_REPLACEMENT = """\t\t\t\tif len(t)==4: # 可能存在的更新前的老订单
+\t\t\t\t\trechargeID, orderID, yyID, csvID = t
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, channel='sakura')
+\t\t\t\telif len(t) == 5:
+\t\t\t\t\trechargeID, orderID, yyID, csvID, rePro = t
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro, channel='sakura')
+\t\t\t\telse:
+\t\t\t\t\trechargeID, orderID, yyID, csvID, rePro, channel = t
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro, channel=channel)
+"""
 
 
 def fail(message):
@@ -52,6 +76,15 @@ def patch_before_once(path, anchor, addition, label):
     path.write_text(content.replace(anchor, addition + anchor, 1), encoding="utf-8")
 
 
+def replace_once(path, old, new, label):
+    content = path.read_text(encoding="utf-8")
+    if new in content:
+        return
+    if content.count(old) != 1:
+        fail("{} source does not match the supported layout".format(label))
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", required=True)
@@ -61,7 +94,8 @@ def main():
     game_service = root / "gosrc" / "tjgame" / "services" / "game" / "service.go"
     payment_bridge = root / "gosrc" / "tjgame" / "login" / "sakura_payments.go"
     rpc = root / "release" / "src" / "game" / "rpc.py"
-    for path in (game_service, payment_bridge, rpc):
+    game_handler = root / "release" / "src" / "game" / "handler" / "_game.py"
+    for path in (game_service, payment_bridge, rpc, game_handler):
         if not path.is_file():
             fail("required KDJX payment source is missing: {}".format(path))
 
@@ -97,6 +131,18 @@ def main():
         GAME_SERVICE_REGISTERS,
         "game service payment RPC registration",
     )
+    replace_once(
+        rpc,
+        OFFLINE_CACHE_ANCHOR,
+        OFFLINE_CACHE_REPLACEMENT,
+        "offline payment cache channel",
+    )
+    replace_once(
+        game_handler,
+        OFFLINE_REPLAY_ANCHOR,
+        OFFLINE_REPLAY_REPLACEMENT,
+        "offline payment replay channel",
+    )
 
     service_content = game_service.read_text(encoding="utf-8")
     for method in ("VerifySakuraPayment", "PayForRecharge"):
@@ -107,6 +153,16 @@ def main():
             > service_content.index(GAME_SERVICE_CONSTRUCTOR_ANCHOR)
         ):
             fail("Sakura payment RPC registration is incomplete: {}".format(method))
+
+    if OFFLINE_CACHE_REPLACEMENT not in rpc.read_text(encoding="utf-8"):
+        fail("Sakura offline payment cache does not preserve its channel")
+    replay_content = game_handler.read_text(encoding="utf-8")
+    if (
+        "elif len(t) == 5:" not in replay_content
+        or "channel='sakura'" not in replay_content
+        or "channel=channel" not in replay_content
+    ):
+        fail("Sakura offline payment replay does not preserve recharge values")
 
 
 if __name__ == "__main__":

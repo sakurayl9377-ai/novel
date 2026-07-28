@@ -85,7 +85,7 @@ export function normalizeKdjxGmItemCatalog(document) {
       description,
       type: String(type),
       quality: String(quality),
-      maxQuantity: Math.min(maximum, 999),
+      maxQuantity: Math.min(maximum, 9999),
       deliveryTypes: Object.freeze(['mail']),
     });
     items.push(item);

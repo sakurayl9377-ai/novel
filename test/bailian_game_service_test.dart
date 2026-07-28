@@ -19,6 +19,8 @@ void main() {
             ],
             'hasMore': false,
             'snapshotMaxId': 88,
+            'total': 2,
+            'nextOffset': 2,
           }),
           200,
           headers: {'content-type': 'application/json; charset=utf-8'},
@@ -30,17 +32,25 @@ void main() {
       'token-a',
       limit: 2,
       snapshotMaxId: 88,
+      searchQuery: '仙玉',
+      fromDate: DateTime(2026, 7, 1),
+      toDate: DateTime(2026, 7, 29),
     );
 
     expect(page.items, hasLength(2));
     expect(page.items.first.id, 'order-1');
     expect(page.hasMore, isFalse);
     expect(page.snapshotMaxId, 88);
+    expect(page.total, 2);
+    expect(page.nextOffset, 2);
     expect(captured.url.path, '/novel-api/users/me/orders');
     expect(captured.url.queryParameters, {
       'offset': '0',
       'limit': '2',
       'snapshotMaxId': '88',
+      'q': '仙玉',
+      'from': '2026-07-01',
+      'to': '2026-07-29',
     });
   });
 

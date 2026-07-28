@@ -586,9 +586,13 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             payment_source / 'gosrc' / 'tjgame' / 'login' / 'sakura_payments.go'
         )
         payment_rpc = payment_source / 'release' / 'src' / 'game' / 'rpc.py'
+        payment_handler = (
+            payment_source / 'release' / 'src' / 'game' / 'handler' / '_game.py'
+        )
         payment_game_service.parent.mkdir(parents=True)
         payment_bridge.parent.mkdir(parents=True)
         payment_rpc.parent.mkdir(parents=True)
+        payment_handler.parent.mkdir(parents=True)
         payment_game_service.write_text(
             'package game\n\n'
             'import (\n'
@@ -629,7 +633,26 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             '\tdef PayForRecharge(self, inl_pwd, channel, accountID, roleID, rechargeID, orderID, amount, extInfo=None, yyID=0, csvID=0):\n'
             '\t\tif inl_pwd != GameServInternalPassword:\n'
             "\t\t\traise Return('no auth')\n"
+            '\t\tif game is None:\n'
+            '\t\t\tif rechargeOK:\n'
+            "\t\t\t\trole = {'recharges_cache': []}\n"
+            "\t\t\t\trecharges_cache = role['recharges_cache']\n"
+            '\t\t\t\trecharges_cache.append((rechargeID, orderID, yyID, csvID, rePro))\n'
             "\t\traise Return('ok')\n",
+            encoding='utf-8',
+        )
+        payment_handler.write_text(
+            'class GameLoginHandler(object):\n'
+            '\tdef replayRechargeCache(self, role):\n'
+            '\t\tif role.recharges_cache:\n'
+            '\t\t\tfor t in role.recharges_cache:\n'
+            '\t\t\t\tif len(t)==4: # 可能存在的更新前的老订单\n'
+            '\t\t\t\t\trechargeID, orderID, yyID, csvID = t\n'
+            '\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID)\n'
+            '\t\t\t\telse:\n'
+            '\t\t\t\t\trechargeID, orderID, yyID, csvID, rePro = t\n'
+            '\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro)\n'
+            '\t\t\trole.recharges_cache = []\n',
             encoding='utf-8',
         )
         payment_patch_command = [
@@ -666,6 +689,15 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             node.name for node in payment_rpc_class.body
             if isinstance(node, ast.FunctionDef)
         ] == ['VerifySakuraPayment', 'PayForRecharge']
+        payment_rpc_text = payment_rpc.read_text(encoding='utf-8')
+        payment_handler_text = payment_handler.read_text(encoding='utf-8')
+        ast.parse(payment_handler_text, filename=str(payment_handler))
+        assert payment_rpc_text.count(
+            'recharges_cache.append((rechargeID, orderID, yyID, csvID, rePro, channel))'
+        ) == 1
+        assert payment_handler_text.count("channel='sakura'") == 2
+        assert payment_handler_text.count('channel=channel') == 1
+        assert payment_handler_text.count('elif len(t) == 5:') == 1
     with tempfile.TemporaryDirectory(prefix='kdjx-gm-patch-verify-') as gm_temp:
         gm_source = pathlib.Path(gm_temp)
         gm_server = gm_source / 'gosrc' / 'tjgame' / 'login' / 'server.go'
@@ -1174,6 +1206,229 @@ with tempfile.TemporaryDirectory(prefix='kdjx-go-hardening-verify-') as temp:
     assert 'statsURL.String()' in rpc_content
     assert 'https://49.232.137.85/kdjx/feedback' not in rpc_content
 
+economy_patch_path = root / 'scripts' / 'apply-sakura-economy-compatibility.py'
+economy_spec = importlib.util.spec_from_file_location(
+    'apply_sakura_economy_compatibility',
+    economy_patch_path,
+)
+assert economy_spec is not None and economy_spec.loader is not None
+economy_module = importlib.util.module_from_spec(economy_spec)
+economy_spec.loader.exec_module(economy_module)
+with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
+    source = pathlib.Path(temp)
+    role = source / 'release' / 'src' / 'game' / 'object' / 'game' / 'role.py'
+    role.parent.mkdir(parents=True)
+    role.write_text(
+        '#!/usr/bin/python\n# -*- coding: utf-8 -*-\n'
+        + economy_module.ROLE_CONSTANTS_ANCHOR
+        + 'class ObjectRole(object):\n'
+        + '\tdef init(self):\n'
+        + economy_module.RECHARGE_INIT_ANCHOR
+        + economy_module.TRAINER_EXP_INIT_ANCHOR
+        + '\t\treturn self\n\n'
+        + '\tdef _initVIPLevel(self):\n'
+        + '\t\tsumRMB = 0\n'
+        + '\t\tfor rechargeID, data in self.recharges.iteritems():\n'
+        + '\t\t\tif rechargeID not in csv.recharges:\n'
+        + '\t\t\t\tcontinue\n'
+        + '\t\t\tcfg = csv.recharges[rechargeID]\n'
+        + '\t\t\tcnt = data.get("cnt", 0)\n'
+        + economy_module.VIP_SUM_ANCHOR
+        + '\t\tlevel = 0\n'
+        + '\t\tfor index in csv.vip:\n'
+        + '\t\t\tif csv.vip[index].upSum > sumRMB:\n'
+        + '\t\t\t\tbreak\n'
+        + '\t\t\tlevel = index - 1\n'
+        + '\t\tself._vip_sum = sumRMB\n'
+        + economy_module.VIP_LEVEL_ANCHOR
+        + '\n'
+        + '\tdef buyRecharge(self, rechargeID, orderID, **kwargs):\n'
+        + '\t\trecharge = self.recharges.setdefault(rechargeID, {})\n'
+        + '\t\torders = recharge.setdefault("orders", [])\n'
+        + '\t\treset = recharge.get("reset", 0)\n'
+        + '\t\tcnt = recharge.get("cnt", 0)\n'
+        + '\t\tcfg = csv.recharges[rechargeID]\n'
+        + '\t\tif cnt == 0 or reset > 0:\n'
+        + '\t\t\trmb = cfg.rmb + cfg.firstPresent\n'
+        + '\t\telse:\n'
+        + '\t\t\trmb = cfg.rmb + cfg.present\n'
+        + economy_module.RECHARGE_VALUE_ANCHOR
+        + '\t\t\trecharge["reset"] = -abs(reset)\n'
+        + '\t\t\trecharge["cnt"] = cnt + 1\n'
+        + economy_module.RECHARGE_DONE_ANCHOR
+        + '\t\tdone()\n'
+        + '\t\tself.rmb += rmb\n'
+        + '\t\tself._initVIPLevel()\n'
+        + economy_module.RECHARGE_PROGRESS_ANCHOR
+        + '\t\treturn rmb\n\n'
+        + economy_module.ROLE_METHOD_ANCHOR
+        + '\t\tpass\n',
+        encoding='utf-8',
+    )
+    economy_command = [
+        sys.executable,
+        str(economy_patch_path),
+        '--source-root',
+        str(source),
+    ]
+    subprocess.run(economy_command, check=True)
+    subprocess.run(economy_command, check=True)
+    role_content = role.read_text(encoding='utf-8')
+    ast.parse(role_content, filename=str(role))
+    assert role_content.count('SakuraRechargeRMB = {') == 1
+    assert role_content.count('def _applySakuraRechargeCompatibility(self):') == 1
+    assert role_content.count(
+        'def _applySakuraTrainerExperienceCompatibility(self):'
+    ) == 1
+    assert role_content.count('self._applySakuraRechargeCompatibility()') == 1
+    assert role_content.count(
+        'self._applySakuraTrainerExperienceCompatibility()'
+    ) == 1
+    assert 'self.vip_level = max(self.vip_level, level)' in role_content
+    assert "recharge[SakuraRechargeFixMarker] = True" in role_content
+
+    class TestLogger(object):
+        def info(self, *args):
+            pass
+
+        def warning(self, *args):
+            pass
+
+    namespace = {
+        'logger': TestLogger(),
+        'objectid2string': str,
+    }
+    exec(compile(role_content, str(role), 'exec'), namespace)
+    class Python2Dict(dict):
+        def iteritems(self):
+            return self.items()
+
+    namespace['SakuraRechargeRMB'] = Python2Dict(
+        namespace['SakuraRechargeRMB']
+    )
+    recharge_configs = Python2Dict({
+        3: type('RechargeConfig', (), {
+            'rmb': 65,
+            'firstPresent': 65,
+            'present': 65,
+            'validRechargeHuodong': False,
+        })(),
+        4: type('RechargeConfig', (), {
+            'rmb': 33,
+            'firstPresent': 33,
+            'present': 33,
+            'validRechargeHuodong': False,
+        })(),
+        5: type('RechargeConfig', (), {
+            'rmb': 20,
+            'firstPresent': 20,
+            'present': 20,
+            'validRechargeHuodong': False,
+        })(),
+        7: type('RechargeConfig', (), {
+            'rmb': 6,
+            'firstPresent': 6,
+            'present': 6,
+            'validRechargeHuodong': False,
+        })(),
+    })
+    vip_configs = Python2Dict({
+        1: type('VipConfig', (), {'upSum': 0})(),
+        29: type('VipConfig', (), {'upSum': 900000})(),
+        30: type('VipConfig', (), {'upSum': 1000000})(),
+    })
+    namespace['csv'] = type('TestCsv', (), {
+        'recharges': recharge_configs,
+        'vip': vip_configs,
+    })()
+    namespace['TestOrderID'] = 'test-order'
+    object_role = namespace['ObjectRole']()
+    object_role.id = '64b000000000000000000001'
+    object_role.rmb = 187
+    object_role.vip_level = 22
+    object_role.recharges = Python2Dict({
+        3: {'cnt': 144},
+        4: {'cnt': 1},
+        5: {'cnt': 1},
+        7: {'cnt': 1},
+    })
+    object_role._applySakuraRechargeCompatibility()
+    assert object_role.rmb == 920329
+    assert all(
+        recharge.get(namespace['SakuraRechargeFixMarker']) is True
+        for recharge in object_role.recharges.values()
+    )
+    object_role._applySakuraRechargeCompatibility()
+    assert object_role.rmb == 920329
+    corrected_vip_sum = sum(
+        recharge['cnt'] * namespace['SakuraRechargeRMB'][recharge_id]
+        for recharge_id, recharge in object_role.recharges.items()
+    )
+    assert corrected_vip_sum == 938980
+    object_role._initVIPLevel()
+    assert object_role._vip_sum == 938980
+    assert object_role.vip_level == 28
+
+    object_role.recharges = Python2Dict({7: {'cnt': 1}})
+    object_role._initVIPLevel()
+    assert object_role.vip_level == 28
+    object_role.recharges = Python2Dict({
+        3: {
+            'cnt': 144,
+            namespace['SakuraRechargeFixMarker']: True,
+        },
+        4: {'cnt': 1, namespace['SakuraRechargeFixMarker']: True},
+        5: {'cnt': 1, namespace['SakuraRechargeFixMarker']: True},
+        7: {'cnt': 1, namespace['SakuraRechargeFixMarker']: True},
+    })
+
+    class TestDailyRecord(object):
+        recharge_rmb_sum = 0
+
+    class TestItems(object):
+        def __init__(self):
+            self.items = {400: 2109}
+
+        def getItemCount(self, item_id):
+            return self.items.get(item_id, 0)
+
+        def costItems(self, values):
+            for item_id, count in values.items():
+                if self.items.get(item_id, 0) < count:
+                    return False
+            for item_id, count in values.items():
+                left = self.items[item_id] - count
+                if left:
+                    self.items[item_id] = left
+                else:
+                    self.items.pop(item_id)
+            return True
+
+        def addItem(self, item_id, count):
+            self.items[item_id] = self.items.get(item_id, 0) + count
+
+    object_role.game = type('TestGame', (), {
+        'items': TestItems(),
+        'dailyRecord': TestDailyRecord(),
+    })()
+    before_recharge = object_role.rmb
+    awarded = object_role.buyRecharge(
+        3,
+        'sakura-order-145',
+        channel='sakura',
+    )
+    assert awarded == 6480
+    assert object_role.rmb == before_recharge + 6480
+    assert object_role.recharges[3]['cnt'] == 145
+    assert object_role.recharges[3][namespace['SakuraRechargeFixMarker']] is True
+    assert object_role.game.dailyRecord.recharge_rmb_sum == 6480
+    object_role.exp = 500
+    object_role._applySakuraTrainerExperienceCompatibility()
+    assert object_role.exp == 2609
+    assert object_role.game.items.getItemCount(400) == 0
+    object_role._applySakuraTrainerExperienceCompatibility()
+    assert object_role.exp == 2609
+
 with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp:
     source = pathlib.Path(temp)
     role = source / 'release' / 'src' / 'game' / 'object' / 'game' / 'role.py'
@@ -1263,6 +1518,10 @@ grep -Fq 'require_loopback_json_status 401 /internal/sakura/payments/fulfill' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'sakura-payment-rpc-gate-v1' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'Sakura offline payment channel cache is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'sakura-economy-compatibility-v1' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version='2.1.'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version+='0.0'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
@@ -1274,6 +1533,10 @@ grep -Fq -- '--gm-catalog <validated-kdjx-gm-item-catalog.json>' \
 grep -Fq 'apply-sakura-gm-delivery.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-sakura-payment-rpc.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'sakura-payment-rpc-gate-v1' "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'apply-sakura-economy-compatibility.py' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'sakura-economy-compatibility-v1' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-runtime-data-compatibility.py' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
@@ -1294,6 +1557,14 @@ grep -Fq 's.Register(s, "SakuraGMSendMail")' \
 grep -Fq 'def ensureVisible(mail):' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "attachs['role_exp']" \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'self.vip_level = max(self.vip_level, level)' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'func (s *Service) VerifySakuraPayment(' \
     "$root_dir/scripts/apply-sakura-payment-rpc.py"
 grep -Fq 'func (s *Service) PayForRecharge(' \
@@ -1301,6 +1572,8 @@ grep -Fq 'func (s *Service) PayForRecharge(' \
 grep -Fq 's.Register(s, "VerifySakuraPayment")' \
     "$root_dir/scripts/apply-sakura-payment-rpc.py"
 grep -Fq 's.Register(s, "PayForRecharge")' \
+    "$root_dir/scripts/apply-sakura-payment-rpc.py"
+grep -Fq 'OFFLINE_REPLAY_REPLACEMENT' \
     "$root_dir/scripts/apply-sakura-payment-rpc.py"
 grep -Fq 'Handle("/internal/sakura/gm/deliveries"' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"

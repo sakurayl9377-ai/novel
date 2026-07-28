@@ -73,11 +73,15 @@ class BailianPaymentPage {
     required this.items,
     required this.hasMore,
     this.snapshotMaxId = 0,
+    this.total = 0,
+    this.nextOffset = 0,
   });
 
   final List<BailianPayment> items;
   final bool hasMore;
   final int snapshotMaxId;
+  final int total;
+  final int nextOffset;
 }
 
 class BailianGameException implements Exception {
@@ -159,19 +163,34 @@ class BailianGameService {
     int offset = 0,
     int limit = 20,
     int snapshotMaxId = 0,
+    String searchQuery = '',
+    DateTime? fromDate,
+    DateTime? toDate,
   }) async {
     final pageSize = limit.clamp(1, 50);
-    final query = <String, String>{
+    final queryParameters = <String, String>{
       'offset': offset.clamp(0, 1 << 30).toString(),
       'limit': pageSize.toString(),
     };
     if (snapshotMaxId > 0) {
-      query['snapshotMaxId'] = snapshotMaxId.toString();
+      queryParameters['snapshotMaxId'] = snapshotMaxId.toString();
+    }
+    if (searchQuery.trim().isNotEmpty) {
+      queryParameters['q'] = searchQuery.trim();
+    }
+    if (fromDate != null) {
+      queryParameters['from'] = _paymentFilterDate(fromDate);
+    }
+    if (toDate != null) {
+      queryParameters['to'] = _paymentFilterDate(toDate);
     }
     final decoded = await _request(
       token: token,
       method: 'GET',
-      path: Uri(path: '/users/me/orders', queryParameters: query).toString(),
+      path: Uri(
+        path: '/users/me/orders',
+        queryParameters: queryParameters,
+      ).toString(),
     );
     final rawItems = decoded['items'];
     final items = rawItems is List
@@ -186,11 +205,16 @@ class BailianGameService {
     final hasMore = decoded.containsKey('hasMore')
         ? decoded['hasMore'] == true
         : items.length >= pageSize;
+    final total = int.tryParse(decoded['total']?.toString() ?? '');
     return BailianPaymentPage(
       items: items,
       hasMore: hasMore,
       snapshotMaxId:
           int.tryParse(decoded['snapshotMaxId']?.toString() ?? '') ?? 0,
+      total: total ?? offset + items.length + (hasMore ? 1 : 0),
+      nextOffset:
+          int.tryParse(decoded['nextOffset']?.toString() ?? '') ??
+          offset + items.length,
     );
   }
 
@@ -250,4 +274,11 @@ class BailianGameService {
       return <String, dynamic>{};
     }
   }
+}
+
+String _paymentFilterDate(DateTime value) {
+  final local = value.toLocal();
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  return '${local.year.toString().padLeft(4, '0')}-'
+      '${twoDigits(local.month)}-${twoDigits(local.day)}';
 }

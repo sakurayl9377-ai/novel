@@ -259,6 +259,48 @@ test("login rewards are atomic, idempotent and exposed through wallet history", 
         [eligible.userId, `游戏消费 ${index}`, `wallet-order-${index}`],
       );
     }
+    for (let index = 1; index <= 3; index += 1) {
+      run(
+        `UPDATE user_reward_events
+         SET created_at = ?
+         WHERE user_id = ? AND related_type = 'bailian_payment_order'
+           AND related_id = ?`,
+        [`2026-07-${19 + index} 10:00:00`, eligible.userId, `wallet-order-${index}`],
+      );
+    }
+
+    const searchedOrders = await jsonRequest(
+      app, "GET", "/users/me/orders?limit=20&q=%E5%95%86%E5%93%81%202",
+      undefined, eligible.token,
+    );
+    assert.equal(searchedOrders.total, 1);
+    assert.equal(searchedOrders.items.length, 1);
+    assert.equal(searchedOrders.items[0].productName, "商品 2");
+
+    const datedOrders = await jsonRequest(
+      app, "GET", "/users/me/orders?limit=1&from=2026-07-21&to=2026-07-22",
+      undefined, eligible.token,
+    );
+    assert.equal(datedOrders.total, 2);
+    assert.equal(datedOrders.items.length, 1);
+    assert.equal(datedOrders.hasMore, true);
+    const datedOrdersPage2 = await jsonRequest(
+      app, "GET",
+      `/users/me/orders?limit=1&offset=1&from=2026-07-21&to=2026-07-22&snapshotMaxId=${datedOrders.snapshotMaxId}`,
+      undefined, eligible.token,
+    );
+    assert.equal(datedOrdersPage2.total, 2);
+    assert.equal(datedOrdersPage2.items.length, 1);
+    assert.equal(datedOrdersPage2.hasMore, false);
+    assert.notEqual(datedOrdersPage2.items[0].id, datedOrders.items[0].id);
+
+    const invalidDateRange = await rawJsonRequest(
+      app, "GET", "/users/me/orders?from=2026-07-22&to=2026-07-21",
+      undefined, eligible.token,
+    );
+    assert.equal(invalidDateRange.statusCode, 400);
+    assert.equal(invalidDateRange.json().error, "order date range is invalid");
+
     const walletFirstPage = await jsonRequest(
       app, "GET", "/users/me/wallet?page=1&pageSize=2", undefined, eligible.token,
     );

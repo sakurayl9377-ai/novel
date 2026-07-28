@@ -58,7 +58,7 @@ func TestHandlerRejectsUnknownItemAndQuantity(t *testing.T) {
 		t.Fatalf("unexpected unknown-item status: %d", response.Code)
 	}
 	request = validRequest()
-	request.Quantity = 6
+	request.Quantity = 10000
 	response = performSigned(t, handler, now, "33333333-3333-4333-8333-333333333333", request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected quantity status: %d", response.Code)
@@ -111,7 +111,7 @@ func testCatalog() Catalog {
 		SourceSHA256:  testCatalogSHA256,
 		ItemCount:     1,
 		Items: []CatalogItem{{
-			ID: 11, Name: "甘甜冰水", MaxQuantity: 5,
+			ID: 11, Name: "甘甜冰水", MaxQuantity: 9999,
 		}},
 	}
 }
@@ -123,7 +123,7 @@ func validRequest() DeliveryRequest {
 		AccountID: "64a000000000000000000001",
 		RoleID:    "64a000000000000000000002", ServerKey: "game.cn.1",
 		CatalogSHA256: testCatalogSHA256,
-		ItemID:        11, ItemName: "甘甜冰水", Quantity: 2,
+		ItemID:        11, ItemName: "甘甜冰水", Quantity: 9999,
 		MailSender: "Sakura 运营", MailSubject: "物品发放",
 		MailContent: "管理员已向你发放物品。\n\n发放单号：" + requestID,
 	}

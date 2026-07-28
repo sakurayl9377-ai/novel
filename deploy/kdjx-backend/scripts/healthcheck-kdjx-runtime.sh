@@ -59,6 +59,11 @@ runtime_env_validator="${KDJX_RUNTIME_ENV_VALIDATOR:-$runtime_root/scripts/valid
 [[ -x "$runtime_env_validator" ]] || fail "runtime environment validation is unavailable: $runtime_env_validator"
 gm_env_validator="${KDJX_GM_ENV_VALIDATOR:-$runtime_root/scripts/validate-gm-env.py}"
 [[ -x "$gm_env_validator" ]] || fail "GM environment validation is unavailable: $gm_env_validator"
+economy_gate="$runtime_root/sakura-economy-compatibility-gate.txt"
+[[ -f "$economy_gate" && ! -L "$economy_gate" ]] \
+    || fail "Sakura economy compatibility gate is unavailable"
+[[ "$(tr -d '[:space:]' < "$economy_gate")" == "sakura-economy-compatibility-v1" ]] \
+    || fail "Sakura economy compatibility gate is invalid"
 payment_rpc_gate="$runtime_root/sakura-payment-rpc-gate.txt"
 [[ -f "$payment_rpc_gate" && ! -L "$payment_rpc_gate" ]] \
     || fail "Sakura payment RPC gate is unavailable"
@@ -68,6 +73,21 @@ grep -Fq 'def VerifySakuraPayment(' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura payment verification RPC is unavailable"
 grep -Fq 'def PayForRecharge(' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura payment fulfillment RPC is unavailable"
+grep -Fq 'rePro, channel))' "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura offline payment channel cache is unavailable"
+grep -Fq 'channel=channel)' \
+    "$runtime_root/release/src/game/handler/_game.py" \
+    || fail "Sakura offline payment channel replay is unavailable"
+grep -Fq 'SakuraRechargeRMB = {' "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura recharge value compatibility is unavailable"
+grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
+    "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura recharge history compatibility is unavailable"
+grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
+    "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura trainer experience compatibility is unavailable"
+grep -Fq "attachs['role_exp']" "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura trainer experience delivery mapping is unavailable"
 command -v luajit >/dev/null 2>&1 || fail "LuaJIT is unavailable"
 "$runtime_env_validator" --env-file /etc/kdjx/runtime.env
 "$gm_env_validator" --env-file /etc/kdjx/gm.env

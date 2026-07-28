@@ -101,6 +101,13 @@ immutable JSON used by the admin API. Every delivery includes the catalog
 SHA-256 and is rejected if the admin backend and runtime disagree. The GM
 bridge is loopback-only and uses an independent HMAC secret.
 
+The runtime compatibility patch treats standard Sakura recharge prices as
+10 diamonds per yuan, restores the historical shortfall once per role, and
+never lowers an existing VIP level during recharge reconstruction. Item 400
+is the client display ID for trainer/role experience; GM delivery maps it to
+the `role_exp` resource instead of placing an inert item in the bag. Existing
+item-400 balances are converted once when the role next initializes.
+
 After reviewing the generated manifest and address audit, make
 `/opt/kdjx/runtime/current` point at the staged release using the host's
 normal release-switch procedure. Keep `/etc/kdjx/runtime.env` and

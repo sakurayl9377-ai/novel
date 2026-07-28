@@ -4,15 +4,21 @@ import { badRequest } from "./validators.js";
 export function listUserOrders(userId, query = {}) {
   const limit = boundedInteger(query.limit, 20, 1, 50);
   const offset = nonNegativeInteger(query.offset, 0, "offset");
+  const filters = userOrderFilters(query);
   const snapshotMaxId = eventSnapshotMaxId({
     userId,
     requested: query.snapshotMaxId ?? query.maxId,
     where: "coins_delta < 0",
   });
   const total = Number(one(
-    `SELECT COUNT(*) AS total FROM user_reward_events
-     WHERE user_id = ? AND coins_delta < 0 AND id <= ?`,
-    [userId, snapshotMaxId],
+    `SELECT COUNT(*) AS total
+       FROM user_reward_events e
+       LEFT JOIN bailian_payment_orders p
+         ON e.related_type = 'bailian_payment_order'
+        AND p.id = e.related_id
+      WHERE e.user_id = ? AND e.coins_delta < 0 AND e.id <= ?
+        ${filters.sql}`,
+    [userId, snapshotMaxId, ...filters.params],
   )?.total || 0);
   const rows = all(
     `SELECT e.id, e.action, e.coins_delta, e.description, e.related_type,
@@ -23,9 +29,10 @@ export function listUserOrders(userId, query = {}) {
          ON e.related_type = 'bailian_payment_order'
         AND p.id = e.related_id
       WHERE e.user_id = ? AND e.coins_delta < 0 AND e.id <= ?
+        ${filters.sql}
       ORDER BY e.id DESC
       LIMIT ? OFFSET ?`,
-    [userId, snapshotMaxId, limit + 1, offset],
+    [userId, snapshotMaxId, ...filters.params, limit + 1, offset],
   );
   const hasMore = rows.length > limit;
   return {
@@ -35,6 +42,39 @@ export function listUserOrders(userId, query = {}) {
     nextOffset: offset + Math.min(rows.length, limit),
     snapshotMaxId,
   };
+}
+
+function userOrderFilters(query) {
+  const keyword = optionalSearch(query.q ?? query.query ?? query.keyword);
+  const from = optionalDate(query.from ?? query.startDate, "from");
+  const to = optionalDate(query.to ?? query.endDate, "to");
+  if (from && to && from > to) throw badRequest("order date range is invalid");
+
+  const clauses = [];
+  const params = [];
+  if (keyword) {
+    const fields = [
+      "e.action",
+      "e.description",
+      "e.related_id",
+      "p.product_id",
+      "p.product_name",
+      "p.status",
+    ];
+    clauses.push(`AND (${fields.map(
+      (field) => `instr(lower(COALESCE(${field}, '')), lower(?)) > 0`,
+    ).join(" OR ")})`);
+    params.push(...fields.map(() => keyword));
+  }
+  if (from) {
+    clauses.push("AND date(e.created_at, '+8 hours') >= date(?)");
+    params.push(from);
+  }
+  if (to) {
+    clauses.push("AND date(e.created_at, '+8 hours') <= date(?)");
+    params.push(to);
+  }
+  return { sql: clauses.join("\n"), params };
 }
 
 export function listUserWallet(userId, query = {}) {
@@ -138,6 +178,30 @@ function nonNegativeInteger(value, fallback, name) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw badRequest(`${name} is invalid`);
   return parsed;
+}
+
+function optionalSearch(value) {
+  if (value == null || String(value).trim() === "") return "";
+  if (typeof value !== "string") throw badRequest("order search is invalid");
+  const result = value.trim();
+  if (result.length > 100 || /[\u0000-\u001f\u007f]/.test(result)) {
+    throw badRequest("order search is invalid");
+  }
+  return result;
+}
+
+function optionalDate(value, name) {
+  if (value == null || String(value).trim() === "") return "";
+  if (typeof value !== "string") throw badRequest(`${name} is invalid`);
+  const result = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(result)) {
+    throw badRequest(`${name} is invalid`);
+  }
+  const parsed = new Date(`${result}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== result) {
+    throw badRequest(`${name} is invalid`);
+  }
+  return result;
 }
 
 function eventSnapshotMaxId({ userId, requested, where }) {

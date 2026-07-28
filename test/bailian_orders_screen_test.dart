@@ -16,6 +16,9 @@ class _FakeService extends BailianGameService {
     int offset = 0,
     int limit = 20,
     int snapshotMaxId = 0,
+    String searchQuery = '',
+    DateTime? fromDate,
+    DateTime? toDate,
   }) async {
     snapshotMaxIds.add(snapshotMaxId);
     return pages[calls++];

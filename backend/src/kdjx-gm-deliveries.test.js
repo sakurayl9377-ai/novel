@@ -47,7 +47,7 @@ const catalog = {
       description: 'A test compensation item',
       type: 0,
       quality: 4,
-      maxQuantity: 50,
+      maxQuantity: 9999,
     },
     {
       id: 100,
@@ -66,7 +66,7 @@ const catalogItems = [
     description: 'A test compensation item',
     type: '0',
     quality: '4',
-    maxQuantity: 50,
+    maxQuantity: 9999,
     deliveryTypes: ['mail'],
   },
   {
@@ -94,7 +94,7 @@ test('KDJX GM catalog exposes the generated item allow-list', () => {
     description: '\u53ef\u4ee5\u6539\u53d8\u7cbe\u7075\u4e2a\u4f53\u503c\u7684\u795e\u79d8\u4e4b\u7269',
     type: '0',
     quality: '4',
-    maxQuantity: 999,
+    maxQuantity: 9999,
     deliveryTypes: ['mail'],
   });
   assert.equal(
@@ -292,7 +292,7 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
     const common = {
       deliveryType: 'mail',
       itemId: '19',
-      quantity: 5,
+      quantity: 9999,
       expectedRoleId: link.last_role_id,
       expectedServerKey: link.last_server_key,
       expectedLinkUpdatedAt: link.updated_at,
@@ -379,14 +379,28 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
       'delivery_type_invalid',
     );
 
-    const overLimit = await postDelivery(
+    const globalOverLimit = await postDelivery(
       app,
       adminToken,
       playerId,
       {
         ...common,
         requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        quantity: 51,
+        quantity: 10000,
+      },
+    );
+    assert.equal(globalOverLimit.statusCode, 400);
+    assert.equal(globalOverLimit.json().error, 'quantity_invalid');
+
+    const overLimit = await postDelivery(
+      app,
+      adminToken,
+      playerId,
+      {
+        ...common,
+        requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        itemId: '100',
+        quantity: 11,
       },
     );
     assert.equal(overLimit.statusCode, 400);
@@ -435,7 +449,7 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
       serverKey: 'game.cn.1',
       itemId: '19',
       itemName: 'Gold Ingot',
-      quantity: 5,
+      quantity: 9999,
       catalogSha256: testCatalogSha256,
     });
     assertRedacted(succeeded.body);
@@ -461,7 +475,7 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
       {
         ...common,
         requestId: '11111111-1111-4111-8111-111111111111',
-        quantity: 6,
+        quantity: 9998,
       },
     );
     assert.equal(conflict.statusCode, 409);

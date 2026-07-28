@@ -36,6 +36,13 @@ RPC_METHOD = r'''
 		from game.object.game.gain import pack
 		from game.handler.inl_mail import sendMail
 
+		# ID 400 is the client's virtual display item for trainer/role EXP.
+		# Deliver it as role_exp so claiming the mail updates level progress.
+		if 400 in attachs:
+			attachs = dict(attachs)
+			trainerExp = attachs.pop(400)
+			attachs['role_exp'] = attachs.get('role_exp', 0) + trainerExp
+
 		expectedAttachs = pack(attachs)
 		query = {'role_db_id': roleID, 'content': content}
 
@@ -237,6 +244,7 @@ def main():
         or "'DBReadBy', 'Mail'" not in rpc_content
         or "def ensureVisible(mail):" not in rpc_content
         or "def matchesRequest(mail):" not in rpc_content
+        or "attachs['role_exp']" not in rpc_content
         or "raise Return('request_conflict')" not in rpc_content
     ):
         fail("Sakura GM game RPC is incomplete")
