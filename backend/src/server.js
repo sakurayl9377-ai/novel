@@ -17,6 +17,7 @@ import { adminRoutes } from './routes-admin.js';
 import { adminContentRoutes } from './routes-admin-content.js';
 import { adminGrowthRoutes } from './routes-admin-growth.js';
 import { adminGrowthRuleRoutes } from './routes-admin-growth-rules.js';
+import { adminKdjxGmRoutes } from './routes-admin-kdjx-gm.js';
 import { adminGameControlRoutes } from './routes-admin-game-control.js';
 import { adminOperationsRoutes } from './routes-admin-operations.js';
 import { adminNotificationRoutes } from './routes-admin-notifications.js';
@@ -120,6 +121,7 @@ export async function buildServer() {
       api.register(adminContentRoutes);
       api.register(adminGrowthRoutes);
       api.register(adminGrowthRuleRoutes);
+      api.register(adminKdjxGmRoutes);
       api.register(adminGameControlRoutes);
       api.register(adminOperationsRoutes);
       api.register(adminNotificationRoutes);

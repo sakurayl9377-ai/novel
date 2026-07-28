@@ -19,6 +19,7 @@ const AuditView = () => import('@/views/AuditView.vue');
 const VersionsView = () => import('@/views/VersionsView.vue');
 const ReleasesView = () => import('@/views/ReleasesView.vue');
 const GamesView = () => import('@/views/GamesView.vue');
+const KdjxGmView = () => import('@/views/KdjxGmView.vue');
 const ProxyView = () => import('@/views/ProxyView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 const LegacyModuleView = () => import('@/views/LegacyModuleView.vue');
@@ -222,6 +223,17 @@ export const router = createRouter({
           meta: {
             title: '游戏管理',
             hint: '游戏中心展示与服务器运行状态控制',
+            requiresAuth: true,
+            requiresAdmin: true,
+          },
+        },
+        {
+          path: 'games/kdjx/gm',
+          name: 'kdjx-gm',
+          component: KdjxGmView,
+          meta: {
+            title: 'KDJX GM',
+            hint: '玩家关联、游戏会话、支付补发与操作审计',
             requiresAuth: true,
             requiresAdmin: true,
           },

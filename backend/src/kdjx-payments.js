@@ -38,7 +38,7 @@ export async function previewKdjxPayment(input) {
 
 export async function createKdjxPayment(input) {
   ensureKdjxGameSchema();
-  releaseStaleDeliveryClaims();
+  releaseStaleKdjxPaymentClaims();
   const orderInput = normalizeOrderInput(input);
   const expectedQuote = normalizeExpectedQuote(input);
   const idempotencyKey = cleanId(
@@ -169,7 +169,7 @@ export async function createKdjxPayment(input) {
 
 export function findKdjxPayment(userId, gameOrderId) {
   ensureKdjxGameSchema();
-  releaseStaleDeliveryClaims();
+  releaseStaleKdjxPaymentClaims();
   const order = one(
     `SELECT * FROM kdjx_payment_orders
      WHERE user_id = ? AND game_order_id = ?`,
@@ -179,22 +179,37 @@ export function findKdjxPayment(userId, gameOrderId) {
   return paymentJson(order);
 }
 
-export async function retryKdjxPayment(userId, gameOrderId) {
+export async function retryKdjxPayment(userId, gameOrderId, expected = {}) {
   ensureKdjxGameSchema();
-  releaseStaleDeliveryClaims();
+  releaseStaleKdjxPaymentClaims();
   const order = one(
     `SELECT * FROM kdjx_payment_orders
      WHERE user_id = ? AND game_order_id = ?`,
     [userId, cleanId(gameOrderId, 'game_order_id', 96)],
   );
   if (!order) throw paymentError('payment_not_found', 404);
+  if (expected.status && order.status !== expected.status) {
+    throw paymentError('kdjx_payment_status_changed', 409);
+  }
+  if (
+    expected.attempts !== undefined &&
+    Number(order.fulfillment_attempts) !== expected.attempts
+  ) {
+    throw paymentError('kdjx_payment_version_changed', 409);
+  }
   if (!['paid', 'delivery_failed'].includes(order.status)) {
     return paymentJson(order);
   }
-  return paymentJson(await fulfillKdjxPayment(order.id, { force: true }));
+  return paymentJson(await fulfillKdjxPayment(order.id, {
+    force: true,
+    expectedAttempts: expected.attempts,
+  }));
 }
 
-async function fulfillKdjxPayment(orderId, { force }) {
+async function fulfillKdjxPayment(orderId, {
+  force,
+  expectedAttempts,
+}) {
   let order = one('SELECT * FROM kdjx_payment_orders WHERE id = ?', [orderId]);
   if (!order || !['paid', 'delivery_failed'].includes(order.status)) return order;
   if (
@@ -204,14 +219,23 @@ async function fulfillKdjxPayment(orderId, { force }) {
     return order;
   }
 
+  const claimVersionClause = expectedAttempts === undefined
+    ? ''
+    : ' AND fulfillment_attempts = ?';
   const claimed = run(
     `UPDATE kdjx_payment_orders
      SET status = 'fulfilling', fulfillment_attempts = fulfillment_attempts + 1,
          updated_at = datetime('now')
-     WHERE id = ? AND status IN ('paid', 'delivery_failed')`,
-    [orderId],
+     WHERE id = ? AND status IN ('paid', 'delivery_failed')
+       ${claimVersionClause}`,
+    expectedAttempts === undefined
+      ? [orderId]
+      : [orderId, expectedAttempts],
   );
   if ((claimed.changes || 0) !== 1) {
+    if (expectedAttempts !== undefined) {
+      throw paymentError('kdjx_payment_version_changed', 409);
+    }
     return one('SELECT * FROM kdjx_payment_orders WHERE id = ?', [orderId]);
   }
 
@@ -361,7 +385,7 @@ function signedPaymentRequest(payload) {
   };
 }
 
-function releaseStaleDeliveryClaims() {
+export function releaseStaleKdjxPaymentClaims() {
   const cutoff = new Date(
     Date.now() - kdjxConfig.paymentClaimTtlMs,
   ).toISOString();

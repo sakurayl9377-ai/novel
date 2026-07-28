@@ -105,6 +105,24 @@ export function ensureKdjxGameSchema() {
       ON kdjx_payment_orders(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_kdjx_payment_orders_delivery
       ON kdjx_payment_orders(status, updated_at);
+
+    CREATE TABLE IF NOT EXISTS kdjx_gm_action_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_user_id INTEGER,
+      action TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      result TEXT NOT NULL CHECK (result IN ('pending', 'success', 'failed')),
+      error_code TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_kdjx_gm_action_logs_time
+      ON kdjx_gm_action_logs(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_kdjx_gm_action_logs_target
+      ON kdjx_gm_action_logs(target_type, target_id, created_at DESC);
   `);
 
   schemaReady = true;

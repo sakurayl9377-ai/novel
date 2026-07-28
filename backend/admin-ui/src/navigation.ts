@@ -81,6 +81,7 @@ export const navigationGroups: NavigationGroup[] = [
     label: '系统',
     items: [
       { label: '游戏管理', route: 'games', icon: Management, adminOnly: true },
+      { label: 'KDJX GM', route: 'kdjx-gm', icon: Tickets, adminOnly: true },
       { label: '质量分析', route: 'analytics', icon: DataAnalysis, adminOnly: true, legacy: true },
       { label: '版本与设备', route: 'versions', icon: Monitor, adminOnly: true, legacy: true },
       { label: '发布管理', route: 'releases', icon: Files, adminOnly: true, legacy: true },
