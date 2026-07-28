@@ -261,6 +261,35 @@ class GameServiceDeploymentContractTest(unittest.TestCase):
         self.assertLess(sudoers_backup, installer)
         self.assertLess(installer, release_switch)
 
+    def test_production_deploy_validates_and_allows_gm_delivery_config(self):
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
+
+        required_block = script[
+            script.index("const required = {"):
+            script.index("for (const [key, expected]", script.index("const required = {"))
+        ]
+        secret_block = script[
+            script.index("for (const key of ["):
+            script.index("const allowedKdjxKeys", script.index("for (const key of ["))
+        ]
+        allowed_block = script[
+            script.index("const allowedKdjxKeys"):
+            script.index("if (Object.keys(values)", script.index("const allowedKdjxKeys"))
+        ]
+
+        self.assertIn(
+            "KDJX_GM_DELIVERY_URL: "
+            "'http://127.0.0.1:18080/internal/sakura/gm/deliveries'",
+            required_block,
+        )
+        self.assertIn("'KDJX_GM_DELIVERY_HMAC_SECRET'", secret_block)
+        for key in (
+            "KDJX_GM_DELIVERY_URL",
+            "KDJX_GM_DELIVERY_HMAC_SECRET",
+            "KDJX_GM_DELIVERY_TIMEOUT_MS",
+        ):
+            self.assertIn(f"'{key}'", allowed_block)
+
 
 if __name__ == "__main__":
     unittest.main()

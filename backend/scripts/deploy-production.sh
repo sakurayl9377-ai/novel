@@ -63,6 +63,7 @@ const required = {
   KDJX_PAYMENT_CATALOG_FILE: './catalogs/kdjx-payment-catalog.json',
   KDJX_PAYMENT_VERIFY_URL: 'http://127.0.0.1:18080/internal/sakura/payments/verify',
   KDJX_PAYMENT_FULFILLMENT_URL: 'http://127.0.0.1:18080/internal/sakura/payments/fulfill',
+  KDJX_GM_DELIVERY_URL: 'http://127.0.0.1:18080/internal/sakura/gm/deliveries',
   KDJX_SESSION_TTL_DAYS: '3650',
   KDJX_LOGIN_TICKET_TTL_SECONDS: '60',
 };
@@ -72,7 +73,11 @@ for (const [key, expected] of Object.entries(required)) {
     process.exit(1);
   }
 }
-for (const key of ['KDJX_SSO_SHARED_SECRET', 'KDJX_PAYMENT_HMAC_SECRET']) {
+for (const key of [
+  'KDJX_SSO_SHARED_SECRET',
+  'KDJX_PAYMENT_HMAC_SECRET',
+  'KDJX_GM_DELIVERY_HMAC_SECRET',
+]) {
   if ((values[key] || '').length < 32) {
     process.stderr.write(`kdjx_configuration_invalid=${key}\n`);
     process.exit(1);
@@ -94,6 +99,9 @@ const allowedKdjxKeys = new Set([
   'KDJX_PAYMENT_MAX_ATTEMPTS',
   'KDJX_PAYMENT_TIMEOUT_MS',
   'KDJX_PAYMENT_CLAIM_TTL_MS',
+  'KDJX_GM_DELIVERY_URL',
+  'KDJX_GM_DELIVERY_HMAC_SECRET',
+  'KDJX_GM_DELIVERY_TIMEOUT_MS',
 ]);
 if (Object.keys(values).some(
   (key) => key.startsWith('KDJX_') && !allowedKdjxKeys.has(key),
