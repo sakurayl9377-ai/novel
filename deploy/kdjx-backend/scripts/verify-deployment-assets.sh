@@ -281,6 +281,18 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
         'package task\n\n'
         'func check(t *Task) {\n'
         '\tlog.Infof("login channel `%s` tag `%s` guarder `%s`", t.Channel, t.Tag, t.Guarder)\n\n'
+        '\tr, err := service.Call(record.rpc.Storage(), "AccountLogin", name, t.Pass)\n'
+        '\tdbResp := r.(storage.Response)\n'
+        '\tif err != nil {\n'
+        '\t\tif err.Error() != storage.ErrNoAccount.Error() || (err.Error() == storage.ErrNoAccount.Error() && t.IsRegister != 1) {\n'
+        '\t\t\treturn\n'
+        '\t\t}\n'
+        '\t} else {\n'
+        '\t\tif t.IsRegister == 1 {\n'
+        '\t\t\treturn\n'
+        '\t\t}\n'
+        '\t}\n'
+        '\t_ = dbResp\n'
         '}\n',
         encoding='utf-8',
     )
@@ -337,6 +349,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
     }
     subprocess.run(command, check=True)
     assert all(path.read_bytes() == payload for path, payload in first_result.items())
+    patched_task = task_source.read_text(encoding='utf-8')
     patched_verifier = verifier_source.read_text(encoding='utf-8')
     patched_tests = verifier_test.read_text(encoding='utf-8')
     compatible_proof = (
@@ -366,7 +379,20 @@ with tempfile.TemporaryDirectory(prefix='kdjx-login-ticket-gate-') as temp:
         'func TestVerifyRejectsLongLivedSessionCredential('
     ) == 1
     assert '{name: "both fields", clientName: proof, clientPass: proof}' in patched_tests
-    assert 'if t.Channel != "sakura" {' in task_source.read_text(encoding='utf-8')
+    assert patched_task.count('if t.Channel != "sakura" {') == 1
+    assert patched_task.count(
+        'allowSakuraAutoRegister := t.Channel == "sakura"'
+    ) == 1
+    assert patched_task.count(
+        't.IsRegister != 1 && !allowSakuraAutoRegister'
+    ) == 1
+    assert patched_task.count(
+        't.IsRegister == 1 && !allowSakuraAutoRegister'
+    ) == 1
+    assert (
+        'err.Error() == storage.ErrNoAccount.Error() && t.IsRegister != 1)'
+        not in patched_task
+    )
 
 with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     runtime = pathlib.Path(temp) / 'runtime'

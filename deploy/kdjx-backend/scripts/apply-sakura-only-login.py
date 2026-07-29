@@ -10,6 +10,23 @@ from pathlib import Path
 
 GATE = """\tif t.Channel != \"sakura\" {\n\t\treturn &taskCheckResponse{\n\t\t\tRet: false,\n\t\t\tErr: \"sakura_auth_required\",\n\t\t}\n\t}\n\n"""
 MARKER = "\tlog.Infof(\"login channel `%s` tag `%s` guarder `%s`\", t.Channel, t.Tag, t.Guarder)\n\n"
+ACCOUNT_LOGIN_MARKER = (
+    '\tr, err := service.Call(record.rpc.Storage(), "AccountLogin", name, t.Pass)\n'
+)
+SAKURA_AUTO_REGISTER = '\tallowSakuraAutoRegister := t.Channel == "sakura"\n'
+OLD_MISSING_ACCOUNT_CHECK = (
+    "\t\tif err.Error() != storage.ErrNoAccount.Error() || "
+    "(err.Error() == storage.ErrNoAccount.Error() && t.IsRegister != 1) {\n"
+)
+SAKURA_MISSING_ACCOUNT_CHECK = (
+    "\t\tif err.Error() != storage.ErrNoAccount.Error() ||\n"
+    "\t\t\t(err.Error() == storage.ErrNoAccount.Error() && "
+    "t.IsRegister != 1 && !allowSakuraAutoRegister) {\n"
+)
+OLD_EXISTING_ACCOUNT_CHECK = "\t\tif t.IsRegister == 1 {\n"
+SAKURA_EXISTING_ACCOUNT_CHECK = (
+    "\t\tif t.IsRegister == 1 && !allowSakuraAutoRegister {\n"
+)
 OLD_PROOF_PREFIX = 'if !strings.HasPrefix(proof, "kdjx_session_") {'
 LOGIN_PROOF_PREFIX = 'if !strings.HasPrefix(proof, "kdjx_login_") {'
 OLD_VERIFY_PAYLOAD = 'json.Marshal(map[string]string{"credential": proof})'
@@ -116,6 +133,43 @@ def patch_channel_gate(path):
         path.write_text(content, encoding="utf-8")
     if content.count('if t.Channel != "sakura" {') != 1:
         fail("KDJX Sakura-only channel gate is incomplete")
+
+
+def patch_sakura_auto_registration(path):
+    content = path.read_text(encoding="utf-8")
+    if SAKURA_AUTO_REGISTER not in content:
+        if content.count(ACCOUNT_LOGIN_MARKER) != 1:
+            fail("KDJX account login call does not match the supported source layout")
+        content = content.replace(
+            ACCOUNT_LOGIN_MARKER,
+            SAKURA_AUTO_REGISTER + ACCOUNT_LOGIN_MARKER,
+            1,
+        )
+    if OLD_MISSING_ACCOUNT_CHECK in content:
+        if content.count(OLD_MISSING_ACCOUNT_CHECK) != 1:
+            fail("KDJX missing-account check is ambiguous")
+        content = content.replace(
+            OLD_MISSING_ACCOUNT_CHECK,
+            SAKURA_MISSING_ACCOUNT_CHECK,
+            1,
+        )
+    if OLD_EXISTING_ACCOUNT_CHECK in content:
+        if content.count(OLD_EXISTING_ACCOUNT_CHECK) != 1:
+            fail("KDJX existing-account check is ambiguous")
+        content = content.replace(
+            OLD_EXISTING_ACCOUNT_CHECK,
+            SAKURA_EXISTING_ACCOUNT_CHECK,
+            1,
+        )
+    if (
+        content.count(SAKURA_AUTO_REGISTER) != 1
+        or content.count(SAKURA_MISSING_ACCOUNT_CHECK) != 1
+        or content.count(SAKURA_EXISTING_ACCOUNT_CHECK) != 1
+        or OLD_MISSING_ACCOUNT_CHECK in content
+        or OLD_EXISTING_ACCOUNT_CHECK in content
+    ):
+        fail("KDJX Sakura automatic registration gate is incomplete")
+    path.write_text(content, encoding="utf-8")
 
 
 def patch_login_verifier(path):
@@ -232,6 +286,7 @@ def main():
         fail("KDJX Sakura verifier source is missing: {}".format(verifier_path))
 
     patch_channel_gate(task_path)
+    patch_sakura_auto_registration(task_path)
     patch_login_verifier(verifier_path)
     patch_login_verifier_tests(verifier_path.with_name("client_test.go"))
 
