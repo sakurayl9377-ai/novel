@@ -19,8 +19,11 @@ import (
 )
 
 const (
-	gmDeliveryRPCTimeout = 15 * time.Second
-	gmMailTemplate       = 2
+	// The complete retry budget stays below the backend's 20 second deadline.
+	gmDeliveryRPCTimeout          = 15 * time.Second
+	gmDeliveryRPCReconcileDelay   = 1 * time.Second
+	gmDeliveryRPCReconcileTimeout = 3 * time.Second
+	gmMailTemplate                = 2
 )
 
 type legacyGMDeliveryRPC interface {
@@ -137,19 +140,31 @@ func (r *serverLegacyGMDeliveryRPC) SendMail(request sakuragm.DeliveryRequest) (
 		return sakuragm.DeliveryResult{}, sakuragm.NewPublicError(http.StatusBadRequest, "invalid_delivery_identity")
 	}
 	attachs := map[document.Integer]int{document.Integer(request.ItemID): request.Quantity}
-	response, err := service.CallWithTimeout(
-		game,
-		"SakuraGMSendMail",
-		gmDeliveryRPCTimeout,
-		task.GameServInternalPassword,
-		request.RequestID,
-		roleID,
-		gmMailTemplate,
-		request.MailSender,
-		request.MailSubject,
-		request.MailContent,
-		attachs,
-	)
+	call := func(timeout time.Duration, reconcileOnly bool) (interface{}, error) {
+		return service.CallWithTimeout(
+			game,
+			"SakuraGMSendMail",
+			timeout,
+			task.GameServInternalPassword,
+			request.RequestID,
+			roleID,
+			gmMailTemplate,
+			request.MailSender,
+			request.MailSubject,
+			request.MailContent,
+			attachs,
+			reconcileOnly,
+		)
+	}
+	response, err := call(gmDeliveryRPCTimeout, false)
+	if err == service.ErrTimeout {
+		log.Warningf(
+			"Sakura GM delivery %s timed out; reconciling the same request",
+			request.RequestID,
+		)
+		time.Sleep(gmDeliveryRPCReconcileDelay)
+		response, err = call(gmDeliveryRPCReconcileTimeout, true)
+	}
 	if err != nil {
 		return sakuragm.DeliveryResult{}, errors.New("delivery outcome unknown")
 	}

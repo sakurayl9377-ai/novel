@@ -17,7 +17,7 @@ GAME_SERVICE_CONSTRUCTOR_ANCHOR = (
 GAME_SERVICE_REGISTER_ANCHOR = '\ts.Register(s, "GetOpenDays")\n'
 GAME_SERVICE_REGISTER = '\ts.Register(s, "SakuraGMSendMail")\n'
 GAME_SERVICE_METHOD = r'''
-func (s *Service) SakuraGMSendMail(inlPwd string, requestID string, roleID document.ID, mailType int, sender string, subject string, content string, attachs map[document.Integer]int) (response string, err error) {
+func (s *Service) SakuraGMSendMail(inlPwd string, requestID string, roleID document.ID, mailType int, sender string, subject string, content string, attachs map[document.Integer]int, reconcileOnly bool) (response string, err error) {
 	return
 }
 
@@ -25,7 +25,7 @@ func (s *Service) SakuraGMSendMail(inlPwd string, requestID string, roleID docum
 RPC_ANCHOR = "\t@rpc_coroutine\n\tdef gmSendMail(self, roleID, mailType, sender, subject, content, attachs):\n"
 RPC_METHOD = r'''
 	@rpc_coroutine
-	def SakuraGMSendMail(self, inl_pwd, requestID, roleID, mailType, sender, subject, content, attachs):
+	def SakuraGMSendMail(self, inl_pwd, requestID, roleID, mailType, sender, subject, content, attachs, reconcileOnly):
 		if inl_pwd != GameServInternalPassword:
 			raise Return('auth_error')
 		if not requestID or len(requestID) > 64:
@@ -125,6 +125,11 @@ RPC_METHOD = r'''
 				if not visible:
 					raise Return('delivery_outcome_unknown')
 			raise Return('existing:' + objectid2string(existingMail['id']))
+
+		# A timed-out caller may only reconcile the original request. It must
+		# never create a second mail while the first RPC is still completing.
+		if reconcileOnly:
+			raise Return('delivery_pending')
 
 		mail = ObjectRole.makeMailModel(roleID, mailType, sender, subject, content, attachs)
 		try:
@@ -249,6 +254,8 @@ def main():
         or "'DBReadBy', 'Mail'" not in rpc_content
         or "def ensureVisible(mail):" not in rpc_content
         or "def matchesRequest(mail):" not in rpc_content
+        or "if reconcileOnly:" not in rpc_content
+        or "raise Return('delivery_pending')" not in rpc_content
         or "\t\timport copy\n" not in rpc_content
         or "attachs['role_exp']" not in rpc_content
         or "raise Return('request_conflict')" not in rpc_content

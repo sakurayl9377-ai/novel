@@ -260,6 +260,9 @@ build_go_component online_fight_forward online_fight_forward_server
 rm -rf -- "$candidate_root/gosrc"
 printf 'sakura-only-login-ticket-gate-v2\n' > "$candidate_root/sakura-only-login-gate.txt"
 chmod 0640 "$candidate_root/sakura-only-login-gate.txt"
+printf 'sakura-gm-timeout-reconciliation-v1\n' \
+    > "$candidate_root/sakura-gm-timeout-reconciliation-gate.txt"
+chmod 0640 "$candidate_root/sakura-gm-timeout-reconciliation-gate.txt"
 printf 'loopback-metrics-gate-v1\n' > "$candidate_root/loopback-metrics-gate.txt"
 chmod 0640 "$candidate_root/loopback-metrics-gate.txt"
 

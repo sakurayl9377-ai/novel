@@ -54,6 +54,14 @@ GAME_INIT_REPLACEMENT = """		self.cards.init()
 		self.society.init()
 """
 
+ROLE_SET_ANCHOR = """	def set(self, dic):
+		ObjectDBase.set(self, dic)
+"""
+ROLE_SET_REPLACEMENT = """	def set(self, dic):
+		ObjectDBase.set(self, dic)
+		self._repairSakuraLoadedExperienceFloor()
+"""
+
 ROLE_EXP_FLOOR_ANCHOR = """			if value == self.db[dbkey]:
 				return
 			# for gm, re-init level
@@ -91,7 +99,25 @@ RECHARGE_SCHEMA_REPLACEMENT = """type Recharge struct {
 """
 
 ROLE_METHOD_ANCHOR = "\tdef _initMap(self):\n"
-ROLE_METHODS = r'''	def _applySakuraRechargeCompatibility(self):
+ROLE_METHODS = r'''	def _repairSakuraLoadedExperienceFloor(self):
+		level = self.db.get('level', 0)
+		if level <= 0 or level > self.LevelMax:
+			return
+		levelFloor = ObjectRole.LevelSumExp.get(level - 1, None)
+		if levelFloor is None:
+			return
+		oldSumExp = self.db.get('sum_exp', 0)
+		if oldSumExp >= levelFloor:
+			return
+		levelExp = max(self.db.get('level_exp', 0), 0)
+		repairedSumExp = levelFloor + levelExp
+		self.db['sum_exp'] = repairedSumExp
+		self.db['level_exp'] = levelExp
+		logger.info(
+			'role %s repaired loaded experience floor from %d to %d at level %d',
+			objectid2string(self.id), oldSumExp, repairedSumExp, level)
+
+	def _applySakuraRechargeCompatibility(self):
 		compensation = 0
 		orderCount = 0
 		for rechargeID, correctRMB in SakuraRechargeRMB.iteritems():
@@ -262,6 +288,12 @@ def main():
     )
     replace_once(
         role,
+        ROLE_SET_ANCHOR,
+        ROLE_SET_REPLACEMENT,
+        "loaded role experience floor compatibility",
+    )
+    replace_once(
+        role,
         ROLE_EXP_FLOOR_ANCHOR,
         ROLE_EXP_FLOOR_REPLACEMENT,
         "role experience floor compatibility",
@@ -300,8 +332,10 @@ def main():
     required = (
         "SakuraRechargeRMB = {",
         "SakuraLegacyRechargeAward = {",
+        "def _repairSakuraLoadedExperienceFloor(self):",
         "def _applySakuraRechargeCompatibility(self):",
         "def _applySakuraTrainerExperienceCompatibility(self):",
+        "self._repairSakuraLoadedExperienceFloor()",
         "self.vip_level = max(self.vip_level, level)",
         "rmb = sakuraRMB",
         "recharge[SakuraRechargeFixMarker] = True",

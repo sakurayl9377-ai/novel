@@ -820,6 +820,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         ) < gm_game_service_text.index('func NewService(')
         assert 'roleID document.ID' in gm_game_service_text
         assert 'attachs map[document.Integer]int' in gm_game_service_text
+        assert 'reconcileOnly bool' in gm_game_service_text
         assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
         assert gm_rpc_text.count('\t\timport copy\n') == 1
         assert 'mailbox = copy.deepcopy(game.role.mailbox)' in gm_rpc_text
@@ -842,6 +843,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             'gmSendMail',
         ]
         sakura_mail_method = gm_rpc_methods[0]
+        assert sakura_mail_method.args.args[-1].arg == 'reconcileOnly'
         assert any(
             isinstance(node, ast.Import)
             and [alias.name for alias in node.names] == ['copy']
@@ -862,6 +864,12 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             subprocess.run([python2, '-m', 'py_compile', str(gm_rpc)], check=True)
         assert gm_rpc_text.index("raise Return('ok:'") > gm_rpc_text.index(
             "logger.exception('SakuraGMSendMail error"
+        )
+        assert gm_rpc_text.index('\t\tif reconcileOnly:') > gm_rpc_text.index(
+            "\t\t\traise Return('existing:'"
+        )
+        assert gm_rpc_text.index('\t\tif reconcileOnly:') < gm_rpc_text.index(
+            '\t\tmail = ObjectRole.makeMailModel'
         )
     login = json.loads((runtime / 'login' / 'defines.json').read_text(encoding='utf-8'))
     assert login['login.cn.1']['patch_url'] == 'https://novel.kxhub.xyz/games/kdjx/hot/'
@@ -1331,7 +1339,13 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
     role.write_text(
         '#!/usr/bin/python\n# -*- coding: utf-8 -*-\n'
         + economy_module.ROLE_CONSTANTS_ANCHOR
-        + 'class ObjectRole(object):\n'
+        + 'class ObjectDBase(object):\n'
+        + '\tdef set(self, dic):\n'
+        + '\t\tself.db = dic\n'
+        + '\t\treturn self\n\n'
+        + 'class ObjectRole(ObjectDBase):\n'
+        + economy_module.ROLE_SET_ANCHOR
+        + '\t\treturn self\n\n'
         + '\tdef init(self):\n'
         + economy_module.RECHARGE_INIT_ANCHOR
         + '\t\tself._inited = True\n\n'
@@ -1415,6 +1429,10 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
     assert role_content.count(
         'def _applySakuraTrainerExperienceCompatibility(self):'
     ) == 1
+    assert role_content.count(
+        'def _repairSakuraLoadedExperienceFloor(self):'
+    ) == 1
+    assert role_content.count('self._repairSakuraLoadedExperienceFloor()') == 1
     assert role_content.count(
         'repaired legacy experience floor from %d to %d'
     ) == 1
@@ -1518,6 +1536,42 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
         2: 2000,
         3: 3000,
     }
+    namespace['ObjectRole'].LevelMax = 4
+    loaded_role = namespace['ObjectRole']()
+    loaded_role.id = '64b000000000000000000009'
+    loaded_role.set({
+        'level': 3,
+        'sum_exp': 1500,
+        'level_exp': 200,
+        'vip_level': 28,
+        'rmb': 926809,
+    })
+    assert loaded_role.db == {
+        'level': 3,
+        'sum_exp': 2200,
+        'level_exp': 200,
+        'vip_level': 28,
+        'rmb': 926809,
+    }
+    loaded_role.set(loaded_role.db)
+    assert loaded_role.db['sum_exp'] == 2200
+    consistent_role = namespace['ObjectRole']()
+    consistent_role.id = '64b000000000000000000008'
+    consistent_role.set({
+        'level': 3,
+        'sum_exp': 2500,
+        'level_exp': 500,
+        'vip_level': 28,
+        'rmb': 926809,
+    })
+    assert consistent_role.db == {
+        'level': 3,
+        'sum_exp': 2500,
+        'level_exp': 500,
+        'vip_level': 28,
+        'rmb': 926809,
+    }
+
     exp_role = namespace['ObjectRole']()
     exp_role.id = '64b000000000000000000000'
     exp_role.level = 3
@@ -1775,8 +1829,14 @@ grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'ROLE_SET_REPLACEMENT' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'def _repairSakuraLoadedExperienceFloor(self):' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'ROLE_EXP_FLOOR_REPLACEMENT' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'Sakura loaded role experience repair is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'Sakura role experience floor compatibility is unavailable' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'self.vip_level = max(self.vip_level, level)' \
@@ -1795,6 +1855,22 @@ grep -Fq 'Handle("/internal/sakura/gm/deliveries"' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"
 grep -Eq 'gmMailTemplate[[:space:]]+= 2' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'err == service.ErrTimeout' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'call(gmDeliveryRPCTimeout, false)' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'call(gmDeliveryRPCReconcileTimeout, true)' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'reconcileOnly bool' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'if reconcileOnly:' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "raise Return('delivery_pending')" \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'sakura-gm-timeout-reconciliation-v1' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'Sakura GM timeout reconciliation is not compiled' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'request.Quantity > item.MaxQuantity' \
     "$root_dir/patches/sakura-gm/sakuragm/handler.go"
 grep -Fq 'request.ServerKey != "game.cn.1"' \

@@ -86,6 +86,12 @@ grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
 grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
     "$runtime_root/release/src/game/object/game/role.py" \
     || fail "Sakura trainer experience compatibility is unavailable"
+grep -Fq 'def _repairSakuraLoadedExperienceFloor(self):' \
+    "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura loaded role experience repair is unavailable"
+grep -Fq 'self._repairSakuraLoadedExperienceFloor()' \
+    "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura loaded role experience repair is not active"
 grep -Fq 'repaired legacy experience floor from %d to %d' \
     "$runtime_root/release/src/game/object/game/role.py" \
     || fail "Sakura role experience floor compatibility is unavailable"
@@ -99,6 +105,16 @@ grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
 grep -Fq "'DBUpdate', 'Role', roleID, {'mailbox': mailbox}, False" \
     "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura GM mailbox persistence gate is unavailable"
+grep -Fq 'if reconcileOnly:' "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura GM timeout reconciliation is unavailable"
+gm_reconciliation_gate="$runtime_root/sakura-gm-timeout-reconciliation-gate.txt"
+[[ -f "$gm_reconciliation_gate" && ! -L "$gm_reconciliation_gate" ]] \
+    || fail "Sakura GM timeout reconciliation gate is unavailable"
+[[ "$(tr -d '\r\n' < "$gm_reconciliation_gate")" \
+    == "sakura-gm-timeout-reconciliation-v1" ]] \
+    || fail "Sakura GM timeout reconciliation gate is invalid"
+grep -aFq 'reconciling the same request' "$runtime_root/bin/login_server" \
+    || fail "Sakura GM timeout reconciliation is not compiled"
 command -v luajit >/dev/null 2>&1 || fail "LuaJIT is unavailable"
 "$runtime_env_validator" --env-file /etc/kdjx/runtime.env
 "$gm_env_validator" --env-file /etc/kdjx/gm.env
