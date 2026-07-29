@@ -821,6 +821,13 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         assert 'roleID document.ID' in gm_game_service_text
         assert 'attachs map[document.Integer]int' in gm_game_service_text
         assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
+        assert 'mailbox = copy.deepcopy(game.role.mailbox)' in gm_rpc_text
+        assert gm_rpc_text.count(
+            "'DBUpdate', 'Role', roleID, {'mailbox': mailbox}, False"
+        ) == 1
+        assert gm_rpc_text.count(
+            "'DBMultipleReadKeys', 'Role', [roleID], ['mailbox']"
+        ) == 2
         gm_rpc_tree = ast.parse(gm_rpc_text, filename=str(gm_rpc))
         gm_rpc_class = next(
             node for node in gm_rpc_tree.body
@@ -1660,10 +1667,16 @@ grep -Fq 'func (s *Service) SakuraGMSendMail(' \
 grep -Fq 's.Register(s, "SakuraGMSendMail")' \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 'def ensureVisible(mail):' "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "attachs['role_exp']" \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'Sakura online GM mailbox persistence is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'Sakura GM mailbox persistence gate is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \

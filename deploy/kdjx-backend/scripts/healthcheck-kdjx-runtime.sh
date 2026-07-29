@@ -88,6 +88,12 @@ grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
     || fail "Sakura trainer experience compatibility is unavailable"
 grep -Fq "attachs['role_exp']" "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura trainer experience delivery mapping is unavailable"
+grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
+    "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura online GM mailbox persistence is unavailable"
+grep -Fq "'DBUpdate', 'Role', roleID, {'mailbox': mailbox}, False" \
+    "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura GM mailbox persistence gate is unavailable"
 command -v luajit >/dev/null 2>&1 || fail "LuaJIT is unavailable"
 "$runtime_env_validator" --env-file /etc/kdjx/runtime.env
 "$gm_env_validator" --env-file /etc/kdjx/gm.env

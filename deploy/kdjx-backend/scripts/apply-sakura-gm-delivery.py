@@ -74,16 +74,20 @@ RPC_METHOD = r'''
 						mail['attachs'] and True or False,
 					)
 					game.role.setMailModel(mailID, mail)
-				raise Return(mailID in game.role.getMailIDs())
+				mailbox = copy.deepcopy(game.role.mailbox)
+			else:
+				roleData = yield self.dbcGame.call_async(
+					'DBMultipleReadKeys', 'Role', [roleID], ['mailbox'])
+				if not roleData['ret'] or len(roleData.get('models', [])) != 1:
+					raise Return(False)
+				mailbox = roleData['models'][0].get('mailbox') or []
+				if not any(info.get('db_id') == mailID for info in mailbox):
+					mailbox = ObjectRole.addMailThumbInMem(
+						mailbox, mail, roleID)
 
-			roleData = yield self.dbcGame.call_async(
-				'DBMultipleReadKeys', 'Role', [roleID], ['mailbox'])
-			if not roleData['ret'] or len(roleData.get('models', [])) != 1:
-				raise Return(False)
-			mailbox = roleData['models'][0].get('mailbox') or []
-			if any(info.get('db_id') == mailID for info in mailbox):
-				raise Return(True)
-			mailbox = ObjectRole.addMailThumbInMem(mailbox, mail, roleID)
+			# An online role's watched mailbox is eventually persisted by the
+			# game queue, but delivery acknowledgement must not depend on that
+			# delayed flush. Persist and verify the exact active snapshot now.
 			updated = yield self.dbcGame.call_async(
 				'DBUpdate', 'Role', roleID, {'mailbox': mailbox}, False)
 			if not updated['ret']:
