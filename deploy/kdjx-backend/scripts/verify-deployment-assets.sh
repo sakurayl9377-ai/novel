@@ -1739,6 +1739,11 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     session.parent.mkdir(parents=True, exist_ok=True)
     role.write_text(
         "class ObjectRole(object):\n"
+        "\tdef _initCardSkin(self):\n"
+        "\t\t# 初始化精灵皮肤属性加成\n"
+        "\t\tself._skinAdd = defaultdict(lambda:(zeros(), zeros()))\n"
+        "\t\tfor skinID in self.skins:\n"
+        "\t\t\tself.calCardSkinAttr(skinID)\n"
         "\tdef onCardSkinRefresh(self, skinIDs):\n"
         "\t\trefreshAll = False\n"
         "\t\tmarkIDs = []\n"
@@ -1774,6 +1779,9 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     role_content = role.read_text(encoding='utf-8')
     session_content = session.read_text(encoding='utf-8')
     assert role_content.count('if cfg is None:') == 2
+    assert 'for skinID in self.skins.keys():' in role_content
+    assert 'self.skins.pop(skinID, None)' in role_content
+    assert 'removed skin %s missing from card_skin csv' in role_content
     assert 'missing from card_skin csv during init' in role_content
     assert 'missing from card_skin csv during refresh' in role_content
     assert 'ignored item %s with missing card skin %s' in role_content
@@ -1825,6 +1833,8 @@ grep -Fq 'Sakura offline payment channel cache is unavailable' \
 grep -Fq "channel=channel or 'sakura')" \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'sakura-economy-compatibility-v1' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'Invalid stored card skin cleanup is unavailable' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "(400, 'role_exp')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "(900000018, 'coin14')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"

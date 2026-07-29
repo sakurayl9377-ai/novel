@@ -36,6 +36,26 @@ def main():
 
     replace_once(
         role,
+        """\tdef _initCardSkin(self):
+\t\t# 初始化精灵皮肤属性加成
+\t\tself._skinAdd = defaultdict(lambda:(zeros(), zeros()))
+\t\tfor skinID in self.skins:
+\t\t\tself.calCardSkinAttr(skinID)""",
+        """\tdef _initCardSkin(self):
+\t\t# 初始化精灵皮肤属性加成
+\t\tself._skinAdd = defaultdict(lambda:(zeros(), zeros()))
+\t\tfor skinID in self.skins.keys():
+\t\t\tif csv.card_skin[skinID] is None:
+\t\t\t\tlogger.warning(
+\t\t\t\t\t'role %s removed skin %s missing from card_skin csv',
+\t\t\t\t\tobjectid2string(self.id), skinID)
+\t\t\t\tself.skins.pop(skinID, None)
+\t\t\t\tcontinue
+\t\t\tself.calCardSkinAttr(skinID)""",
+        "invalid stored card skin cleanup",
+    )
+    replace_once(
+        role,
         """\t\tskinID = specialArgsMap["skinID"]
 \t\tdays = specialArgsMap["days"] or 0""",
         """\t\tskinID = specialArgsMap["skinID"]
