@@ -42,7 +42,7 @@ const selectedItem = computed(() => props.catalog.find(
 ) || null);
 const maxQuantity = computed(() => Math.max(
   1,
-  Math.min(9999, Number(selectedItem.value?.maxQuantity || 9999)),
+  Math.min(2_147_483_647, Number(selectedItem.value?.maxQuantity || 9999)),
 ));
 const playerReady = computed(() => props.player?.canDeliverItems === true);
 

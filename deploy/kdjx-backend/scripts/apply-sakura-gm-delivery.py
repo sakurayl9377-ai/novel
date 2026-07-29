@@ -37,12 +37,23 @@ RPC_METHOD = r'''
 		from game.object.game.gain import pack
 		from game.handler.inl_mail import sendMail
 
-		# ID 400 is the client's virtual display item for trainer/role EXP.
-		# Deliver it as role_exp so claiming the mail updates level progress.
-		if 400 in attachs:
-			attachs = dict(attachs)
-			trainerExp = attachs.pop(400)
-			attachs['role_exp'] = attachs.get('role_exp', 0) + trainerExp
+		# Client display IDs for resources must become ObjectGainAux resource
+		# keys, otherwise the game treats them as inert bag items.
+		resourceItems = (
+			(400, 'role_exp'), (401, 'gold'), (402, 'rmb'), (403, 'stamina'),
+			(900000001, 'skill_point'), (900000002, 'talent_point'),
+			(900000003, 'equip_awake_frag'), (900000004, 'gym_talent_point'),
+			(900000005, 'coin1'), (900000006, 'coin2'), (900000007, 'coin3'),
+			(900000008, 'coin4'), (900000009, 'coin5'), (900000010, 'coin6'),
+			(900000011, 'coin7'), (900000012, 'coin8'), (900000013, 'coin9'),
+			(900000014, 'coin10'), (900000015, 'coin11'), (900000016, 'coin12'),
+			(900000017, 'coin13'), (900000018, 'coin14'),
+		)
+		for itemID, resourceKey in resourceItems:
+			if itemID in attachs:
+				attachs = dict(attachs)
+				amount = attachs.pop(itemID)
+				attachs[resourceKey] = attachs.get(resourceKey, 0) + amount
 
 		expectedAttachs = pack(attachs)
 		query = {'role_db_id': roleID, 'content': content}
@@ -257,7 +268,9 @@ def main():
         or "if reconcileOnly:" not in rpc_content
         or "raise Return('delivery_pending')" not in rpc_content
         or "\t\timport copy\n" not in rpc_content
-        or "attachs['role_exp']" not in rpc_content
+        or "resourceItems = (" not in rpc_content
+        or "(400, 'role_exp')" not in rpc_content
+        or "(900000018, 'coin14')" not in rpc_content
         or "raise Return('request_conflict')" not in rpc_content
     ):
         fail("Sakura GM game RPC is incomplete")

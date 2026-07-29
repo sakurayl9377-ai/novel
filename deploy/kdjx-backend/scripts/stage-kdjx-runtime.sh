@@ -192,7 +192,8 @@ python3 "$script_dir/apply-sakura-gm-delivery.py" \
 python3 "$script_dir/generate-runtime-config.py" --runtime-root "$candidate_root"
 python3 "$script_dir/validate-kdjx-gm-item-catalog.py" \
     --catalog "$gm_catalog" \
-    --items-lua "$anti_cheat_scripts/config/items.lua"
+    --items-lua "$anti_cheat_scripts/config/items.lua" \
+    --role-figure-lua "$anti_cheat_scripts/config/role_figure.lua"
 install -m 0640 "$gm_catalog" "$candidate_root/kdjx-gm-item-catalog.json"
 
 rsync -a --delete "$clean_patch_source/cn/" "$candidate_root/login/patch/cn/"

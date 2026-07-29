@@ -493,7 +493,7 @@ function normalizeDeliveryInput(request) {
     quantity: requiredPositiveInteger(
       request.body?.quantity,
       'quantity',
-      9999,
+      2_147_483_647,
     ),
     expectedRoleId: requiredSafeText(
       request.body?.expectedRoleId,

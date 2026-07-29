@@ -94,9 +94,10 @@ The Go login patch URL is generated as
 `https://novel.kxhub.xyz/games/kdjx/hot/`; it intentionally does not retain a
 direct-IP or `/kdjx/patch/` legacy path.
 
-The GM catalog is generated from the authoritative `items.lua` table with
-`scripts/build-kdjx-gm-item-catalog.py`. Staging regenerates and compares the
-complete allow-list against that exact source before it ships the same
+The GM catalog is generated from the authoritative `items.lua` and
+`role_figure.lua` tables with `scripts/build-kdjx-gm-item-catalog.py`. Staging
+regenerates and compares the complete allow-list, including figure-unlock
+tokens, against those exact sources before it ships the same
 immutable JSON used by the admin API. Every delivery includes the catalog
 SHA-256 and is rejected if the admin backend and runtime disagree. The GM
 bridge is loopback-only and uses an independent HMAC secret.

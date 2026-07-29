@@ -581,14 +581,34 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         "}\n",
         encoding='utf-8',
     )
-    valid_catalog = builder_module.build_catalog(fixture_items_lua)
+    fixture_role_figure_lua = runtime / 'role_figure.lua'
+    fixture_role_figure_lua.write_text(
+        "csv['role_figure'] = {\n"
+        "\t[1] = {\n"
+        "\t\tid = 1,\n"
+        "\t\tname = 'Fixture figure',\n"
+        "\t\tactiveCost = {[70032] = 1, __size = 1},\n"
+        "\t},\n"
+        "\t__size = 1,\n"
+        "}\n",
+        encoding='utf-8',
+    )
+    valid_catalog = builder_module.build_catalog(
+        fixture_items_lua, fixture_role_figure_lua)
     assert valid_catalog['sourceItemCount'] == 2
-    assert valid_catalog['itemCount'] == 1
-    assert [item['id'] for item in valid_catalog['items']] == [1001]
+    assert valid_catalog['itemCount'] == 24
+    assert {item['id'] for item in valid_catalog['items']} == {
+        400, 401, 402, 403, 1001, 70032,
+        *range(900000001, 900000019),
+    }
     catalog_module.validate_catalog(valid_catalog)
-    catalog_module.validate_source(valid_catalog, fixture_items_lua)
+    catalog_module.validate_source(
+        valid_catalog, fixture_items_lua, fixture_role_figure_lua)
     invalid_catalog = dict(valid_catalog)
-    invalid_catalog['items'] = [dict(valid_catalog['items'][0], id=-1)]
+    invalid_catalog['items'] = [
+        dict(valid_catalog['items'][0], id=-1),
+        *valid_catalog['items'][1:],
+    ]
     try:
         catalog_module.validate_catalog(invalid_catalog)
     except ValueError as exc:
@@ -598,7 +618,8 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     mismatched_catalog = json.loads(json.dumps(valid_catalog))
     mismatched_catalog['items'][0]['name'] = 'Tampered item'
     try:
-        catalog_module.validate_source(mismatched_catalog, fixture_items_lua)
+        catalog_module.validate_source(
+            mismatched_catalog, fixture_items_lua, fixture_role_figure_lua)
     except ValueError as exc:
         assert str(exc) == 'gm_catalog_source_mismatch'
     else:
@@ -1826,6 +1847,8 @@ grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtim
 grep -Fq 'validate-kdjx-login-patches.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq -- '--role-figure-lua "$anti_cheat_scripts/config/role_figure.lua"' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq '"$candidate_root/kdjx-gm-item-catalog.json"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 ! grep -Fq 'KDJX_GM_' "$root_dir/templates/runtime.env.example"
@@ -1843,7 +1866,9 @@ grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
-grep -Fq "attachs['role_exp']" \
+grep -Fq "(400, 'role_exp')" \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "(900000018, 'coin14')" \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 'Sakura online GM mailbox persistence is unavailable' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"

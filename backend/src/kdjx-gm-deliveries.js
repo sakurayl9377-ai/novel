@@ -46,7 +46,7 @@ export function normalizeKdjxGmItemCatalog(document) {
     !Number.isSafeInteger(document.itemCount) ||
     document.itemCount !== source.length ||
     !Number.isSafeInteger(document.sourceItemCount) ||
-    document.sourceItemCount < document.itemCount ||
+    document.sourceItemCount < 1 ||
     !sourceSha256
   ) {
     throw new Error('Invalid KDJX GM item catalog metadata');
@@ -85,7 +85,7 @@ export function normalizeKdjxGmItemCatalog(document) {
       description,
       type: String(type),
       quality: String(quality),
-      maxQuantity: Math.min(maximum, 9999),
+      maxQuantity: maximum,
       deliveryTypes: Object.freeze(['mail']),
     });
     items.push(item);
@@ -285,7 +285,7 @@ function strictNonNegativeCatalogInteger(value) {
 }
 
 function strictCatalogMaximum(value) {
-  return Number.isSafeInteger(value) && value >= 1 && value <= 9999
+  return Number.isSafeInteger(value) && value >= 1 && value <= 2_147_483_647
     ? value
     : null;
 }

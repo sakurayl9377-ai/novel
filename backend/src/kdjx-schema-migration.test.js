@@ -20,7 +20,7 @@ after(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-test('KDJX GM delivery migration preserves rows and raises the limit to 9999', () => {
+test('KDJX GM delivery migration preserves rows and raises the limit to 2147483647', () => {
   migrate();
   const userId = Number(run(
     `INSERT INTO users (email, nickname, password_hash, role, status)
@@ -95,15 +95,15 @@ test('KDJX GM delivery migration preserves rows and raises the limit to 9999', (
     `SELECT sql FROM sqlite_master
      WHERE type = 'table' AND name = 'kdjx_gm_deliveries'`,
   ).sql);
-  assert.match(tableSql, /quantity\s*<=\s*9999\b/i);
+  assert.match(tableSql, /quantity\s*<=\s*2147483647\b/i);
   assert.doesNotMatch(tableSql, /quantity\s*<=\s*999\b/i);
   assert.doesNotThrow(() => run(
-    'UPDATE kdjx_gm_deliveries SET quantity = 9999 WHERE id = ?',
+    'UPDATE kdjx_gm_deliveries SET quantity = 2147483647 WHERE id = ?',
     [row.id],
   ));
   assert.throws(
     () => run(
-      'UPDATE kdjx_gm_deliveries SET quantity = 10000 WHERE id = ?',
+      'UPDATE kdjx_gm_deliveries SET quantity = 2147483648 WHERE id = ?',
       [row.id],
     ),
     /constraint/i,

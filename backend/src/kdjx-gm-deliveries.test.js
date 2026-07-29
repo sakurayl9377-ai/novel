@@ -38,8 +38,8 @@ const catalog = {
   schemaVersion: 1,
   source: 'test generated items.lua',
   sourceSha256: testCatalogSha256,
-  sourceItemCount: 2,
-  itemCount: 2,
+  sourceItemCount: 3,
+  itemCount: 3,
   items: [
     {
       id: 19,
@@ -56,6 +56,14 @@ const catalog = {
       type: 1,
       quality: 3,
       maxQuantity: 10,
+    },
+    {
+      id: 401,
+      name: 'Gold',
+      description: 'Game gold resource',
+      type: 0,
+      quality: 1,
+      maxQuantity: 2147483647,
     },
   ],
 };
@@ -78,15 +86,24 @@ const catalogItems = [
     maxQuantity: 10,
     deliveryTypes: ['mail'],
   },
+  {
+    id: '401',
+    name: 'Gold',
+    description: 'Game gold resource',
+    type: '0',
+    quality: '1',
+    maxQuantity: 2147483647,
+    deliveryTypes: ['mail'],
+  },
 ];
 
 test('KDJX GM catalog exposes the generated item allow-list', () => {
   const actual = getKdjxGmItemCatalog();
   assert.equal(
     actual.sourceSha256,
-    '1250e37f69c2eca5fef515a54454d5b67777aaea2cab8ee3c769e9a5dffd579b',
+    'c15362743a5ec100bd11f1cdf0370b8d221aed516833521203d6757913f0ce66',
   );
-  assert.equal(actual.items.length, 1140);
+  assert.equal(actual.items.length, 1163);
   assert.equal(actual.byId.size, actual.items.length);
   assert.deepEqual(actual.byId.get('19'), {
     id: '19',
@@ -97,6 +114,9 @@ test('KDJX GM catalog exposes the generated item allow-list', () => {
     maxQuantity: 9999,
     deliveryTypes: ['mail'],
   });
+  assert.equal(actual.byId.get('400').maxQuantity, 2147483647);
+  assert.equal(actual.byId.get('401').maxQuantity, 2147483647);
+  assert.equal(actual.byId.get('402').maxQuantity, 2147483647);
   assert.equal(
     new Set(actual.items.map((item) => item.id)).size,
     actual.items.length,
@@ -123,9 +143,9 @@ test('KDJX GM catalog rejects invalid hashes and unsafe descriptions', () => {
 
   for (const metadata of [
     { schemaVersion: '1' },
-    { itemCount: '2' },
+    { itemCount: '3' },
     { sourceItemCount: '2' },
-    { sourceItemCount: 1 },
+    { sourceItemCount: 0 },
   ]) {
     assert.throws(
       () => normalizeKdjxGmItemCatalog({ ...catalog, ...metadata }),
@@ -144,6 +164,7 @@ test('KDJX GM catalog rejects invalid hashes and unsafe descriptions', () => {
         items: [
           { ...catalog.items[0], description },
           catalog.items[1],
+          catalog.items[2],
         ],
       }),
       /Invalid KDJX GM item description/,
@@ -165,7 +186,7 @@ test('KDJX GM catalog rejects invalid hashes and unsafe descriptions', () => {
     assert.throws(
       () => normalizeKdjxGmItemCatalog({
         ...catalog,
-        items: [firstItem, catalog.items[1]],
+        items: [firstItem, catalog.items[1], catalog.items[2]],
       }),
       /Invalid/,
     );
@@ -390,7 +411,7 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
       },
     );
     assert.equal(globalOverLimit.statusCode, 400);
-    assert.equal(globalOverLimit.json().error, 'quantity_invalid');
+    assert.equal(globalOverLimit.json().error, 'kdjx_gm_quantity_exceeds_limit');
 
     const overLimit = await postDelivery(
       app,
@@ -646,6 +667,22 @@ test('KDJX GM delivery APIs protect, whitelist, reconcile, and audit grants', as
        WHERE target_id = ?`,
       ['55555555-5555-4555-8555-555555555555'],
     ).error_code, 'kdjx_gm_delivery_stale_audit');
+
+    const resourceGrant = await postDelivery(
+      app,
+      adminToken,
+      playerId,
+      {
+        ...common,
+        requestId: 'abcdabcd-abcd-4bcd-8bcd-abcdabcdabcd',
+        itemId: '401',
+        quantity: 900000000,
+      },
+    );
+    assert.equal(resourceGrant.statusCode, 200, resourceGrant.body);
+    assert.equal(resourceGrant.json().delivery.quantity, 900000000);
+    assert.equal(calls.at(-1).itemId, '401');
+    assert.equal(calls.at(-1).quantity, 900000000);
   } finally {
     await app.close();
   }

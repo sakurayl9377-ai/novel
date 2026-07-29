@@ -140,7 +140,7 @@ export function ensureKdjxGameSchema() {
       item_name TEXT NOT NULL,
       item_type TEXT NOT NULL DEFAULT '',
       item_quality TEXT NOT NULL DEFAULT '',
-      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 9999),
+      quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 2147483647),
       reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),
@@ -171,7 +171,7 @@ function migrateKdjxGmDeliveryQuantityLimit() {
     `SELECT sql FROM sqlite_master
      WHERE type = 'table' AND name = 'kdjx_gm_deliveries'`,
   ).get();
-  if (!/quantity\s*<=\s*999\b/i.test(String(table?.sql || ''))) return;
+  if (/quantity\s*<=\s*2147483647\b/i.test(String(table?.sql || ''))) return;
 
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -192,7 +192,7 @@ function migrateKdjxGmDeliveryQuantityLimit() {
         item_name TEXT NOT NULL,
         item_type TEXT NOT NULL DEFAULT '',
         item_quality TEXT NOT NULL DEFAULT '',
-        quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 9999),
+        quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 2147483647),
         reason TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending'
           CHECK (status IN ('pending', 'succeeded', 'failed', 'unknown')),

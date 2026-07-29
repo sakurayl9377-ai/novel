@@ -196,7 +196,7 @@ describe('KdjxGmDeliveryDialog', () => {
     wrapper.unmount();
   });
 
-  it('accepts a catalog-backed quantity of 9999', async () => {
+  it('accepts a catalog-backed resource quantity above 9999', async () => {
     const player = samplePlayer();
     serviceMocks.createKdjxGmDelivery.mockResolvedValue({
       ok: true,
@@ -206,20 +206,20 @@ describe('KdjxGmDeliveryDialog', () => {
     messageMocks.confirm.mockResolvedValue('confirm');
     const wrapper = await mountOpenDialog({
       player,
-      catalog: [sampleCatalogItem({ maxQuantity: 9999 })],
+      catalog: [sampleCatalogItem({ id: '401', maxQuantity: 2_147_483_647 })],
     });
 
-    await wrapper.find('.item-select-stub').setValue('19');
-    await wrapper.find('.quantity-stub').setValue('9999');
+    await wrapper.find('.item-select-stub').setValue('401');
+    await wrapper.find('.quantity-stub').setValue('900000000');
     await wrapper.find('.reason-stub').setValue('大型活动批量补发');
     await flushPromises();
 
-    expect(wrapper.find('.quantity-stub').attributes('max')).toBe('9999');
+    expect(wrapper.find('.quantity-stub').attributes('max')).toBe('2147483647');
     await sendButton(wrapper).trigger('click');
     await flushPromises();
     expect(serviceMocks.createKdjxGmDelivery).toHaveBeenCalledWith(
       player.userId,
-      expect.objectContaining({ itemId: '19', quantity: 9999 }),
+      expect.objectContaining({ itemId: '401', quantity: 900000000 }),
     );
     wrapper.unmount();
   });

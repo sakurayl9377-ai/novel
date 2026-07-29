@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "source": "KDJX generated items.lua",
-  "sourceSha256": "1250e37f69c2eca5fef515a54454d5b67777aaea2cab8ee3c769e9a5dffd579b",
+  "source": "KDJX generated items.lua and role_figure.lua",
+  "sourceSha256": "c15362743a5ec100bd11f1cdf0370b8d221aed516833521203d6757913f0ce66",
   "sourceItemCount": 1177,
-  "itemCount": 1140,
+  "itemCount": 1163,
   "items": [
     {
       "id": 19,
@@ -299,183 +299,31 @@
       "description": "可以增加训练家的经验值，累积一定量可以升级训练家等级",
       "type": 0,
       "quality": 4,
-      "maxQuantity": 9999
+      "maxQuantity": 2147483647
     },
     {
-      "id": 404,
-      "name": "vip",
-      "description": "土豪的象征",
+      "id": 401,
+      "name": "金币",
+      "description": "金币，哪儿都离不开的好东西",
       "type": 0,
       "quality": 4,
-      "maxQuantity": 9999
+      "maxQuantity": 2147483647
     },
     {
-      "id": 405,
-      "name": "vip经验",
-      "description": "土豪的象征",
+      "id": 402,
+      "name": "钻石",
+      "description": "地位最为坚固的硬通货",
       "type": 0,
       "quality": 4,
-      "maxQuantity": 9999
+      "maxQuantity": 2147483647
     },
     {
-      "id": 407,
-      "name": "神奇魔方",
-      "description": "神奇的魔方，可以在饰品商店兑换道具",
+      "id": 403,
+      "name": "体力",
+      "description": "用于提升战队等级",
       "type": 0,
       "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 408,
-      "name": "公会经验",
-      "description": "公会升级经验，可以由捐献和公会任务获得，公会全体任务获得的经验只会增加一次",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 411,
-      "name": "荣誉币",
-      "description": "荣誉币，用于荣誉商店购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 412,
-      "name": "以太基金",
-      "description": "以太基金，用于以太乐园商店兑换道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 413,
-      "name": "公会币",
-      "description": "公会货币，可以在公会商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 415,
-      "name": "精灵魂石",
-      "description": "精灵分解后获得，可用于兑换神秘道具",
-      "type": 0,
-      "quality": 1,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 416,
-      "name": "石英金质徽章",
-      "description": "用于石英商店中购买道具",
-      "type": 0,
-      "quality": 5,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 417,
-      "name": "乐园积分",
-      "description": "以太乐园积分",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 418,
-      "name": "未使用的货币id",
-      "description": "神奇的魔方，可以在饰品商店兑换道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 419,
-      "name": "石英银质徽章",
-      "description": "用于石英商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 420,
-      "name": "跨服石英金币",
-      "description": "用于跨服石英商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 421,
-      "name": "跨服石英银币",
-      "description": "用于跨服石英商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 422,
-      "name": "公会战勋金币",
-      "description": "用于公会战商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 423,
-      "name": "公会战勋银币",
-      "description": "用于公会战商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 424,
-      "name": "技能点",
-      "description": "用于精灵技能升级",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 425,
-      "name": "金纸鹤",
-      "description": "用于对战竞技场商店中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 426,
-      "name": "挑战加成点",
-      "description": "用于道馆内提升挑战加成属性",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 427,
-      "name": "资源币",
-      "description": "跨服商业街中产出，用于系统中祝福培养、以及商业街商店的中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 428,
-      "name": "狩猎币",
-      "description": "狩猎地带玩法中产出，用于狩猎地带商店的中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
-    },
-    {
-      "id": 429,
-      "name": "家园",
-      "description": "狩猎地带玩法中产出，用于狩猎地带商店的中购买道具",
-      "type": 0,
-      "quality": 4,
-      "maxQuantity": 9999
+      "maxQuantity": 2147483647
     },
     {
       "id": 451,
@@ -2406,6 +2254,230 @@
       "maxQuantity": 9999
     },
     {
+      "id": 8102,
+      "name": "探险者勋章",
+      "description": "在大冒险活动中获得，可用来购买活动道具卡、骰子",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8111,
+      "name": "代金券",
+      "description": "可在小店事件中抵消1次探险者勋章的消费",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8112,
+      "name": "普通骰子",
+      "description": "一颗普通的骰子",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8113,
+      "name": "奇怪的骰子",
+      "description": "可投掷出1、1、1、4、6、10的骰子",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8114,
+      "name": "勋章骰子",
+      "description": "获得移动点数以及对应点数的探险者勋章",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8115,
+      "name": "冲刺卡",
+      "description": "使用后，在下回合投掷骰子后额外增加3点移动",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8116,
+      "name": "随意门",
+      "description": "使用后，移动到宝箱前1格(不触发事件)",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8117,
+      "name": "转向卡",
+      "description": "使用后可以反转移动方向",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 8118,
+      "name": "行动点",
+      "description": "在限定活动奇妙探险中消耗以开启委托",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 9999,
+      "name": "随机奖励",
+      "description": "该奖励中蕴含着什么，无人得知！",
+      "type": 0,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 900000001,
+      "name": "技能点",
+      "description": "游戏技能点（skill_point）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000002,
+      "name": "天赋点",
+      "description": "游戏天赋点（talent_point）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000003,
+      "name": "装备觉醒碎片",
+      "description": "游戏装备觉醒碎片（equip_awake_frag）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000004,
+      "name": "道馆天赋点",
+      "description": "游戏道馆天赋点（gym_talent_point）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000005,
+      "name": "特殊货币 1",
+      "description": "游戏活动货币（coin1）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000006,
+      "name": "特殊货币 2",
+      "description": "游戏活动货币（coin2）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000007,
+      "name": "特殊货币 3",
+      "description": "游戏活动货币（coin3）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000008,
+      "name": "特殊货币 4",
+      "description": "游戏活动货币（coin4）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000009,
+      "name": "特殊货币 5",
+      "description": "游戏活动货币（coin5）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000010,
+      "name": "特殊货币 6",
+      "description": "游戏活动货币（coin6）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000011,
+      "name": "特殊货币 7",
+      "description": "历史活动货币（coin7，登录时会自动转换）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000012,
+      "name": "特殊货币 8",
+      "description": "游戏活动货币（coin8）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000013,
+      "name": "特殊货币 9",
+      "description": "历史活动货币（coin9，登录时会自动转换）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000014,
+      "name": "特殊货币 10",
+      "description": "游戏活动货币（coin10）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000015,
+      "name": "特殊货币 11",
+      "description": "游戏活动货币（coin11）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000016,
+      "name": "特殊货币 12",
+      "description": "游戏活动货币（coin12）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000017,
+      "name": "特殊货币 13",
+      "description": "游戏活动货币（coin13）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
+      "id": 900000018,
+      "name": "特殊货币 14",
+      "description": "游戏活动货币（coin14）",
+      "type": 0,
+      "quality": 1,
+      "maxQuantity": 2147483647
+    },
+    {
       "id": 11,
       "name": "甘甜冰水",
       "description": "可以给精灵食用，增加100点经验",
@@ -2518,19 +2590,107 @@
       "maxQuantity": 99
     },
     {
-      "id": 406,
-      "name": "天赋点",
-      "description": "天赋点，可用于提升天赋等级",
+      "id": 1000,
+      "name": "全能礼包",
+      "description": "打开可以拿到一堆的东西",
       "type": 3,
-      "quality": 4,
+      "quality": 5,
       "maxQuantity": 9999
     },
     {
-      "id": 414,
-      "name": "寻宝币",
-      "description": "用于兑换探险器组件",
+      "id": 1001,
+      "name": "突破材料礼包",
+      "description": "突破材料礼包",
       "type": 3,
-      "quality": 4,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1002,
+      "name": "消耗品礼包",
+      "description": "消耗品礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1003,
+      "name": "出售品礼包",
+      "description": "出售品礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1007,
+      "name": "头像框礼包",
+      "description": "头像框礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1008,
+      "name": "体力补给包",
+      "description": "头像框礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1009,
+      "name": "碎片礼包",
+      "description": "碎片礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1010,
+      "name": "卡牌礼包",
+      "description": "卡牌礼包",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1012,
+      "name": "经验药水包",
+      "description": "打开可以拿到一堆的经验药水",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1015,
+      "name": "携带道具礼包",
+      "description": "打开可以拿到一堆携带道具",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1016,
+      "name": "特殊货币礼包",
+      "description": "打开可以获得一堆的特殊货币",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1017,
+      "name": "好感度礼包",
+      "description": "打开可以获得一堆的好感度道具",
+      "type": 3,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1019,
+      "name": "探险器组件礼包",
+      "description": "打开可以拿到一堆的东西",
+      "type": 3,
+      "quality": 5,
       "maxQuantity": 9999
     },
     {
@@ -4532,6 +4692,30 @@
       "type": 7,
       "quality": 6,
       "maxQuantity": 999
+    },
+    {
+      "id": 1004,
+      "name": "随机电池礼包",
+      "description": "随机电池礼包",
+      "type": 7,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1005,
+      "name": "随机电池礼包",
+      "description": "随机电池礼包",
+      "type": 7,
+      "quality": 5,
+      "maxQuantity": 9999
+    },
+    {
+      "id": 1006,
+      "name": "随机电池礼包",
+      "description": "随机电池礼包",
+      "type": 7,
+      "quality": 5,
+      "maxQuantity": 9999
     },
     {
       "id": 5501,
