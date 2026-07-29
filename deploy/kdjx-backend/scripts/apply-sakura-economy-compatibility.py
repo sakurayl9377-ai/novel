@@ -46,14 +46,28 @@ RECHARGE_INIT_REPLACEMENT = """		self.game.chips.init()
 		self._initMap()
 """
 
-TRAINER_EXP_INIT_ANCHOR = """		self._inited = True
-
-		self.onGrowGuideTask(TargetDefs.Level, 0)
+GAME_INIT_ANCHOR = """		self.cards.init()
+		self.society.init()
 """
-TRAINER_EXP_INIT_REPLACEMENT = """		self._inited = True
+GAME_INIT_REPLACEMENT = """		self.cards.init()
+		self.role._applySakuraTrainerExperienceCompatibility()
+		self.society.init()
+"""
 
-		self._applySakuraTrainerExperienceCompatibility()
-		self.onGrowGuideTask(TargetDefs.Level, 0)
+RECHARGE_SCHEMA_ANCHOR = """type Recharge struct {
+	Cnt    int           `codec:"cnt,omitempty" bson:"cnt,omitempty"`
+	Date   int           `codec:"date,omitempty" bson:"date,omitempty"`
+	Orders []document.ID `codec:"orders,omitempty" bson:"orders,omitempty"`
+	Reset  int           `codec:"reset,omitempty" bson:"reset,omitempty"`
+}
+"""
+RECHARGE_SCHEMA_REPLACEMENT = """type Recharge struct {
+	Cnt              int           `codec:"cnt,omitempty" bson:"cnt,omitempty"`
+	Date             int           `codec:"date,omitempty" bson:"date,omitempty"`
+	Orders           []document.ID `codec:"orders,omitempty" bson:"orders,omitempty"`
+	Reset            int           `codec:"reset,omitempty" bson:"reset,omitempty"`
+	SakuraValueFixV1 bool          `codec:"sakura_value_fix_v1,omitempty" bson:"sakura_value_fix_v1,omitempty"`
+}
 """
 
 ROLE_METHOD_ANCHOR = "\tdef _initMap(self):\n"
@@ -207,8 +221,11 @@ def main():
 
     root = Path(args.source_root).resolve()
     role = root / "release" / "src" / "game" / "object" / "game" / "role.py"
-    if not role.is_file():
-        fail("KDJX role source is missing: {}".format(role))
+    game = root / "release" / "src" / "game" / "object" / "game" / "__init__.py"
+    recharge_schema = root / "gosrc" / "tjgame" / "document" / "scheme" / "Role.go"
+    for path in (role, game, recharge_schema):
+        if not path.is_file():
+            fail("KDJX game source is missing: {}".format(path))
 
     insert_once(role, ROLE_CONSTANTS_ANCHOR, ROLE_CONSTANTS, "role constants")
     replace_once(
@@ -218,10 +235,16 @@ def main():
         "recharge compatibility initialization",
     )
     replace_once(
-        role,
-        TRAINER_EXP_INIT_ANCHOR,
-        TRAINER_EXP_INIT_REPLACEMENT,
+        game,
+        GAME_INIT_ANCHOR,
+        GAME_INIT_REPLACEMENT,
         "trainer experience compatibility initialization",
+    )
+    replace_once(
+        recharge_schema,
+        RECHARGE_SCHEMA_ANCHOR,
+        RECHARGE_SCHEMA_REPLACEMENT,
+        "Sakura recharge compatibility schema",
     )
     insert_before_once(role, ROLE_METHOD_ANCHOR, ROLE_METHODS, "role compatibility")
     replace_once(role, VIP_SUM_ANCHOR, VIP_SUM_REPLACEMENT, "VIP recharge sum")
@@ -246,6 +269,8 @@ def main():
     )
 
     content = role.read_text(encoding="utf-8")
+    game_content = game.read_text(encoding="utf-8")
+    recharge_schema_content = recharge_schema.read_text(encoding="utf-8")
     required = (
         "SakuraRechargeRMB = {",
         "SakuraLegacyRechargeAward = {",
@@ -255,7 +280,22 @@ def main():
         "rmb = sakuraRMB",
         "recharge[SakuraRechargeFixMarker] = True",
     )
-    if any(marker not in content for marker in required):
+    if (
+        any(marker not in content for marker in required)
+        or content.count("self._applySakuraTrainerExperienceCompatibility()") != 0
+        or game_content.count(
+            "self.role._applySakuraTrainerExperienceCompatibility()"
+        ) != 1
+        or game_content.index("self.cards.init()")
+        > game_content.index(
+            "self.role._applySakuraTrainerExperienceCompatibility()"
+        )
+        or recharge_schema_content.count(
+            'codec:"sakura_value_fix_v1,omitempty" '
+            'bson:"sakura_value_fix_v1,omitempty"'
+        )
+        != 1
+    ):
         fail("Sakura economy compatibility patch is incomplete")
 
 

@@ -1217,14 +1217,18 @@ economy_spec.loader.exec_module(economy_module)
 with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
     source = pathlib.Path(temp)
     role = source / 'release' / 'src' / 'game' / 'object' / 'game' / 'role.py'
+    game = source / 'release' / 'src' / 'game' / 'object' / 'game' / '__init__.py'
+    recharge_schema = source / 'gosrc' / 'tjgame' / 'document' / 'scheme' / 'Role.go'
     role.parent.mkdir(parents=True)
+    recharge_schema.parent.mkdir(parents=True)
     role.write_text(
         '#!/usr/bin/python\n# -*- coding: utf-8 -*-\n'
         + economy_module.ROLE_CONSTANTS_ANCHOR
         + 'class ObjectRole(object):\n'
         + '\tdef init(self):\n'
         + economy_module.RECHARGE_INIT_ANCHOR
-        + economy_module.TRAINER_EXP_INIT_ANCHOR
+        + '\t\tself._inited = True\n\n'
+        + '\t\tself.onGrowGuideTask(TargetDefs.Level, 0)\n'
         + '\t\treturn self\n\n'
         + '\tdef _initVIPLevel(self):\n'
         + '\t\tsumRMB = 0\n'
@@ -1265,6 +1269,17 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
         + '\t\tpass\n',
         encoding='utf-8',
     )
+    game.write_text(
+        'class ObjectGame(object):\n'
+        '\tdef init(self):\n'
+        '\t\tself.role.init()\n'
+        + economy_module.GAME_INIT_ANCHOR,
+        encoding='utf-8',
+    )
+    recharge_schema.write_text(
+        'package scheme\n\n' + economy_module.RECHARGE_SCHEMA_ANCHOR,
+        encoding='utf-8',
+    )
     economy_command = [
         sys.executable,
         str(economy_patch_path),
@@ -1274,18 +1289,53 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
     subprocess.run(economy_command, check=True)
     subprocess.run(economy_command, check=True)
     role_content = role.read_text(encoding='utf-8')
+    game_content = game.read_text(encoding='utf-8')
+    recharge_schema_content = recharge_schema.read_text(encoding='utf-8')
     ast.parse(role_content, filename=str(role))
+    ast.parse(game_content, filename=str(game))
     assert role_content.count('SakuraRechargeRMB = {') == 1
     assert role_content.count('def _applySakuraRechargeCompatibility(self):') == 1
     assert role_content.count(
         'def _applySakuraTrainerExperienceCompatibility(self):'
     ) == 1
     assert role_content.count('self._applySakuraRechargeCompatibility()') == 1
-    assert role_content.count(
-        'self._applySakuraTrainerExperienceCompatibility()'
+    assert 'self._applySakuraTrainerExperienceCompatibility()' not in role_content
+    assert game_content.count(
+        'self.role._applySakuraTrainerExperienceCompatibility()'
+    ) == 1
+    assert game_content.index('self.cards.init()') < game_content.index(
+        'self.role._applySakuraTrainerExperienceCompatibility()'
+    )
+    assert recharge_schema_content.count('SakuraValueFixV1 bool') == 1
+    assert recharge_schema_content.count(
+        'codec:"sakura_value_fix_v1,omitempty" '
+        'bson:"sakura_value_fix_v1,omitempty"'
     ) == 1
     assert 'self.vip_level = max(self.vip_level, level)' in role_content
     assert "recharge[SakuraRechargeFixMarker] = True" in role_content
+
+    init_events = []
+    game_namespace = {}
+    exec(compile(game_content, str(game), 'exec'), game_namespace)
+
+    class InitProbe(object):
+        def __init__(self, name):
+            self.name = name
+
+        def init(self):
+            init_events.append(self.name)
+
+    class RoleInitProbe(InitProbe):
+        def _applySakuraTrainerExperienceCompatibility(self):
+            assert init_events == ['role', 'cards']
+            init_events.append('trainer_exp')
+
+    object_game = game_namespace['ObjectGame']()
+    object_game.role = RoleInitProbe('role')
+    object_game.cards = InitProbe('cards')
+    object_game.society = InitProbe('society')
+    object_game.init()
+    assert init_events == ['role', 'cards', 'trainer_exp', 'society']
 
     class TestLogger(object):
         def info(self, *args):
