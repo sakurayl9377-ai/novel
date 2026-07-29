@@ -31,6 +31,7 @@ RPC_METHOD = r'''
 		if not requestID or len(requestID) > 64:
 			raise Return('request_invalid')
 		roleID = yield self._prepareRoleID(roleID)
+		import copy
 		from game.object.game import ObjectGame
 		from game.object.game.role import ObjectRole
 		from game.object.game.gain import pack
@@ -248,6 +249,7 @@ def main():
         or "'DBReadBy', 'Mail'" not in rpc_content
         or "def ensureVisible(mail):" not in rpc_content
         or "def matchesRequest(mail):" not in rpc_content
+        or "\t\timport copy\n" not in rpc_content
         or "attachs['role_exp']" not in rpc_content
         or "raise Return('request_conflict')" not in rpc_content
     ):
