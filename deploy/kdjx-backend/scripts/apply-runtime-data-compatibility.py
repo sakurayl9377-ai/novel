@@ -30,7 +30,15 @@ def main():
     root = Path(args.source_root).resolve()
     role = root / "release" / "src" / "game" / "object" / "game" / "role.py"
     session = root / "release" / "src" / "game" / "session.py"
-    for path in (role, session):
+    union_training = (
+        root
+        / "gosrc"
+        / "tjgame"
+        / "services"
+        / "union"
+        / "training.go"
+    )
+    for path in (role, session, union_training):
         if not path.is_file():
             fail("KDJX game source is missing: {}".format(path))
 
@@ -111,6 +119,83 @@ def main():
 \t\t\t\t\tcardMarkID = cfg.markID
 \t\t\t\t\tcards = game.cards.getCardsByMarkID(cardMarkID)""",
         "card skin expiry compatibility",
+    )
+    replace_once(
+        union_training,
+        """import (
+\t"math/rand"
+\t"sync\"""",
+        """import (
+\t"math/rand"
+\t"sort"
+\t"sync\"""",
+        "union training level fallback import",
+    )
+    replace_once(
+        union_training,
+        """func TrainingExpPerMinute(rolelevel, unionlevel int) int {
+\tcfg := csv.GetConfig()
+\tfix := cfg.Base_attribute.Role_level[rolelevel].UnionTrainingFix
+\treturn int(cfg.Union.Union_level[unionlevel].TrainingExp * float64(fix))
+}""",
+        """func nearestConfiguredLevel(requested int, levels []int) (int, bool) {
+\tif len(levels) == 0 {
+\t\treturn 0, false
+\t}
+\tsort.Ints(levels)
+\tindex := sort.SearchInts(levels, requested)
+\tif index < len(levels) && levels[index] == requested {
+\t\treturn requested, true
+\t}
+\tif index == 0 {
+\t\treturn levels[0], true
+\t}
+\treturn levels[index-1], true
+}
+
+func TrainingExpPerMinute(rolelevel, unionlevel int) int {
+\tcfg := csv.GetConfig()
+\troleLevelCfg := cfg.Base_attribute.Role_level[rolelevel]
+\tif roleLevelCfg == nil {
+\t\tlevels := make([]int, 0, len(cfg.Base_attribute.Role_level))
+\t\tfor level, candidate := range cfg.Base_attribute.Role_level {
+\t\t\tif candidate != nil {
+\t\t\t\tlevels = append(levels, level)
+\t\t\t}
+\t\t}
+\t\tfallbackLevel, ok := nearestConfiguredLevel(rolelevel, levels)
+\t\tif !ok {
+\t\t\tlog.Errorf("union training has no configured role levels")
+\t\t\treturn 0
+\t\t}
+\t\tlog.Warningf(
+\t\t\t"union training role level %d missing, using level %d",
+\t\t\trolelevel, fallbackLevel)
+\t\troleLevelCfg = cfg.Base_attribute.Role_level[fallbackLevel]
+\t}
+
+\tunionLevelCfg := cfg.Union.Union_level[unionlevel]
+\tif unionLevelCfg == nil {
+\t\tlevels := make([]int, 0, len(cfg.Union.Union_level))
+\t\tfor level, candidate := range cfg.Union.Union_level {
+\t\t\tif candidate != nil {
+\t\t\t\tlevels = append(levels, level)
+\t\t\t}
+\t\t}
+\t\tfallbackLevel, ok := nearestConfiguredLevel(unionlevel, levels)
+\t\tif !ok {
+\t\t\tlog.Errorf("union training has no configured union levels")
+\t\t\treturn 0
+\t\t}
+\t\tlog.Warningf(
+\t\t\t"union training union level %d missing, using level %d",
+\t\t\tunionlevel, fallbackLevel)
+\t\tunionLevelCfg = cfg.Union.Union_level[fallbackLevel]
+\t}
+
+\treturn int(unionLevelCfg.TrainingExp * float64(roleLevelCfg.UnionTrainingFix))
+}""",
+        "union training missing level compatibility",
     )
 
 

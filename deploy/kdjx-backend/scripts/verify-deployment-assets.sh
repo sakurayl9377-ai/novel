@@ -1735,8 +1735,12 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     source = pathlib.Path(temp)
     role = source / 'release' / 'src' / 'game' / 'object' / 'game' / 'role.py'
     session = source / 'release' / 'src' / 'game' / 'session.py'
+    union_training = (
+        source / 'gosrc' / 'tjgame' / 'services' / 'union' / 'training.go'
+    )
     role.parent.mkdir(parents=True)
     session.parent.mkdir(parents=True, exist_ok=True)
+    union_training.parent.mkdir(parents=True, exist_ok=True)
     role.write_text(
         "class ObjectRole(object):\n"
         "\tdef _initCardSkin(self):\n"
@@ -1760,6 +1764,22 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
         "\t\tdays = specialArgsMap[\"days\"] or 0\n",
         encoding='utf-8',
     )
+    union_training.write_text(
+        "package union\n"
+        "\n"
+        "import (\n"
+        "\t\"math/rand\"\n"
+        "\t\"sync\"\n"
+        "\t\"tjgame/csv\"\n"
+        ")\n"
+        "\n"
+        "func TrainingExpPerMinute(rolelevel, unionlevel int) int {\n"
+        "\tcfg := csv.GetConfig()\n"
+        "\tfix := cfg.Base_attribute.Role_level[rolelevel].UnionTrainingFix\n"
+        "\treturn int(cfg.Union.Union_level[unionlevel].TrainingExp * float64(fix))\n"
+        "}\n",
+        encoding='utf-8',
+    )
     session.write_text(
         "class Session(object):\n"
         "\tdef refresh(self, skinsDeleted):\n"
@@ -1778,6 +1798,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     subprocess.run(compatibility_command, check=True)
     role_content = role.read_text(encoding='utf-8')
     session_content = session.read_text(encoding='utf-8')
+    union_training_content = union_training.read_text(encoding='utf-8')
     assert role_content.count('if cfg is None:') == 2
     assert 'for skinID in self.skins.keys():' in role_content
     assert 'self.skins.pop(skinID, None)' in role_content
@@ -1787,6 +1808,15 @@ with tempfile.TemporaryDirectory(prefix='kdjx-role-data-compatibility-') as temp
     assert 'ignored item %s with missing card skin %s' in role_content
     assert session_content.count('if cfg is None:') == 1
     assert 'missing from card_skin csv during expiry' in session_content
+    assert union_training_content.count('"sort"') == 1
+    assert union_training_content.count(
+        'func nearestConfiguredLevel(requested int, levels []int) (int, bool)'
+    ) == 1
+    assert 'roleLevelCfg := cfg.Base_attribute.Role_level[rolelevel]' in union_training_content
+    assert 'unionLevelCfg := cfg.Union.Union_level[unionlevel]' in union_training_content
+    assert 'union training role level %d missing, using level %d' in union_training_content
+    assert 'union training union level %d missing, using level %d' in union_training_content
+    assert 'return 0, false' in union_training_content
 PY
 
 grep -Fq 'location = /kdjx/servers {' "$root_dir/nginx/kdjx-login-locations.conf"
@@ -1855,6 +1885,12 @@ grep -Fq 'sakura-economy-compatibility-v1' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'apply-runtime-data-compatibility.py' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'union_training_level_fallback_test.go' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq '"$go_bin" test ./services/union' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'TestNearestConfiguredLevel' \
+    "$root_dir/tests/union_training_level_fallback_test.go"
 grep -Fq 'validate-kdjx-gm-item-catalog.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'validate-kdjx-login-patches.py' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \

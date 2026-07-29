@@ -176,6 +176,11 @@ python3 "$script_dir/apply-sakura-only-login.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-hardening.py" --source-root "$candidate_root"
 python3 "$script_dir/apply-runtime-data-compatibility.py" \
     --source-root "$candidate_root"
+union_training_test="$script_dir/../tests/union_training_level_fallback_test.go"
+[[ -f "$union_training_test" && ! -L "$union_training_test" ]] \
+    || fail "union training compatibility test is missing or unsafe"
+install -m 0640 "$union_training_test" \
+    "$candidate_root/gosrc/tjgame/services/union/training_level_fallback_test.go"
 python3 "$script_dir/apply-sakura-economy-compatibility.py" \
     --source-root "$candidate_root"
 printf 'sakura-economy-compatibility-v1\n' \
@@ -232,6 +237,12 @@ install -m 0640 "$candidate_root/online-fight-forward/cn_patch" \
     "$candidate_root/online_fight_forward/cn_patch"
 
 export GO111MODULE=on
+(
+    cd "$candidate_root/gosrc/tjgame"
+    "$go_bin" test ./services/union
+)
+rm -f -- "$candidate_root/gosrc/tjgame/services/union/training_level_fallback_test.go"
+
 build_go_component() {
     local package="$1"
     local destination="$2"
