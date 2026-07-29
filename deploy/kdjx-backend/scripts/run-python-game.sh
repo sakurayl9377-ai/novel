@@ -25,11 +25,28 @@ esac
 command -v docker >/dev/null 2>&1 || { printf 'error: docker is unavailable\n' >&2; exit 2; }
 docker image inspect "$image" >/dev/null
 
+container_name="kdjx-game-$shard"
+container_status="$(
+    docker container inspect --format '{{.State.Status}}' "$container_name" \
+        2>/dev/null || true
+)"
+case "$container_status" in
+    '') ;;
+    created|exited|dead)
+        docker rm -- "$container_name" >/dev/null
+        ;;
+    *)
+        printf 'error: KDJX game container is already %s: %s\n' \
+            "$container_status" "$container_name" >&2
+        exit 2
+        ;;
+esac
+
 state_dir="/var/lib/kdjx/game/$shard"
 log_dir="/var/log/kdjx/game-$shard"
 install -d -m 0750 "$state_dir" "$log_dir"
 
-exec docker run --rm --name "kdjx-game-$shard" \
+exec docker run --rm --name "$container_name" \
     --network host \
     --read-only \
     --cap-drop ALL \

@@ -997,11 +997,21 @@ with tempfile.TemporaryDirectory(prefix='kdjx-python-runner-verify-') as temp:
     fake_bin = fixture / 'bin'
     fake_bin.mkdir()
     docker_args = fixture / 'docker-args'
+    docker_cleanup = fixture / 'docker-cleanup'
     fake_docker = fake_bin / 'docker'
     fake_docker.write_text(
         '#!/usr/bin/env bash\n'
         'set -eu\n'
         'if [[ "${1:-}" == "image" ]]; then exit 0; fi\n'
+        'if [[ "${1:-}" == "container" ]]; then\n'
+        '  [[ -n "${KDJX_TEST_STALE_CONTAINER:-}" ]] || exit 1\n'
+        '  printf "%s\\n" "$KDJX_TEST_STALE_CONTAINER"\n'
+        '  exit 0\n'
+        'fi\n'
+        'if [[ "${1:-}" == "rm" ]]; then\n'
+        '  printf "%s\\n" "$@" > "$KDJX_TEST_DOCKER_CLEANUP"\n'
+        '  exit 0\n'
+        'fi\n'
         'printf "%s\\n" "$@" > "$KDJX_TEST_DOCKER_ARGS"\n',
         encoding='utf-8',
     )
@@ -1019,6 +1029,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-python-runner-verify-') as temp:
         'KDJX_RUNTIME_ROOT': shell_path(runtime),
         'KDJX_PYTHON_IMAGE': 'kdjx-legacy-python:2.7',
         'KDJX_TEST_DOCKER_ARGS': shell_path(docker_args),
+        'KDJX_TEST_DOCKER_CLEANUP': shell_path(docker_cleanup),
         'BASH_ENV': shell_path(bash_environment),
     })
     runner = root / 'scripts' / 'run-python-game.sh'
@@ -1042,9 +1053,38 @@ with tempfile.TemporaryDirectory(prefix='kdjx-python-runner-verify-') as temp:
     assert parent_mount in arguments
     assert log_mount in arguments
     assert arguments.index(parent_mount) < arguments.index(log_mount)
+    assert not docker_cleanup.exists()
+
+    docker_args.unlink()
+    environment['KDJX_TEST_STALE_CONTAINER'] = 'created'
+    launched = subprocess.run(
+        [bash_bin, shell_path(runner), '1'],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert launched.returncode == 0
+    assert docker_cleanup.read_text(encoding='utf-8').splitlines() == [
+        'rm', '--', 'kdjx-game-1',
+    ]
+    assert docker_args.is_file()
+
+    docker_args.unlink()
+    docker_cleanup.unlink()
+    environment['KDJX_TEST_STALE_CONTAINER'] = 'running'
+    rejected_running = subprocess.run(
+        [bash_bin, shell_path(runner), '1'],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert rejected_running.returncode == 2
+    assert b'game container is already running' in rejected_running.stderr
+    assert not docker_args.exists()
+    assert not docker_cleanup.exists()
+    environment.pop('KDJX_TEST_STALE_CONTAINER')
 
     log_mount_point.rmdir()
-    docker_args.unlink()
     rejected = subprocess.run(
         [bash_bin, shell_path(runner), '1'],
         env=environment,
@@ -1704,6 +1744,9 @@ grep -Fq 'request.ServerKey != "game.cn.1"' \
 grep -Fq 'request.CatalogSHA256 != catalogSHA256' \
     "$root_dir/patches/sakura-gm/sakuragm/handler.go"
 grep -Fq '[[ -d "$runtime_root/release/logs" && ! -L "$runtime_root/release/logs" ]]' "$root_dir/scripts/run-python-game.sh"
+grep -Fq "created|exited|dead)" "$root_dir/scripts/run-python-game.sh"
+grep -Fq 'docker rm -- "$container_name"' "$root_dir/scripts/run-python-game.sh"
+grep -Fq 'game container is already %s' "$root_dir/scripts/run-python-game.sh"
 ! grep -Fq '"$candidate_root/$target/crossdata.json"' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq '"$candidate_root/online_fight_forward"' "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq 'forward_patch_source="$source_root/release/online_fight_forward/cn_patch"' "$root_dir/scripts/stage-kdjx-runtime.sh"
