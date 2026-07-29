@@ -75,7 +75,7 @@ grep -Fq 'def PayForRecharge(' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura payment fulfillment RPC is unavailable"
 grep -Fq 'rePro, channel))' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura offline payment channel cache is unavailable"
-grep -Fq 'channel=channel)' \
+grep -Fq "channel=channel or 'sakura')" \
     "$runtime_root/release/src/game/handler/_game.py" \
     || fail "Sakura offline payment channel replay is unavailable"
 grep -Fq 'SakuraRechargeRMB = {' "$runtime_root/release/src/game/object/game/role.py" \

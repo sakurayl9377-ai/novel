@@ -1623,6 +1623,8 @@ grep -Fq 'sakura-payment-rpc-gate-v1' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'Sakura offline payment channel cache is unavailable' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq "channel=channel or 'sakura')" \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'sakura-economy-compatibility-v1' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
