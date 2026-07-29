@@ -1330,6 +1330,16 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
         + '\t\tself._inited = True\n\n'
         + '\t\tself.onGrowGuideTask(TargetDefs.Level, 0)\n'
         + '\t\treturn self\n\n'
+        + '\tdef exp():\n'
+        + '\t\tdbkey = "sum_exp"\n'
+        + '\t\tdef fset(self, value):\n'
+        + economy_module.ROLE_EXP_FLOOR_ANCHOR
+        + '\t\t\tif value < self.db[dbkey]:\n'
+        + '\t\t\t\tself.level = 1\n'
+        + '\t\t\tself.db[dbkey] = value\n'
+        + '\t\t\tself.db["level_exp"] = value - self.LevelSumExp[self.level - 1]\n'
+        + '\t\treturn fset\n'
+        + '\tapplyExp = exp()\n\n'
         + '\tdef _initVIPLevel(self):\n'
         + '\t\tsumRMB = 0\n'
         + '\t\tfor rechargeID, data in self.recharges.iteritems():\n'
@@ -1397,6 +1407,9 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
     assert role_content.count('def _applySakuraRechargeCompatibility(self):') == 1
     assert role_content.count(
         'def _applySakuraTrainerExperienceCompatibility(self):'
+    ) == 1
+    assert role_content.count(
+        'repaired legacy experience floor from %d to %d'
     ) == 1
     assert role_content.count('self._applySakuraRechargeCompatibility()') == 1
     assert 'self._applySakuraTrainerExperienceCompatibility()' not in role_content
@@ -1492,6 +1505,37 @@ with tempfile.TemporaryDirectory(prefix='kdjx-economy-compatibility-') as temp:
         'vip': vip_configs,
     })()
     namespace['TestOrderID'] = 'test-order'
+    namespace['ObjectRole'].LevelSumExp = {
+        0: 0,
+        1: 1000,
+        2: 2000,
+        3: 3000,
+    }
+    exp_role = namespace['ObjectRole']()
+    exp_role.id = '64b000000000000000000000'
+    exp_role.level = 3
+    exp_role.db = {
+        'sum_exp': 1500,
+        'level_exp': 200,
+    }
+    exp_role.applyExp(1600)
+    assert exp_role.level == 3
+    assert exp_role.db == {
+        'sum_exp': 2300,
+        'level_exp': 300,
+    }
+    exp_role.level = 2
+    exp_role.db = {
+        'sum_exp': 1200,
+        'level_exp': 200,
+    }
+    exp_role.applyExp(1300)
+    assert exp_role.level == 2
+    assert exp_role.db == {
+        'sum_exp': 1300,
+        'level_exp': 300,
+    }
+
     object_role = namespace['ObjectRole']()
     object_role.id = '64b000000000000000000001'
     object_role.rmb = 187
@@ -1721,6 +1765,10 @@ grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'ROLE_EXP_FLOOR_REPLACEMENT' \
+    "$root_dir/scripts/apply-sakura-economy-compatibility.py"
+grep -Fq 'Sakura role experience floor compatibility is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'self.vip_level = max(self.vip_level, level)' \
     "$root_dir/scripts/apply-sakura-economy-compatibility.py"
 grep -Fq 'func (s *Service) VerifySakuraPayment(' \

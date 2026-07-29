@@ -54,6 +54,26 @@ GAME_INIT_REPLACEMENT = """		self.cards.init()
 		self.society.init()
 """
 
+ROLE_EXP_FLOOR_ANCHOR = """			if value == self.db[dbkey]:
+				return
+			# for gm, re-init level
+"""
+ROLE_EXP_FLOOR_REPLACEMENT = """			if value == self.db[dbkey]:
+				return
+			oldSumExp = self.db[dbkey]
+			if value > oldSumExp and self.level > 0:
+				levelFloor = ObjectRole.LevelSumExp[self.level - 1]
+				if oldSumExp < levelFloor:
+					levelExp = max(self.db.get('level_exp', 0), 0)
+					repairedSumExp = levelFloor + levelExp
+					value += repairedSumExp - oldSumExp
+					self.db[dbkey] = repairedSumExp
+					logger.info(
+						'role %s repaired legacy experience floor from %d to %d',
+						objectid2string(self.id), oldSumExp, repairedSumExp)
+			# for gm, re-init level
+"""
+
 RECHARGE_SCHEMA_ANCHOR = """type Recharge struct {
 	Cnt    int           `codec:"cnt,omitempty" bson:"cnt,omitempty"`
 	Date   int           `codec:"date,omitempty" bson:"date,omitempty"`
@@ -239,6 +259,12 @@ def main():
         GAME_INIT_ANCHOR,
         GAME_INIT_REPLACEMENT,
         "trainer experience compatibility initialization",
+    )
+    replace_once(
+        role,
+        ROLE_EXP_FLOOR_ANCHOR,
+        ROLE_EXP_FLOOR_REPLACEMENT,
+        "role experience floor compatibility",
     )
     replace_once(
         recharge_schema,

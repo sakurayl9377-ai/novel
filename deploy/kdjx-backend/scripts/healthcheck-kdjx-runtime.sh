@@ -86,6 +86,9 @@ grep -Fq 'def _applySakuraRechargeCompatibility(self):' \
 grep -Fq 'def _applySakuraTrainerExperienceCompatibility(self):' \
     "$runtime_root/release/src/game/object/game/role.py" \
     || fail "Sakura trainer experience compatibility is unavailable"
+grep -Fq 'repaired legacy experience floor from %d to %d' \
+    "$runtime_root/release/src/game/object/game/role.py" \
+    || fail "Sakura role experience floor compatibility is unavailable"
 grep -Fq "attachs['role_exp']" "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura trainer experience delivery mapping is unavailable"
 grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
