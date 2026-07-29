@@ -25,6 +25,26 @@ GAME_SERVICE_REGISTERS = (
     '\ts.Register(s, "VerifySakuraPayment")\n'
     '\ts.Register(s, "PayForRecharge")\n'
 )
+RECHARGE_CACHE_SCHEMA_ANCHOR = """type RechargeCache struct {
+\t_struct struct{} `codec:",toarray"`
+
+\tRechargeID int         `codec:"recharge_id" bson:"recharge_id"`
+\tOrderID    document.ID `codec:"order_id" bson:"order_id"`
+\tYYID       int         `codec:"yy_id" codec:"yy_id"`
+\tCSVID      int         `codec:"csv_id" codec:"csv_id"`
+}
+"""
+RECHARGE_CACHE_SCHEMA_REPLACEMENT = """type RechargeCache struct {
+\t_struct struct{} `codec:",toarray"`
+
+\tRechargeID int         `codec:"recharge_id" bson:"recharge_id"`
+\tOrderID    document.ID `codec:"order_id" bson:"order_id"`
+\tYYID       int         `codec:"yy_id" codec:"yy_id"`
+\tCSVID      int         `codec:"csv_id" codec:"csv_id"`
+\tRePro      int         `codec:"re_pro" bson:"re_pro"`
+\tChannel    string      `codec:"channel" bson:"channel"`
+}
+"""
 RPC_VERIFY_METHOD = "\tdef VerifySakuraPayment("
 RPC_FULFILL_METHOD = "\tdef PayForRecharge("
 OFFLINE_CACHE_ANCHOR = (
@@ -49,7 +69,7 @@ OFFLINE_REPLAY_REPLACEMENT = """\t\t\t\tif len(t)==4: # 可能存在的更新前
 \t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro, channel='sakura')
 \t\t\t\telse:
 \t\t\t\t\trechargeID, orderID, yyID, csvID, rePro, channel = t
-\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro, channel=channel)
+\t\t\t\t\trole.buyRecharge(rechargeID, orderID, yyID, csvID, rePro=rePro, channel=channel or 'sakura')
 """
 
 
@@ -93,9 +113,10 @@ def main():
     root = Path(args.source_root).resolve()
     game_service = root / "gosrc" / "tjgame" / "services" / "game" / "service.go"
     payment_bridge = root / "gosrc" / "tjgame" / "login" / "sakura_payments.go"
+    role_schema = root / "gosrc" / "tjgame" / "document" / "scheme" / "Role.go"
     rpc = root / "release" / "src" / "game" / "rpc.py"
     game_handler = root / "release" / "src" / "game" / "handler" / "_game.py"
-    for path in (game_service, payment_bridge, rpc, game_handler):
+    for path in (game_service, payment_bridge, role_schema, rpc, game_handler):
         if not path.is_file():
             fail("required KDJX payment source is missing: {}".format(path))
 
@@ -132,6 +153,12 @@ def main():
         "game service payment RPC registration",
     )
     replace_once(
+        role_schema,
+        RECHARGE_CACHE_SCHEMA_ANCHOR,
+        RECHARGE_CACHE_SCHEMA_REPLACEMENT,
+        "offline recharge cache schema",
+    )
+    replace_once(
         rpc,
         OFFLINE_CACHE_ANCHOR,
         OFFLINE_CACHE_REPLACEMENT,
@@ -156,11 +183,23 @@ def main():
 
     if OFFLINE_CACHE_REPLACEMENT not in rpc.read_text(encoding="utf-8"):
         fail("Sakura offline payment cache does not preserve its channel")
+    role_schema_content = role_schema.read_text(encoding="utf-8")
+    if (
+        role_schema_content.count(
+            'RePro      int         `codec:"re_pro" bson:"re_pro"`'
+        )
+        != 1
+        or role_schema_content.count(
+            'Channel    string      `codec:"channel" bson:"channel"`'
+        )
+        != 1
+    ):
+        fail("Sakura offline payment cache schema is incomplete")
     replay_content = game_handler.read_text(encoding="utf-8")
     if (
         "elif len(t) == 5:" not in replay_content
         or "channel='sakura'" not in replay_content
-        or "channel=channel" not in replay_content
+        or "channel=channel or 'sakura'" not in replay_content
     ):
         fail("Sakura offline payment replay does not preserve recharge values")
 

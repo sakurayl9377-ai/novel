@@ -585,12 +585,16 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         payment_bridge = (
             payment_source / 'gosrc' / 'tjgame' / 'login' / 'sakura_payments.go'
         )
+        payment_role_schema = (
+            payment_source / 'gosrc' / 'tjgame' / 'document' / 'scheme' / 'Role.go'
+        )
         payment_rpc = payment_source / 'release' / 'src' / 'game' / 'rpc.py'
         payment_handler = (
             payment_source / 'release' / 'src' / 'game' / 'handler' / '_game.py'
         )
         payment_game_service.parent.mkdir(parents=True)
         payment_bridge.parent.mkdir(parents=True)
+        payment_role_schema.parent.mkdir(parents=True)
         payment_rpc.parent.mkdir(parents=True)
         payment_handler.parent.mkdir(parents=True)
         payment_game_service.write_text(
@@ -617,6 +621,19 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             '\tHandle("/internal/sakura/payments/fulfill")\n'
             '\tCall("VerifySakuraPayment")\n'
             '\tCall("PayForRecharge")\n'
+            '}\n',
+            encoding='utf-8',
+        )
+        payment_role_schema.write_text(
+            'package scheme\n\n'
+            'import "tjgame/document"\n\n'
+            'type RechargeCache struct {\n'
+            '\t_struct struct{} `codec:",toarray"`\n'
+            '\n'
+            '\tRechargeID int         `codec:"recharge_id" bson:"recharge_id"`\n'
+            '\tOrderID    document.ID `codec:"order_id" bson:"order_id"`\n'
+            '\tYYID       int         `codec:"yy_id" codec:"yy_id"`\n'
+            '\tCSVID      int         `codec:"csv_id" codec:"csv_id"`\n'
             '}\n',
             encoding='utf-8',
         )
@@ -691,13 +708,49 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         ] == ['VerifySakuraPayment', 'PayForRecharge']
         payment_rpc_text = payment_rpc.read_text(encoding='utf-8')
         payment_handler_text = payment_handler.read_text(encoding='utf-8')
+        payment_role_schema_text = payment_role_schema.read_text(encoding='utf-8')
         ast.parse(payment_handler_text, filename=str(payment_handler))
         assert payment_rpc_text.count(
             'recharges_cache.append((rechargeID, orderID, yyID, csvID, rePro, channel))'
         ) == 1
         assert payment_handler_text.count("channel='sakura'") == 2
-        assert payment_handler_text.count('channel=channel') == 1
+        assert payment_handler_text.count("channel=channel or 'sakura'") == 1
         assert payment_handler_text.count('elif len(t) == 5:') == 1
+        assert payment_role_schema_text.count(
+            'RePro      int         `codec:"re_pro" bson:"re_pro"`'
+        ) == 1
+        assert payment_role_schema_text.count(
+            'Channel    string      `codec:"channel" bson:"channel"`'
+        ) == 1
+
+        replay_namespace = {}
+        exec(
+            compile(payment_handler_text, str(payment_handler), 'exec'),
+            replay_namespace,
+        )
+
+        class ReplayRole(object):
+            def __init__(self):
+                self.recharges_cache = [
+                    (9, 'order-4', 0, 0),
+                    (9, 'order-5', 0, 0, 25),
+                    (9, 'order-6-empty', 0, 0, 0, ''),
+                    (9, 'order-6-sakura', 0, 0, 0, 'sakura'),
+                ]
+                self.calls = []
+
+            def buyRecharge(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+
+        replay_role = ReplayRole()
+        replay_namespace['GameLoginHandler']().replayRechargeCache(replay_role)
+        assert replay_role.recharges_cache == []
+        assert [call[1].get('channel') for call in replay_role.calls] == [
+            'sakura', 'sakura', 'sakura', 'sakura',
+        ]
+        assert [call[1].get('rePro', 0) for call in replay_role.calls] == [
+            0, 25, 0, 0,
+        ]
     with tempfile.TemporaryDirectory(prefix='kdjx-gm-patch-verify-') as gm_temp:
         gm_source = pathlib.Path(gm_temp)
         gm_server = gm_source / 'gosrc' / 'tjgame' / 'login' / 'server.go'
