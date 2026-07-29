@@ -1826,6 +1826,8 @@ grep -Fq "channel=channel or 'sakura')" \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'sakura-economy-compatibility-v1' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq "(400, 'role_exp')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq "(900000018, 'coin14')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version='2.1.'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version+='0.0'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"

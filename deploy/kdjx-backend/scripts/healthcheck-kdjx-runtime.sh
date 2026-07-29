@@ -95,8 +95,10 @@ grep -Fq 'self._repairSakuraLoadedExperienceFloor()' \
 grep -Fq 'repaired legacy experience floor from %d to %d' \
     "$runtime_root/release/src/game/object/game/role.py" \
     || fail "Sakura role experience floor compatibility is unavailable"
-grep -Fq "attachs['role_exp']" "$runtime_root/release/src/game/rpc.py" \
+grep -Fq "(400, 'role_exp')" "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura trainer experience delivery mapping is unavailable"
+grep -Fq "(900000018, 'coin14')" "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura extended resource delivery mapping is unavailable"
 grep -Fq $'\t\timport copy' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura GM mailbox snapshot dependency is unavailable"
 grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
