@@ -2,6 +2,7 @@
 Description=KDJX Python game shard %i
 After=kdjx-host@accountdb.service kdjx-host@giftdb.service kdjx-host@storage1.service kdjx-host@storage2.service kdjx-host@pvp1.service kdjx-host@pvp2.service kdjx-host@crossdb.service kdjx-host@cross.service kdjx-anti-cheat.service
 Requires=kdjx-host@accountdb.service kdjx-host@giftdb.service kdjx-host@storage1.service kdjx-host@storage2.service kdjx-host@pvp1.service kdjx-host@pvp2.service kdjx-host@crossdb.service kdjx-host@cross.service kdjx-anti-cheat.service
+Wants=kdjx-login.service
 
 [Service]
 Type=simple

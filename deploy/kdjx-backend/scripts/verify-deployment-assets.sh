@@ -1953,6 +1953,7 @@ grep -Fq 'cross_forward_patch="$runtime_root/online_fight_forward/cn_patch"' "$r
 grep -Fq 'cmp --silent "$forward_patch" "$cross_forward_patch"' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq 'kdjx-game@1.service' "$root_dir/systemd/kdjx-runtime.target"
 grep -Fq 'kdjx-game@1.service' "$root_dir/systemd/kdjx-login.service"
+grep -Fxq 'Wants=kdjx-login.service' "$root_dir/systemd/kdjx-game@.service"
 grep -Fq 'kdjx-game@1.service' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "'game.cn.1'" "$root_dir/scripts/generate-runtime-config.py"
 grep -Fq '28879' "$root_dir/scripts/generate-runtime-config.py"
