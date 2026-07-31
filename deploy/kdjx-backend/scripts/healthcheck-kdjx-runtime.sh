@@ -102,6 +102,14 @@ grep -Fq "(400, 'role_exp')" "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura trainer experience delivery mapping is unavailable"
 grep -Fq "(900000018, 'coin14')" "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura extended resource delivery mapping is unavailable"
+grep -Fq "raise Return('item_invalid')" "$runtime_root/release/src/game/rpc.py" \
+    || fail "Sakura GM runtime item validation is unavailable"
+grep -Fq 'def unavailableMailAttachmentItemIDs(attachs):' \
+    "$runtime_root/release/src/game/handler/_role.py" \
+    || fail "Mail attachment validation is unavailable"
+grep -Fq "raise ClientError('mail attachment item error')" \
+    "$runtime_root/release/src/game/handler/_role.py" \
+    || fail "Single mail attachment rejection is unavailable"
 grep -Fq $'\t\timport copy' "$runtime_root/release/src/game/rpc.py" \
     || fail "Sakura GM mailbox snapshot dependency is unavailable"
 grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \

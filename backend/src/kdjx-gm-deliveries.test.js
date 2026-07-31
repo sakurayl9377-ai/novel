@@ -96,23 +96,14 @@ const catalogItems = [
     deliveryTypes: ['mail'],
   },
 ];
-const clientFigureSupplement = JSON.parse(
-  fs.readFileSync(
-    new URL(
-      '../../deploy/kdjx-backend/catalogs/kdjx-gm-client-figure-items.json',
-      import.meta.url,
-    ),
-    'utf8',
-  ),
-);
 
 test('KDJX GM catalog exposes the generated item allow-list', () => {
   const actual = getKdjxGmItemCatalog();
   assert.equal(
     actual.sourceSha256,
-    '0fdf2cae03e8100569649fca110083b78c900b71891cf5bd6afcfdb9030730bd',
+    'c15362743a5ec100bd11f1cdf0370b8d221aed516833521203d6757913f0ce66',
   );
-  assert.equal(actual.items.length, 1177);
+  assert.equal(actual.items.length, 1163);
   assert.equal(actual.byId.size, actual.items.length);
   assert.deepEqual(actual.byId.get('19'), {
     id: '19',
@@ -126,20 +117,8 @@ test('KDJX GM catalog exposes the generated item allow-list', () => {
   assert.equal(actual.byId.get('400').maxQuantity, 2147483647);
   assert.equal(actual.byId.get('401').maxQuantity, 2147483647);
   assert.equal(actual.byId.get('402').maxQuantity, 2147483647);
-  assert.deepEqual(
-    clientFigureSupplement.items.map((item) => item.id),
-    Array.from({ length: 14 }, (_, index) => 2269 + index),
-  );
-  for (const expected of clientFigureSupplement.items) {
-    assert.deepEqual(actual.byId.get(String(expected.id)), {
-      id: String(expected.id),
-      name: expected.name,
-      description: expected.description,
-      type: String(expected.type),
-      quality: String(expected.quality),
-      maxQuantity: expected.maxQuantity,
-      deliveryTypes: ['mail'],
-    });
+  for (let itemId = 2269; itemId <= 2282; itemId += 1) {
+    assert.equal(actual.byId.has(String(itemId)), false);
   }
   assert.equal(
     new Set(actual.items.map((item) => item.id)).size,

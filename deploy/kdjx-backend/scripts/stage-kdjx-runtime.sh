@@ -10,7 +10,6 @@ source_root=""
 patch_source=""
 anti_cheat_scripts=""
 gm_catalog=""
-gm_catalog_supplement="$script_dir/../catalogs/kdjx-gm-client-figure-items.json"
 output_root=""
 go_bin="/opt/kdjx/toolchain/go/bin/go"
 candidate_root=""
@@ -105,9 +104,6 @@ anti_cheat_scripts="$(realpath -e -- "$anti_cheat_scripts")"
 [[ -f "$gm_catalog" && ! -L "$gm_catalog" ]] \
     || fail "GM item catalog must be a regular file"
 gm_catalog="$(realpath -e -- "$gm_catalog")"
-[[ -f "$gm_catalog_supplement" && ! -L "$gm_catalog_supplement" ]] \
-    || fail "GM item supplement must be a regular file"
-gm_catalog_supplement="$(realpath -e -- "$gm_catalog_supplement")"
 [[ -d "$source_root/gosrc/tjgame" && -d "$source_root/release" ]] \
     || fail "source must contain gosrc/tjgame and release"
 [[ -d "$patch_source/cn" ]] || fail "patch source must contain cn/"
@@ -202,8 +198,7 @@ python3 "$script_dir/generate-runtime-config.py" --runtime-root "$candidate_root
 python3 "$script_dir/validate-kdjx-gm-item-catalog.py" \
     --catalog "$gm_catalog" \
     --items-lua "$anti_cheat_scripts/config/items.lua" \
-    --role-figure-lua "$anti_cheat_scripts/config/role_figure.lua" \
-    --supplement "$gm_catalog_supplement"
+    --role-figure-lua "$anti_cheat_scripts/config/role_figure.lua"
 install -m 0640 "$gm_catalog" "$candidate_root/kdjx-gm-item-catalog.json"
 
 rsync -a --delete "$clean_patch_source/cn/" "$candidate_root/login/patch/cn/"

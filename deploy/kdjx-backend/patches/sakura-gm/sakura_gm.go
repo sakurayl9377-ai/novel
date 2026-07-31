@@ -181,6 +181,8 @@ func (r *serverLegacyGMDeliveryRPC) SendMail(request sakuragm.DeliveryRequest) (
 		}, nil
 	case text == "auth_error":
 		return sakuragm.DeliveryResult{}, sakuragm.NewPublicError(http.StatusUnauthorized, "game_rpc_auth_failed")
+	case text == "item_invalid":
+		return sakuragm.DeliveryResult{}, sakuragm.NewPublicError(http.StatusConflict, "invalid_delivery_item")
 	case text == "request_invalid" || text == "delivery_rejected" || text == "request_conflict":
 		return sakuragm.DeliveryResult{}, sakuragm.NewPublicError(http.StatusConflict, text)
 	default:

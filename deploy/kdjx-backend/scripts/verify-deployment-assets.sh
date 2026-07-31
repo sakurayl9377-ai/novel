@@ -577,7 +577,15 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         "\t\tquality = 6,\n"
         "\t\ttype = 15,\n"
         "\t},\n"
-        "\t__size = 2,\n"
+        "\t[70032] = {\n"
+        "\t\tid = 70032,\n"
+        "\t\tname = 'Fixture figure token',\n"
+        "\t\tdesc = 'Unlocks the fixture figure',\n"
+        "\t\tquality = 5,\n"
+        "\t\ttype = 0,\n"
+        "\t\tstackMax = 1,\n"
+        "\t},\n"
+        "\t__size = 3,\n"
         "}\n",
         encoding='utf-8',
     )
@@ -593,39 +601,55 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         "}\n",
         encoding='utf-8',
     )
-    fixture_gm_supplement = runtime / 'gm-item-supplement.json'
-    fixture_gm_supplement.write_text(
-        json.dumps({
-            'schemaVersion': 1,
-            'source': 'Fixture client figure config',
-            'items': [{
-                'id': 2269,
-                'figureId': 90,
-                'figureName': 'Fixture client figure',
-                'name': 'Fixture client figure token',
-                'description': '用于解锁形象【Fixture client figure】',
-                'type': 0,
-                'quality': 4,
-                'maxQuantity': 1,
-            }],
-        }, ensure_ascii=False),
-        encoding='utf-8',
-    )
     valid_catalog = builder_module.build_catalog(
-        fixture_items_lua, fixture_role_figure_lua, fixture_gm_supplement)
-    assert valid_catalog['sourceItemCount'] == 2
-    assert valid_catalog['itemCount'] == 25
+        fixture_items_lua, fixture_role_figure_lua)
+    assert valid_catalog['sourceItemCount'] == 3
+    assert valid_catalog['itemCount'] == 24
     assert {item['id'] for item in valid_catalog['items']} == {
-        400, 401, 402, 403, 1001, 2269, 70032,
+        400, 401, 402, 403, 1001, 70032,
         *range(900000001, 900000019),
     }
     catalog_module.validate_catalog(valid_catalog)
     catalog_module.validate_source(
-        valid_catalog,
-        fixture_items_lua,
-        fixture_role_figure_lua,
-        fixture_gm_supplement,
+        valid_catalog, fixture_items_lua, fixture_role_figure_lua)
+    missing_runtime_catalog = json.loads(json.dumps(valid_catalog))
+    missing_runtime_catalog['items'].append({
+        'id': 2269,
+        'name': 'Unavailable client item',
+        'description': 'Must not enter the runtime catalog',
+        'type': 0,
+        'quality': 4,
+        'maxQuantity': 1,
+    })
+    missing_runtime_catalog['itemCount'] += 1
+    catalog_module.validate_catalog(missing_runtime_catalog)
+    try:
+        catalog_module.validate_source(
+            missing_runtime_catalog, fixture_items_lua, fixture_role_figure_lua)
+    except ValueError as exc:
+        assert str(exc) == 'gm_catalog_runtime_item_missing'
+    else:
+        raise AssertionError('catalog item missing from runtime was accepted')
+    missing_figure_item_lua = runtime / 'role_figure_missing_item.lua'
+    missing_figure_item_lua.write_text(
+        "csv['role_figure'] = {\n"
+        "\t[1] = {\n"
+        "\t\tid = 1,\n"
+        "\t\tname = 'Broken fixture figure',\n"
+        "\t\tactiveCost = {[70033] = 1, __size = 1},\n"
+        "\t},\n"
+        "\t__size = 1,\n"
+        "}\n",
+        encoding='utf-8',
     )
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            builder_module.build_catalog(
+                fixture_items_lua, missing_figure_item_lua)
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError('figure token missing from runtime was accepted')
     invalid_catalog = dict(valid_catalog)
     invalid_catalog['items'] = [
         dict(valid_catalog['items'][0], id=-1),
@@ -641,11 +665,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     mismatched_catalog['items'][0]['name'] = 'Tampered item'
     try:
         catalog_module.validate_source(
-            mismatched_catalog,
-            fixture_items_lua,
-            fixture_role_figure_lua,
-            fixture_gm_supplement,
-        )
+            mismatched_catalog, fixture_items_lua, fixture_role_figure_lua)
     except ValueError as exc:
         assert str(exc) == 'gm_catalog_source_mismatch'
     else:
@@ -831,9 +851,11 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             gm_source / 'gosrc' / 'tjgame' / 'services' / 'game' / 'service.go'
         )
         gm_rpc = gm_source / 'release' / 'src' / 'game' / 'rpc.py'
+        gm_role = gm_source / 'release' / 'src' / 'game' / 'handler' / '_role.py'
         gm_server.parent.mkdir(parents=True)
         gm_game_service.parent.mkdir(parents=True)
         gm_rpc.parent.mkdir(parents=True)
+        gm_role.parent.mkdir(parents=True)
         gm_server.write_text(
             'package main\nfunc (s *Server) initServices() {\n'
             '\ts.initSakuraPayments()\n}\n',
@@ -868,6 +890,31 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             '\t\treturn self.original_mail_body\n',
             encoding='utf-8',
         )
+        gm_role.write_text(
+            'def nameValid(name):\n'
+            '\treturn name\n\n'
+            'class RoleMailRead(object):\n'
+            '\tdef run(self):\n'
+            '\t\tif True:\n'
+            '\t\t\tif True:\n'
+            '\t\t\t\tattachs = unpack(attachs)\n'
+            '\t\t\t\teff = ObjectGainAux(self.game, attachs)\n'
+            '\t\t\t\tif len(eff.cards) > self.game.role.card_capacity_free:\n'
+            '\t\t\t\t\traise ClientError(ErrDefs.cardCapacityLimit)\n'
+            '\t\t\t\tyield deleteMail(self.game.role.id, mailID, self.dbcGame, self.game)\n'
+            '\t\t\t\tyield effectAutoGain(eff, self.game, self.dbcGame, src=\'mail\')\n\n'
+            'class RoleMailReadAll(object):\n'
+            '\tdef run(self):\n'
+            '\t\tfor mailData in []:\n'
+            '\t\t\tif True:\n'
+            '\t\t\t\tattachs = unpack(attachs)\n'
+            '\t\t\t\teff = ObjectGainAux(self.game, attachs)\n'
+            '\t\t\t\tif len(eff.cards) > self.game.role.card_capacity_free:\n'
+            '\t\t\t\t\tcontinue\n'
+            '\t\t\t\tyield deleteMail(self.game.role.id, mailID, self.dbcGame, self.game)\n'
+            '\t\t\t\tyield effectAutoGain(eff, self.game, self.dbcGame, src=\'mail\')\n',
+            encoding='utf-8',
+        )
         gm_patch_command = [
             sys.executable,
             str(root / 'scripts' / 'apply-sakura-gm-delivery.py'),
@@ -881,6 +928,10 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         gm_server_text = gm_server.read_text(encoding='utf-8')
         gm_game_service_text = gm_game_service.read_text(encoding='utf-8')
         gm_rpc_text = gm_rpc.read_text(encoding='utf-8')
+        gm_role_text = gm_role.read_text(encoding='utf-8')
+        gm_bridge_text = (
+            gm_source / 'gosrc' / 'tjgame' / 'login' / 'sakura_gm.go'
+        ).read_text(encoding='utf-8')
         assert gm_server_text.count('s.initSakuraGMDelivery()') == 1
         assert gm_game_service_text.count(
             'func (s *Service) SakuraGMSendMail('
@@ -896,6 +947,13 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         assert 'reconcileOnly bool' in gm_game_service_text
         assert gm_rpc_text.count('def SakuraGMSendMail(') == 1
         assert gm_rpc_text.count('\t\timport copy\n') == 1
+        assert gm_rpc_text.count('\t\tfrom framework.csv import csv\n') == 1
+        assert gm_rpc_text.count("raise Return('item_invalid')") == 1
+        assert 'case text == "item_invalid":' in gm_bridge_text
+        assert '"invalid_delivery_item"' in gm_bridge_text
+        assert gm_rpc_text.index("raise Return('item_invalid')") < gm_rpc_text.index(
+            'expectedAttachs = pack(attachs)'
+        )
         assert 'mailbox = copy.deepcopy(game.role.mailbox)' in gm_rpc_text
         assert gm_rpc_text.count(
             "'DBUpdate', 'Role', roleID, {'mailbox': mailbox}, False"
@@ -904,6 +962,42 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
             "'DBMultipleReadKeys', 'Role', [roleID], ['mailbox']"
         ) == 2
         gm_rpc_tree = ast.parse(gm_rpc_text, filename=str(gm_rpc))
+        gm_role_tree = ast.parse(gm_role_text, filename=str(gm_role))
+        mail_validator = next(
+            node
+            for node in gm_role_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == 'unavailableMailAttachmentItemIDs'
+        )
+        validator_module = ast.Module(body=[mail_validator], type_ignores=[])
+        ast.fix_missing_locations(validator_module)
+        fixture_item_defs = type('FixtureItemDefs', (), {
+            'isItemID': classmethod(lambda cls, item_id: item_id <= 10000),
+        })
+        fixture_csv = type('FixtureCSV', (), {'items': {1001: object()}})()
+        validator_namespace = {
+            'ItemDefs': fixture_item_defs,
+            'csv': fixture_csv,
+            'long': int,
+        }
+        exec(compile(validator_module, str(gm_role), 'exec'), validator_namespace)
+        validate_mail_items = validator_namespace['unavailableMailAttachmentItemIDs']
+        assert validate_mail_items({1001: 1, 'gold': 2}) == []
+        assert validate_mail_items({2281: 1, 'gold': 2}) == [2281]
+        single_mail_start = gm_role_text.index('class RoleMailRead(object):')
+        all_mail_start = gm_role_text.index('class RoleMailReadAll(object):')
+        single_mail_text = gm_role_text[single_mail_start:all_mail_start]
+        all_mail_text = gm_role_text[all_mail_start:]
+        for claim_text in (single_mail_text, all_mail_text):
+            assert claim_text.index(
+                'invalidItemIDs = unavailableMailAttachmentItemIDs(attachs)'
+            ) < claim_text.index('yield deleteMail(')
+            assert claim_text.index('yield deleteMail(') < claim_text.index(
+                'yield effectAutoGain('
+            )
+        assert "raise ClientError('mail attachment item error')" in single_mail_text
+        assert "raise ClientError('mail attachment item error')" not in all_mail_text
+        assert '\t\t\t\t\tcontinue\n' in all_mail_text
         gm_rpc_class = next(
             node for node in gm_rpc_tree.body
             if isinstance(node, ast.ClassDef) and node.name == 'GameRPC'
@@ -935,6 +1029,7 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         python2 = shutil.which('python2.7') or shutil.which('python2')
         if python2:
             subprocess.run([python2, '-m', 'py_compile', str(gm_rpc)], check=True)
+            subprocess.run([python2, '-m', 'py_compile', str(gm_role)], check=True)
         assert gm_rpc_text.index("raise Return('ok:'") > gm_rpc_text.index(
             "logger.exception('SakuraGMSendMail error"
         )
@@ -1894,6 +1989,10 @@ grep -Fq 'Invalid stored card skin cleanup is unavailable' \
     "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "(400, 'role_exp')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "(900000018, 'coin14')" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'Sakura GM runtime item validation is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
+grep -Fq 'Mail attachment validation is unavailable' \
+    "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq '/kdjx/version?fake=true' "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version='2.1.'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
 grep -Fq "expected_app_version+='0.0'" "$root_dir/scripts/healthcheck-kdjx-runtime.sh"
@@ -1923,10 +2022,10 @@ grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--role-figure-lua "$anti_cheat_scripts/config/role_figure.lua"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
-grep -Fq -- '--supplement "$gm_catalog_supplement"' \
-    "$root_dir/scripts/stage-kdjx-runtime.sh"
-grep -Fq 'catalogs/kdjx-gm-client-figure-items.json' \
-    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'gm_catalog_runtime_item_missing' \
+    "$root_dir/scripts/validate-kdjx-gm-item-catalog.py"
+grep -Fq 'references missing item' \
+    "$root_dir/scripts/build-kdjx-gm-item-catalog.py"
 grep -Fq '"$candidate_root/kdjx-gm-item-catalog.json"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 ! grep -Fq 'KDJX_GM_' "$root_dir/templates/runtime.env.example"
@@ -1943,6 +2042,11 @@ grep -Fq 'import copy' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 'mailbox = copy.deepcopy(game.role.mailbox)' \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "raise Return('request_conflict')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "raise Return('item_invalid')" "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq 'def unavailableMailAttachmentItemIDs(attachs):' \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
+grep -Fq "raise ClientError('mail attachment item error')" \
+    "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq 's.initSakuraGMDelivery()' "$root_dir/scripts/apply-sakura-gm-delivery.py"
 grep -Fq "(400, 'role_exp')" \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"
@@ -1989,6 +2093,8 @@ grep -Fq 'err == service.ErrTimeout' \
 grep -Fq 'call(gmDeliveryRPCTimeout, false)' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"
 grep -Fq 'call(gmDeliveryRPCReconcileTimeout, true)' \
+    "$root_dir/patches/sakura-gm/sakura_gm.go"
+grep -Fq 'case text == "item_invalid":' \
     "$root_dir/patches/sakura-gm/sakura_gm.go"
 grep -Fq 'reconcileOnly bool' \
     "$root_dir/scripts/apply-sakura-gm-delivery.py"

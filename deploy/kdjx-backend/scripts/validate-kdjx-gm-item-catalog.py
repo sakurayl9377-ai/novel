@@ -86,14 +86,12 @@ def validate_catalog(catalog):
         seen.add(item_id)
 
 
-def validate_source(catalog, items_lua, role_figure_lua, supplement):
+def validate_source(catalog, items_lua, role_figure_lua):
     if (
         not items_lua.is_file()
         or items_lua.is_symlink()
         or not role_figure_lua.is_file()
         or role_figure_lua.is_symlink()
-        or not supplement.is_file()
-        or supplement.is_symlink()
     ):
         raise ValueError("gm_catalog_source_invalid")
     builder_path = Path(__file__).with_name("build-kdjx-gm-item-catalog.py")
@@ -102,7 +100,24 @@ def validate_source(catalog, items_lua, role_figure_lua, supplement):
         raise ValueError("gm_catalog_builder_unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    expected = module.build_catalog(items_lua, role_figure_lua, supplement)
+    runtime_text = items_lua.read_text(encoding="utf-8")
+    marker = runtime_text.find(module.TABLE_MARKER)
+    if marker < 0:
+        raise ValueError("gm_catalog_runtime_items_invalid")
+    runtime_table = runtime_text[marker + len(module.TABLE_MARKER):]
+    runtime_item_ids = {
+        int(match.group(1)) for match in module.ENTRY_RE.finditer(runtime_table)
+    }
+    virtual_item_ids = set(module.RESOURCE_ITEMS)
+    unsupported = sorted(
+        item["id"]
+        for item in catalog["items"]
+        if item["id"] not in runtime_item_ids
+        and item["id"] not in virtual_item_ids
+    )
+    if unsupported:
+        raise ValueError("gm_catalog_runtime_item_missing")
+    expected = module.build_catalog(items_lua, role_figure_lua)
     if catalog != expected:
         raise ValueError("gm_catalog_source_mismatch")
 
@@ -112,7 +127,6 @@ def main():
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--items-lua", required=True)
     parser.add_argument("--role-figure-lua", required=True)
-    parser.add_argument("--supplement", required=True)
     args = parser.parse_args()
     path = Path(args.catalog)
     if not path.is_file() or path.is_symlink():
@@ -124,7 +138,6 @@ def main():
             catalog,
             Path(args.items_lua).resolve(),
             Path(args.role_figure_lua).resolve(),
-            Path(args.supplement).resolve(),
         )
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         fail(str(exc))

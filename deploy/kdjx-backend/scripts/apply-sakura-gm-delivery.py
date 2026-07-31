@@ -23,6 +23,49 @@ func (s *Service) SakuraGMSendMail(inlPwd string, requestID string, roleID docum
 
 '''
 RPC_ANCHOR = "\t@rpc_coroutine\n\tdef gmSendMail(self, roleID, mailType, sender, subject, content, attachs):\n"
+ROLE_MAIL_VALIDATOR_ANCHOR = "def nameValid(name):\n"
+ROLE_MAIL_VALIDATOR = r'''def unavailableMailAttachmentItemIDs(attachs):
+	return sorted(
+		csvID for csvID in attachs
+		if isinstance(csvID, (int, long))
+		and ItemDefs.isItemID(csvID)
+		and csvID not in csv.items
+	)
+
+
+'''
+ROLE_MAIL_SINGLE_ANCHOR = r'''				attachs = unpack(attachs)
+				eff = ObjectGainAux(self.game, attachs)
+				if len(eff.cards) > self.game.role.card_capacity_free:
+					raise ClientError(ErrDefs.cardCapacityLimit)
+'''
+ROLE_MAIL_SINGLE_PATCH = r'''				attachs = unpack(attachs)
+				invalidItemIDs = unavailableMailAttachmentItemIDs(attachs)
+				if invalidItemIDs:
+					logger.warning(
+						'role %d mail %s has unavailable item IDs %s',
+						self.game.role.uid, objectid2string(mailID), invalidItemIDs)
+					raise ClientError('mail attachment item error')
+				eff = ObjectGainAux(self.game, attachs)
+				if len(eff.cards) > self.game.role.card_capacity_free:
+					raise ClientError(ErrDefs.cardCapacityLimit)
+'''
+ROLE_MAIL_ALL_ANCHOR = r'''				attachs = unpack(attachs)
+				eff = ObjectGainAux(self.game, attachs)
+				if len(eff.cards) > self.game.role.card_capacity_free:
+					continue
+'''
+ROLE_MAIL_ALL_PATCH = r'''				attachs = unpack(attachs)
+				invalidItemIDs = unavailableMailAttachmentItemIDs(attachs)
+				if invalidItemIDs:
+					logger.warning(
+						'role %d mail %s has unavailable item IDs %s',
+						self.game.role.uid, objectid2string(mailID), invalidItemIDs)
+					continue
+				eff = ObjectGainAux(self.game, attachs)
+				if len(eff.cards) > self.game.role.card_capacity_free:
+					continue
+'''
 RPC_METHOD = r'''
 	@rpc_coroutine
 	def SakuraGMSendMail(self, inl_pwd, requestID, roleID, mailType, sender, subject, content, attachs, reconcileOnly):
@@ -32,6 +75,7 @@ RPC_METHOD = r'''
 			raise Return('request_invalid')
 		roleID = yield self._prepareRoleID(roleID)
 		import copy
+		from framework.csv import csv
 		from game.object.game import ObjectGame
 		from game.object.game.role import ObjectRole
 		from game.object.game.gain import pack
@@ -54,6 +98,14 @@ RPC_METHOD = r'''
 				attachs = dict(attachs)
 				amount = attachs.pop(itemID)
 				attachs[resourceKey] = attachs.get(resourceKey, 0) + amount
+		invalidItemIDs = sorted(
+			itemID for itemID in attachs
+			if isinstance(itemID, (int, long)) and itemID not in csv.items)
+		if invalidItemIDs:
+			logger.warning(
+				'SakuraGMSendMail rejected unavailable item IDs %s request %s',
+				invalidItemIDs, requestID)
+			raise Return('item_invalid')
 
 		expectedAttachs = pack(attachs)
 		query = {'role_db_id': roleID, 'content': content}
@@ -204,6 +256,15 @@ def patch_before_once(path, anchor, addition, label):
     path.write_text(content.replace(anchor, addition + anchor, 1), encoding="utf-8")
 
 
+def replace_once(path, old, new, label):
+    content = path.read_text(encoding="utf-8")
+    if new in content:
+        return
+    if content.count(old) != 1:
+        fail("{} source does not match the supported layout".format(label))
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", required=True)
@@ -215,7 +276,8 @@ def main():
     server = login_root / "server.go"
     game_service = root / "gosrc" / "tjgame" / "services" / "game" / "service.go"
     rpc = root / "release" / "src" / "game" / "rpc.py"
-    for path in (server, game_service, rpc):
+    role_handler = root / "release" / "src" / "game" / "handler" / "_role.py"
+    for path in (server, game_service, rpc, role_handler):
         if not path.is_file():
             fail("required KDJX source is missing: {}".format(path))
     go_patch = patch_root / "sakura_gm.go"
@@ -247,6 +309,24 @@ def main():
     # Install the Sakura method before the complete declaration so both
     # methods remain siblings in the containing RPC class.
     patch_before_once(rpc, RPC_ANCHOR, RPC_METHOD, "game RPC")
+    patch_before_once(
+        role_handler,
+        ROLE_MAIL_VALIDATOR_ANCHOR,
+        ROLE_MAIL_VALIDATOR,
+        "mail attachment validator",
+    )
+    replace_once(
+        role_handler,
+        ROLE_MAIL_SINGLE_ANCHOR,
+        ROLE_MAIL_SINGLE_PATCH,
+        "single mail claim",
+    )
+    replace_once(
+        role_handler,
+        ROLE_MAIL_ALL_ANCHOR,
+        ROLE_MAIL_ALL_PATCH,
+        "bulk mail claim",
+    )
 
     if server.read_text(encoding="utf-8").count(SERVER_CALL) != 1:
         fail("Sakura GM login registration is incomplete")
@@ -271,9 +351,17 @@ def main():
         or "resourceItems = (" not in rpc_content
         or "(400, 'role_exp')" not in rpc_content
         or "(900000018, 'coin14')" not in rpc_content
+        or "raise Return('item_invalid')" not in rpc_content
         or "raise Return('request_conflict')" not in rpc_content
     ):
         fail("Sakura GM game RPC is incomplete")
+    role_content = role_handler.read_text(encoding="utf-8")
+    if (
+        role_content.count("def unavailableMailAttachmentItemIDs(") != 1
+        or role_content.count("invalidItemIDs = unavailableMailAttachmentItemIDs(") != 2
+        or role_content.count("raise ClientError('mail attachment item error')") != 1
+    ):
+        fail("mail attachment validation is incomplete")
 
 
 if __name__ == "__main__":
