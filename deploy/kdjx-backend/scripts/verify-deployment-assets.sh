@@ -593,17 +593,39 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
         "}\n",
         encoding='utf-8',
     )
+    fixture_gm_supplement = runtime / 'gm-item-supplement.json'
+    fixture_gm_supplement.write_text(
+        json.dumps({
+            'schemaVersion': 1,
+            'source': 'Fixture client figure config',
+            'items': [{
+                'id': 2269,
+                'figureId': 90,
+                'figureName': 'Fixture client figure',
+                'name': 'Fixture client figure token',
+                'description': '用于解锁形象【Fixture client figure】',
+                'type': 0,
+                'quality': 4,
+                'maxQuantity': 1,
+            }],
+        }, ensure_ascii=False),
+        encoding='utf-8',
+    )
     valid_catalog = builder_module.build_catalog(
-        fixture_items_lua, fixture_role_figure_lua)
+        fixture_items_lua, fixture_role_figure_lua, fixture_gm_supplement)
     assert valid_catalog['sourceItemCount'] == 2
-    assert valid_catalog['itemCount'] == 24
+    assert valid_catalog['itemCount'] == 25
     assert {item['id'] for item in valid_catalog['items']} == {
-        400, 401, 402, 403, 1001, 70032,
+        400, 401, 402, 403, 1001, 2269, 70032,
         *range(900000001, 900000019),
     }
     catalog_module.validate_catalog(valid_catalog)
     catalog_module.validate_source(
-        valid_catalog, fixture_items_lua, fixture_role_figure_lua)
+        valid_catalog,
+        fixture_items_lua,
+        fixture_role_figure_lua,
+        fixture_gm_supplement,
+    )
     invalid_catalog = dict(valid_catalog)
     invalid_catalog['items'] = [
         dict(valid_catalog['items'][0], id=-1),
@@ -619,7 +641,11 @@ with tempfile.TemporaryDirectory(prefix='kdjx-runtime-verify-') as temp:
     mismatched_catalog['items'][0]['name'] = 'Tampered item'
     try:
         catalog_module.validate_source(
-            mismatched_catalog, fixture_items_lua, fixture_role_figure_lua)
+            mismatched_catalog,
+            fixture_items_lua,
+            fixture_role_figure_lua,
+            fixture_gm_supplement,
+        )
     except ValueError as exc:
         assert str(exc) == 'gm_catalog_source_mismatch'
     else:
@@ -1896,6 +1922,10 @@ grep -Fq 'validate-kdjx-login-patches.py' "$root_dir/scripts/stage-kdjx-runtime.
 grep -Fq -- '--items-lua "$anti_cheat_scripts/config/items.lua"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq -- '--role-figure-lua "$anti_cheat_scripts/config/role_figure.lua"' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq -- '--supplement "$gm_catalog_supplement"' \
+    "$root_dir/scripts/stage-kdjx-runtime.sh"
+grep -Fq 'catalogs/kdjx-gm-client-figure-items.json' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"
 grep -Fq '"$candidate_root/kdjx-gm-item-catalog.json"' \
     "$root_dir/scripts/stage-kdjx-runtime.sh"

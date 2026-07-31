@@ -86,12 +86,14 @@ def validate_catalog(catalog):
         seen.add(item_id)
 
 
-def validate_source(catalog, items_lua, role_figure_lua):
+def validate_source(catalog, items_lua, role_figure_lua, supplement):
     if (
         not items_lua.is_file()
         or items_lua.is_symlink()
         or not role_figure_lua.is_file()
         or role_figure_lua.is_symlink()
+        or not supplement.is_file()
+        or supplement.is_symlink()
     ):
         raise ValueError("gm_catalog_source_invalid")
     builder_path = Path(__file__).with_name("build-kdjx-gm-item-catalog.py")
@@ -100,7 +102,7 @@ def validate_source(catalog, items_lua, role_figure_lua):
         raise ValueError("gm_catalog_builder_unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    expected = module.build_catalog(items_lua, role_figure_lua)
+    expected = module.build_catalog(items_lua, role_figure_lua, supplement)
     if catalog != expected:
         raise ValueError("gm_catalog_source_mismatch")
 
@@ -110,6 +112,7 @@ def main():
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--items-lua", required=True)
     parser.add_argument("--role-figure-lua", required=True)
+    parser.add_argument("--supplement", required=True)
     args = parser.parse_args()
     path = Path(args.catalog)
     if not path.is_file() or path.is_symlink():
@@ -121,6 +124,7 @@ def main():
             catalog,
             Path(args.items_lua).resolve(),
             Path(args.role_figure_lua).resolve(),
+            Path(args.supplement).resolve(),
         )
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         fail(str(exc))

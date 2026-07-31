@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "source": "KDJX client config.items and config.role_figure",
+  "items": [
+    {
+      "id": 2269,
+      "figureId": 90,
+      "figureName": "欢度元旦",
+      "name": "欢度元旦的信物",
+      "description": "用于解锁形象【欢度元旦】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2270,
+      "figureId": 91,
+      "figureName": "重生双子",
+      "name": "重生双子的信物",
+      "description": "用于解锁形象【重生双子】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2271,
+      "figureId": 92,
+      "figureName": "珊瑚海岸",
+      "name": "珊瑚海岸的信物",
+      "description": "用于解锁形象【珊瑚海岸】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2272,
+      "figureId": 93,
+      "figureName": "冰女",
+      "name": "冰女的丝袜",
+      "description": "用于解锁形象【冰女】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2273,
+      "figureId": 94,
+      "figureName": "小云",
+      "name": "小云",
+      "description": "用于解锁形象【小云】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2274,
+      "figureId": 95,
+      "figureName": "天青女仆",
+      "name": "天青女仆",
+      "description": "用于解锁形象【天青女仆】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2275,
+      "figureId": 96,
+      "figureName": "shy哥",
+      "name": "shy哥",
+      "description": "用于解锁形象【shy哥】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2276,
+      "figureId": 97,
+      "figureName": "次生银翼",
+      "name": "次生银翼",
+      "description": "用于解锁形象【次生银翼】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2277,
+      "figureId": 209,
+      "figureName": "小智（生命大师）",
+      "name": "小智（生命大师）的信物",
+      "description": "用于解锁形象【小智（生命大师）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2278,
+      "figureId": 210,
+      "figureName": "小刚（物防大师）",
+      "name": "小刚（物防大师）的信物",
+      "description": "用于解锁形象【小刚（物防大师）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2279,
+      "figureId": 211,
+      "figureName": "小次郎（万圣节）",
+      "name": "小次郎（万圣节）的信物",
+      "description": "用于解锁形象【小次郎（万圣节）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2280,
+      "figureId": 212,
+      "figureName": "紫芋（特防大师）",
+      "name": "紫芋（特防大师）的信物",
+      "description": "用于解锁形象【紫芋（特防大师）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2281,
+      "figureId": 213,
+      "figureName": "奇树（速度大师）",
+      "name": "奇树（速度大师）的信物",
+      "description": "用于解锁形象【奇树（速度大师）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    },
+    {
+      "id": 2282,
+      "figureId": 214,
+      "figureName": "武藏（春节限定）",
+      "name": "武藏（春节限定）的信物",
+      "description": "用于解锁形象【武藏（春节限定）】",
+      "type": 0,
+      "quality": 4,
+      "maxQuantity": 1
+    }
+  ]
+}

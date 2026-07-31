@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the KDJX GM item allow-list from generated game configuration."""
+"""Build the KDJX GM item allow-list from reviewed game configuration."""
 
 from __future__ import print_function
 
@@ -63,6 +63,21 @@ RESOURCE_ITEMS = {
     900000018: ("特殊货币 14", "游戏活动货币（coin14）", 2147483647),
 }
 RESERVED_VIRTUAL_ITEM_IDS = frozenset(range(404, 430))
+SUPPLEMENT_KEYS = frozenset({
+    "schemaVersion",
+    "source",
+    "items",
+})
+SUPPLEMENT_ITEM_KEYS = frozenset({
+    "id",
+    "figureId",
+    "figureName",
+    "name",
+    "description",
+    "type",
+    "quality",
+    "maxQuantity",
+})
 
 
 def fail(message):
@@ -92,7 +107,80 @@ def integer_field(body, name, default):
     return int(match.group(1)) if match else default
 
 
-def build_catalog(source, role_figure_source=None):
+def is_integer(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_supplement_text(value, maximum):
+    return (
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and len(value) <= maximum
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
+
+
+def build_supplement_items(source, known_items):
+    try:
+        payload = source.read_bytes()
+        document = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        fail("unable to read GM item supplement: {}".format(exc))
+    if (
+        not isinstance(document, dict)
+        or set(document) != SUPPLEMENT_KEYS
+        or document.get("schemaVersion") != 1
+        or not validate_supplement_text(document.get("source"), 160)
+        or not isinstance(document.get("items"), list)
+        or not document["items"]
+        or len(document["items"]) > 500
+    ):
+        fail("GM item supplement metadata is invalid")
+
+    items = []
+    item_ids = set()
+    figure_ids = set()
+    for raw in document["items"]:
+        if not isinstance(raw, dict) or set(raw) != SUPPLEMENT_ITEM_KEYS:
+            fail("GM item supplement entry is invalid")
+        item_id = raw.get("id")
+        figure_id = raw.get("figureId")
+        figure_name = raw.get("figureName")
+        description = raw.get("description")
+        if (
+            not is_integer(item_id)
+            or item_id <= 0
+            or item_id in item_ids
+            or item_id in known_items
+            or not is_integer(figure_id)
+            or figure_id <= 0
+            or figure_id in figure_ids
+            or not validate_supplement_text(figure_name, 128)
+            or not validate_supplement_text(raw.get("name"), 128)
+            or not validate_supplement_text(description, 240)
+            or description != "用于解锁形象【{}】".format(figure_name)
+            or not is_integer(raw.get("type"))
+            or raw["type"] < 0
+            or not is_integer(raw.get("quality"))
+            or raw["quality"] < 0
+            or raw.get("maxQuantity") != 1
+        ):
+            fail("GM item supplement entry {} is invalid".format(item_id))
+        item_ids.add(item_id)
+        figure_ids.add(figure_id)
+        items.append({
+            "id": item_id,
+            "name": raw["name"],
+            "description": description,
+            "type": raw["type"],
+            "quality": raw["quality"],
+            "maxQuantity": raw["maxQuantity"],
+        })
+    return payload, items
+
+
+def build_catalog(source, role_figure_source=None, supplement_source=None):
     try:
         payload = source.read_bytes()
         text = payload.decode("utf-8")
@@ -170,15 +258,27 @@ def build_catalog(source, role_figure_source=None):
             figure_payload = role_figure_source.read_bytes()
         except OSError as exc:
             fail("unable to read role_figure.lua: {}".format(exc))
-        items.extend(build_figure_tokens(role_figure_source, by_id))
+        figure_tokens = build_figure_tokens(role_figure_source, by_id)
+        items.extend(figure_tokens)
+        by_id.update((item["id"], item) for item in figure_tokens)
+    supplement_payload = b""
+    if supplement_source:
+        supplement_payload, supplement_items = build_supplement_items(
+            supplement_source,
+            by_id,
+        )
+        items.extend(supplement_items)
     if not items:
         fail("item catalog is empty")
+    source_description = "KDJX generated items.lua and role_figure.lua"
+    source_payload = payload + b"\0" + figure_payload
+    if supplement_source:
+        source_description += " plus reviewed client figure items"
+        source_payload += b"\0" + supplement_payload
     return {
         "schemaVersion": 1,
-        "source": "KDJX generated items.lua and role_figure.lua",
-        "sourceSha256": hashlib.sha256(
-            payload + b"\0" + figure_payload
-        ).hexdigest(),
+        "source": source_description,
+        "sourceSha256": hashlib.sha256(source_payload).hexdigest(),
         "sourceItemCount": source_count,
         "itemCount": len(items),
         "items": sorted(items, key=lambda item: (item["type"], item["id"])),
@@ -223,12 +323,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--items-lua", required=True)
     parser.add_argument("--role-figure-lua", required=True)
+    parser.add_argument("--supplement", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     source = Path(args.items_lua).resolve()
     output = Path(args.output).resolve()
     figure_source = Path(args.role_figure_lua).resolve()
-    catalog = build_catalog(source, figure_source)
+    supplement_source = Path(args.supplement).resolve()
+    catalog = build_catalog(source, figure_source, supplement_source)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
