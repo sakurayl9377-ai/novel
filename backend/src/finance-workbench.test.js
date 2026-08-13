@@ -12,6 +12,7 @@ process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "admin123456";
 
 const { buildServer } = await import("./server.js");
+const { config } = await import("./config.js");
 const { run } = await import("./db.js");
 
 test("finance workbench filters an immutable, source-aware ledger", async () => {
@@ -152,7 +153,7 @@ test("finance workbench filters an immutable, source-aware ledger", async () => 
 
     const invalid = await app.inject({
       method: "GET",
-      url: "/novel-api/admin/finance/workbench?period=quarter",
+      url: `${config.apiPrefix}/admin/finance/workbench?period=quarter`,
       headers: { authorization: `Bearer ${token}` },
     });
     assert.equal(invalid.statusCode, 400);
@@ -170,7 +171,7 @@ function sqliteTimestamp(date) {
 async function request(app, method, route, body, token = "") {
   const response = await app.inject({
     method,
-    url: `/novel-api${route}`,
+    url: `${config.apiPrefix}${route}`,
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
     payload: body,
   });

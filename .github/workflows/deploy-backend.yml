@@ -59,16 +59,25 @@ jobs:
                 ;;
             esac
           done < <(git ls-files backend)
+          package_root="$RUNNER_TEMP/novel-backend-package"
           archive="novel-backend-${GITHUB_SHA}.tar.gz"
-          tar \
-            --exclude='backend/.env' \
-            --exclude='backend/data' \
-            --exclude='backend/node_modules' \
-            --exclude='*/__pycache__' \
-            --exclude='*/__pycache__/*' \
-            --exclude='*.pyc' \
-            --exclude='backend/*.log' \
-            -czf "$archive" backend
+          rm -rf "$package_root"
+          mkdir -p "$package_root"
+          git archive --format=tar HEAD backend | tar -xf - -C "$package_root"
+          rm -rf "$package_root/backend/data"
+          rm -f "$package_root/backend/.env"
+          rm -rf "$package_root/backend/admin-dist"
+          cp -a backend/admin-dist "$package_root/backend/admin-dist"
+          tar -C "$package_root" -czf "$GITHUB_WORKSPACE/$archive" backend
+          while IFS= read -r entry; do
+            case "$entry" in
+              backend/.env.example) ;;
+              */.env|*/.env.*|*/data|*/data/*|*/node_modules|*/node_modules/*|*/__pycache__|*/__pycache__/*|*.pyc|*/.git|*/.git/*|*/.ssh|*/.ssh/*|*.pem|*.key|*.p12|*.pfx)
+                echo "Refusing to package private archive path: $entry" >&2
+                exit 1
+                ;;
+            esac
+          done < <(tar -tzf "$archive")
           checksum="$(sha256sum "$archive" | awk '{print $1}')"
           echo "path=$archive" >> "$GITHUB_OUTPUT"
           echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
