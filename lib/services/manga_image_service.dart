@@ -9,6 +9,12 @@ const Set<String> _baoziAssetHosts = {
   'static.cnbzmg.com',
   'static.baozimh.com',
   'static.twbzmg.com',
+  // The chapter endpoint now serves page images from the bzcdn CDN. Keep
+  // those URLs on the same stable asset host used by the older Baozi CDNs.
+  's1.bzcdn.net',
+  's2.bzcdn.net',
+  's3.bzcdn.net',
+  's4.bzcdn.net',
 };
 
 String normalizeMangaImageUrl(
@@ -78,7 +84,13 @@ List<String> normalizeMangaChapterImageSequence(Iterable<String> images) {
   final urls = <String>[];
   final sourceUrls = <String>[];
   for (final rawUrl in images) {
-    final url = normalizeMangaImageUrl(rawUrl);
+    // Migrate chapter URLs cached before the source switched from bzcdn to
+    // the stable Baozi asset CDN. The reader uses a single ImageProvider, so
+    // this normalization must happen before the URL reaches the reader.
+    final url = normalizeMangaImageUrl(
+      rawUrl,
+      preferStableBaoziHost: _isBzcdnUrl(rawUrl),
+    );
     if (url.isEmpty) continue;
     urls.add(url);
     sourceUrls.add(rawUrl.trim());
@@ -114,6 +126,11 @@ List<String> normalizeMangaChapterImageSequence(Iterable<String> images) {
     return urls.sublist(0, blockLength);
   }
   return urls;
+}
+
+bool _isBzcdnUrl(String rawUrl) {
+  final uri = Uri.tryParse(rawUrl.trim());
+  return uri != null && uri.host.toLowerCase().endsWith('.bzcdn.net');
 }
 
 int appendMangaChapterImagePage(

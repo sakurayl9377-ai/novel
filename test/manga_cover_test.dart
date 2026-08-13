@@ -32,6 +32,23 @@ void main() {
     );
   });
 
+  test('current bzcdn chapter images include the stable host fallback', () {
+    const image =
+        'https://s2.bzcdn.net/scomic/demo/0/1-iirg/1.jpg';
+
+    expect(
+      mangaImageCandidates(image),
+      [
+        image,
+        'https://static-tw.bzmgcn.com/scomic/demo/0/1-iirg/1.jpg',
+      ],
+    );
+    expect(
+      normalizeMangaImageUrl(image, preferStableBaoziHost: true),
+      'https://static-tw.bzmgcn.com/scomic/demo/0/1-iirg/1.jpg',
+    );
+  });
+
   test('manga image headers follow the resolved image host', () {
     final headers = mangaImageHeaders(
       imageUrl: 'https://static-tw.bzmgcn.com/cover/demo.jpg',

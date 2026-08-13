@@ -18,6 +18,15 @@ void main() {
     );
   });
 
+  test('migrates current bzcdn chapter URLs to the stable asset host', () {
+    expect(
+      normalizeMangaChapterImageSequence([
+        'https://s2.bzcdn.net/scomic/demo/0/1-iirg/1.jpg',
+      ]),
+      ['https://static-tw.bzmgcn.com/scomic/demo/0/1-iirg/1.jpg'],
+    );
+  });
+
   test('keeps an intentional repeated frame inside a non-repeated chapter', () {
     final images = [
       'https://static-tw.bzmgcn.com/chapter/demo/0.jpg',
