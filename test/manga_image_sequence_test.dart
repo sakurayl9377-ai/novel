@@ -37,4 +37,13 @@ void main() {
 
     expect(normalizeMangaChapterImageSequence(images), images);
   });
+
+  test('migrates current bzcdn chapter URLs to the stable asset host', () {
+    expect(
+      normalizeMangaChapterImageSequence([
+        'https://s2.bzcdn.net/scomic/demo/0/1-iirg/1.jpg',
+      ]),
+      ['https://static-tw.bzmgcn.com/scomic/demo/0/1-iirg/1.jpg'],
+    );
+  });
 }
