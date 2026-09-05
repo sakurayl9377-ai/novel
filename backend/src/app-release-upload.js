@@ -37,7 +37,7 @@ export function loadAppReleaseSpec(rootDir = config.rootDir) {
     .toLowerCase();
   const apkUrl = String(value?.apkUrl || '').trim();
   const expectedUrl =
-    `https://novel.kxhub.xyz/app3/app-release-${versionName}+${versionCode}.apk`;
+    `https://49.232.137.85/app3/app-release-${versionName}+${versionCode}.apk`;
   if (
     !/^\d+\.\d+\.\d+$/.test(versionName) ||
     !Number.isSafeInteger(versionCode) ||

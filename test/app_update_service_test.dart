@@ -20,11 +20,11 @@ void main() {
     buildSignature: '',
   );
 
-  test('uses the dedicated HTTPS download host for update metadata', () {
+  test('uses the backend HTTPS host for update metadata', () {
     final uri = Uri.parse(AppUpdateService.updateJsonUrl);
 
     expect(uri.scheme, 'https');
-    expect(uri.host, 'novel.kxhub.xyz');
+    expect(uri.host, '49.232.137.85');
     expect(uri.path, '/app3/version.json');
   });
 
@@ -34,7 +34,7 @@ void main() {
       final service = AppUpdateService(
         httpClient: MockClient((request) async {
           expect(request.url.scheme, 'https');
-          expect(request.url.host, 'novel.kxhub.xyz');
+          expect(request.url.host, '49.232.137.85');
           expect(request.url.path, '/app3/version.json');
           expect(request.url.queryParameters['cacheBust'], matches(r'^\d+$'));
           expect(request.headers['Cache-Control'], 'no-cache, no-store');
@@ -44,8 +44,7 @@ void main() {
             jsonEncode({
               'versionName': '9.9.9',
               'versionCode': 999,
-              'apkUrl':
-                  'https://novel.kxhub.xyz/app3/app-release-9.9.9+999.apk',
+              'apkUrl': 'https://49.232.137.85/app3/app-release-9.9.9+999.apk',
               'sha256': List.filled(64, 'a').join(),
               'notes': ['latest release'],
             }),
@@ -85,7 +84,7 @@ void main() {
       final disabledUpdate = AppUpdateInfo(
         versionName: '2.0.0',
         versionCode: 2,
-        apkUrl: 'https://novel.kxhub.xyz/app3/test.apk',
+        apkUrl: 'https://49.232.137.85/app3/test.apk',
         sha256: List<String>.filled(64, '0').join(),
         notes: const <String>[],
       );
@@ -112,7 +111,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '2.0.2',
       versionCode: 4,
-      apkUrl: 'https://novel.kxhub.xyz/app3/test.apk',
+      apkUrl: 'https://49.232.137.85/app3/test.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -160,7 +159,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '10.0.0',
       versionCode: 10,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-10.0.0+10.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-10.0.0+10.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -233,7 +232,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '11.0.0',
       versionCode: 11,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-11.0.0+11.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-11.0.0+11.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -270,7 +269,7 @@ void main() {
       final update = AppUpdateInfo(
         versionName: '12.0.0',
         versionCode: 12,
-        apkUrl: 'https://novel.kxhub.xyz/app3/app-release-12.0.0+12.apk',
+        apkUrl: 'https://49.232.137.85/app3/app-release-12.0.0+12.apk',
         sha256: sha256,
         notes: const [],
       );
@@ -325,7 +324,7 @@ void main() {
       final update = AppUpdateInfo(
         versionName: '12.1.0',
         versionCode: 121,
-        apkUrl: 'https://novel.kxhub.xyz/app3/app-release-12.1.0+121.apk',
+        apkUrl: 'https://49.232.137.85/app3/app-release-12.1.0+121.apk',
         sha256: sha256,
         notes: const [],
       );
@@ -421,7 +420,7 @@ void main() {
       final update = AppUpdateInfo(
         versionName: '12.2.0',
         versionCode: 122,
-        apkUrl: 'https://novel.kxhub.xyz/app3/app-release-12.2.0+122.apk',
+        apkUrl: 'https://49.232.137.85/app3/app-release-12.2.0+122.apk',
         sha256: sha256,
         notes: const [],
       );
@@ -475,7 +474,7 @@ void main() {
       final update = AppUpdateInfo(
         versionName: '13.0.0',
         versionCode: 13,
-        apkUrl: 'https://novel.kxhub.xyz/app3/app-release-13.0.0+13.apk',
+        apkUrl: 'https://49.232.137.85/app3/app-release-13.0.0+13.apk',
         sha256: sha256,
         notes: const [],
       );
@@ -523,7 +522,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '14.0.0',
       versionCode: 14,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-14.0.0+14.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-14.0.0+14.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -562,7 +561,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '15.0.0',
       versionCode: 15,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-15.0.0+15.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-15.0.0+15.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -601,7 +600,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '15.1.0',
       versionCode: 151,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-15.1.0+151.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-15.1.0+151.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -669,7 +668,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '16.0.0',
       versionCode: 16,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-16.0.0+16.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-16.0.0+16.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -727,7 +726,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '17.0.0',
       versionCode: 17,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-17.0.0+17.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-17.0.0+17.apk',
       sha256: sha256,
       notes: const [],
     );
@@ -852,6 +851,34 @@ void main() {
     );
   });
 
+  test('rejects APK URLs on the retired high-speed host', () async {
+    final service = AppUpdateService(
+      httpClient: MockClient((request) async {
+        return http.Response(
+          jsonEncode({
+            'versionName': '2.0.0',
+            'versionCode': 2,
+            'apkUrl': 'https://novel.kxhub.xyz/app3/app-release-2.0.0+2.apk',
+            'sha256': List.filled(64, '0').join(),
+          }),
+          200,
+          request: request,
+        );
+      }),
+    );
+
+    await expectLater(
+      service.checkForUpdate(),
+      throwsA(
+        isA<Exception>().having(
+          (error) => error.toString(),
+          'message',
+          contains('Invalid update config'),
+        ),
+      ),
+    );
+  });
+
   test('rejects update metadata without a full SHA-256 digest', () async {
     final service = AppUpdateService(
       httpClient: MockClient((request) async {
@@ -859,7 +886,7 @@ void main() {
           jsonEncode({
             'versionName': '2.0.0',
             'versionCode': 2,
-            'apkUrl': 'https://novel.kxhub.xyz/app3/app-release.apk',
+            'apkUrl': 'https://49.232.137.85/app3/app-release.apk',
             'sha256': 'abc123',
           }),
           200,
@@ -919,7 +946,7 @@ void main() {
     final update = AppUpdateInfo(
       versionName: '9.0.0',
       versionCode: 9,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release.apk',
       sha256: sha256,
       notes: const [],
     );

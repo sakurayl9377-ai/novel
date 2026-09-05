@@ -190,15 +190,15 @@ build\release-archive\version.json
 上传服务器时再把这次归档包复制成线上固定文件名：
 
 ```text
-/var/www/novel-download/app3/app-release-<version>+<code>.apk
-/var/www/novel-download/app3/version.json
+/var/www/yunpan/app3/app-release-<version>+<code>.apk
+/var/www/yunpan/app3/version.json
 ```
 
 Always upload and verify the versioned APK first, then replace `version.json`
 last. Versioned APK names are immutable so an edge cache can never pair an old
 APK with a new manifest checksum.
 
-升级地址固定为 `https://novel.kxhub.xyz/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。下载服务器只承载 APK 与更新清单，不能部署后端服务。
+升级地址固定为 `https://49.232.137.85/app3/version.json`。替换前先备份服务器旧文件，不要删除旧归档包。后端服务器同时承载 APK 与更新清单。
 
 直连发布 helper 始终要求 canonical 目录存在。历史兼容目录存在时同步更新，不存在时跳过；如果兼容路径是符号链接或非目录则中止发布。兼容清单先切换，canonical `version.json` 最后原子替换。
 

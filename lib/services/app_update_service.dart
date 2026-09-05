@@ -85,8 +85,7 @@ class AppUpdateService {
        assert(minimumHealthyRangeBytesPerSecond > 0),
        assert(minimumSlowRangeRemainingBytes >= 0);
 
-  static const String updateJsonUrl =
-      'https://novel.kxhub.xyz/app3/version.json';
+  static const String updateJsonUrl = 'https://49.232.137.85/app3/version.json';
   static const bool isReaderBetaBuild = bool.fromEnvironment('READER_BETA');
   static const Duration _responseIdleTimeout = Duration(seconds: 30);
   static const Duration _progressNotificationInterval = Duration(
