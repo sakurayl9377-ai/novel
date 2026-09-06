@@ -6,7 +6,6 @@ import 'package:http/http.dart' as http;
 
 import '../models/wuhandky_video.dart';
 import 'interaction_auth_service.dart';
-import 'site_domain_service.dart';
 
 class WuhandkyService {
   static const homeCategories = <(String, String)>[
@@ -27,29 +26,17 @@ class WuhandkyService {
   static const Set<String> _playbackProxyHostSuffixes = {
     'ppqrrs.com',
     'adfg8.vip',
+    'lfthirtytwo.com',
   };
-  static final Uri siteUri = Uri.parse('https://www.wuhandky.com/');
-  static const SiteDomainConfig _domain = SiteDomainConfig(
-    key: 'video_wuhandky',
-    primaryOrigin: 'https://www.wuhandky.com',
-    fallbackOrigins: ['http://www.wuhandky.com'],
+  static final RegExp _numberedPlaybackCdnHost = RegExp(
+    r'^(?:[a-z0-9-]+\.)*(?:lzcdn\d+|cdnlz\d+|lz-cdn\d+)\.com$',
   );
-  static const Map<String, String> _headers = {
-    'User-Agent':
-        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
-    'Referer': 'https://www.wuhandky.com/',
-  };
-
-  final SiteDomainService _domainService = SiteDomainService.instance;
+  static final Uri siteUri = Uri.parse('https://www.xinyegdchina.com/');
 
   Future<List<WuhandkyVideoItem>> fetchCategory(String path) async {
-    final response = await _get(_resolve(path));
-    return parseList(
-      utf8.decode(response.bodyBytes),
-      baseUri: response.request?.url,
-    );
+    final sourceUri = _resolve(path);
+    final response = await _get(sourceUri);
+    return parseList(utf8.decode(response.bodyBytes), baseUri: sourceUri);
   }
 
   Future<WuhandkyVideoHome> fetchHome() async {
@@ -83,8 +70,9 @@ class WuhandkyService {
   }
 
   Future<WuhandkyVideoDetail> fetchDetail(String url) async {
-    final response = await _get(_resolve(url));
-    return parseDetail(utf8.decode(response.bodyBytes), response.request!.url);
+    final sourceUri = _resolve(url);
+    final response = await _get(sourceUri);
+    return parseDetail(utf8.decode(response.bodyBytes), sourceUri);
   }
 
   Future<String> resolveEpisodeUrl(String pageUrl) async {
@@ -132,8 +120,21 @@ class WuhandkyService {
         .toString();
   }
 
+  /// Source HTML now advertises a hostname whose public DNS resolves to
+  /// 0.0.0.0 on some mobile networks. The backend resolves the same hostname
+  /// from its network while preserving it for TLS verification.
+  static String sourceProxyUrl(String url) {
+    final sourceUri = _canonicalSourceUri(url);
+    final apiBase = Uri.parse('${InteractionAuthService.baseUrl}/');
+    return apiBase
+        .resolve('video-source')
+        .replace(queryParameters: {'path': sourceUri.path})
+        .toString();
+  }
+
   static bool _isPlaybackProxyHost(String host) {
     final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+    if (_numberedPlaybackCdnHost.hasMatch(normalized)) return true;
     return _playbackProxyHostSuffixes.any(
       (suffix) => normalized == suffix || normalized.endsWith('.$suffix'),
     );
@@ -298,12 +299,12 @@ class WuhandkyService {
 
   Future<http.Response> _get(Uri uri) async {
     try {
-      final response = await _domainService.get(
-        _domain,
-        uri,
-        headers: _headers,
-        timeout: const Duration(seconds: 15),
-      );
+      final response = await http
+          .get(
+            Uri.parse(sourceProxyUrl(uri.toString())),
+            headers: const {'Accept': 'text/html'},
+          )
+          .timeout(const Duration(seconds: 20));
       _ensureSuccess(response);
       return response;
     } catch (error) {
@@ -323,7 +324,16 @@ class WuhandkyService {
     }
   }
 
-  Uri _resolve(String value) => siteUri.resolve(value.trim());
+  Uri _resolve(String value) => _canonicalSourceUri(value);
+
+  static Uri _canonicalSourceUri(String value) {
+    final resolved = siteUri.resolve(value.trim());
+    return siteUri.replace(
+      path: resolved.path.isEmpty ? '/' : resolved.path,
+      query: resolved.hasQuery ? resolved.query : null,
+      fragment: null,
+    );
+  }
 
   String _meta(dom.Document document, String selector, String attribute) =>
       document.querySelector(selector)?.attributes[attribute]?.trim() ?? '';

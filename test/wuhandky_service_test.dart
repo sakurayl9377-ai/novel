@@ -17,7 +17,10 @@ void main() {
 
     expect(items, hasLength(1));
     expect(items.single.title, '示例影片');
-    expect(items.single.detailUrl, 'https://www.wuhandky.com/album/demo.html');
+    expect(
+      items.single.detailUrl,
+      'https://www.xinyegdchina.com/album/demo.html',
+    );
     expect(items.single.coverUrl, 'https://img.example/demo.jpg');
     expect(items.single.note, '更新至12集');
     expect(items.single.score, '8.8');
@@ -56,7 +59,7 @@ void main() {
 
     final detail = service.parseDetail(
       html,
-      Uri.parse('https://www.wuhandky.com/album/demo.html'),
+      Uri.parse('https://www.xinyegdchina.com/album/demo.html'),
     );
 
     expect(detail.title, '示例剧集');
@@ -71,7 +74,7 @@ void main() {
     ]);
     expect(
       detail.sources.single.episodes.first.pageUrl,
-      'https://www.wuhandky.com/album/demo-1-1.html',
+      'https://www.xinyegdchina.com/album/demo-1-1.html',
     );
   });
 
@@ -84,6 +87,30 @@ void main() {
 
     expect(proxyUri.path, '/novel-api/video-playback');
     expect(proxyUri.queryParameters['url'], sourceUrl);
+  });
+
+  test('routes source pages through the backend using only their path', () {
+    final proxyUri = Uri.parse(
+      WuhandkyService.sourceProxyUrl(
+        'https://www.wuhandky.com/album/demo-1-2.html',
+      ),
+    );
+
+    expect(proxyUri.path, '/novel-api/video-source');
+    expect(proxyUri.queryParameters['path'], '/album/demo-1-2.html');
+  });
+
+  test('routes all current numbered CDN families through the backend', () {
+    for (final sourceUrl in [
+      'https://v.lzcdn31.com/path/index.m3u8',
+      'https://v.cdnlz22.com/path/index.m3u8',
+      'https://vip1.lz-cdn1.com/path/index.m3u8',
+      'https://v.lfthirtytwo.com/path/index.m3u8',
+    ]) {
+      final proxyUri = Uri.parse(WuhandkyService.playbackProxyUrl(sourceUrl));
+      expect(proxyUri.path, '/novel-api/video-playback');
+      expect(proxyUri.queryParameters['url'], sourceUrl);
+    }
   });
 
   test('leaves unrelated playback hosts unchanged', () {
