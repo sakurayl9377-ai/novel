@@ -184,6 +184,10 @@ export const config = {
     'VIDEO_COVER_MAX_BYTES',
     3 * 1024 * 1024,
   ),
+  videoPlaybackAllowedHosts: envList(
+    'VIDEO_PLAYBACK_ALLOWED_HOSTS',
+    'ppqrrs.com,adfg8.vip',
+  ),
   wenku8BaseUrl: env('WENKU8_BASE_URL', 'https://www.wenku8.cc'),
   wenku8Username: env('WENKU8_USERNAME'),
   wenku8Password: env('WENKU8_PASSWORD'),
