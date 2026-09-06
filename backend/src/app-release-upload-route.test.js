@@ -23,7 +23,7 @@ test('release upload routes accept an authorized multipart chunk', async () => {
     `${JSON.stringify({
       versionName: '4.1.33',
       versionCode: 86,
-      apkUrl: 'https://novel.kxhub.xyz/app3/app-release-4.1.33+86.apk',
+      apkUrl: 'https://49.232.137.85/app3/app-release-4.1.33+86.apk',
       sha256: digest(apk),
       force: false,
       notes: ['route test'],

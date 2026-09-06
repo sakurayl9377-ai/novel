@@ -2,8 +2,8 @@
 set -euo pipefail
 
 staging_dir="${1:-}"
-canonical_dir="/var/www/novel-download/app3"
-legacy_app3_dir="/var/www/yunpan/app3"
+canonical_dir="/var/www/yunpan/app3"
+legacy_app3_dir="/var/www/novel-download/app3"
 legacy_app_dir="/var/www/yunpan/app"
 lock_file="/var/lock/novel-app-release.lock"
 
@@ -56,7 +56,7 @@ version_name="${manifest_values[0]}"
 version_code="${manifest_values[1]}"
 apk_url="${manifest_values[2]}"
 expected_sha256="${manifest_values[3]}"
-expected_apk_url="https://novel.kxhub.xyz/app3/app-release-${version_name}+${version_code}.apk"
+expected_apk_url="https://49.232.137.85/app3/app-release-${version_name}+${version_code}.apk"
 [[ "$apk_url" == "$expected_apk_url" ]] || fail "apk_url_invalid"
 
 apk_name="app-release-${version_name}+${version_code}.apk"
@@ -86,8 +86,8 @@ for target_dir in "$legacy_app3_dir" "$legacy_app_dir"; do
   fi
 done
 
-# New download hosts only expose the canonical directory. Keep older mirrors
-# synchronized when they exist, without requiring obsolete paths to be created.
+# The backend host is the canonical release origin. Keep the old app path and
+# an already-installed download mirror synchronized when they exist.
 manifest_dirs=()
 alias_dirs=("$canonical_dir")
 if [[ -d "$legacy_app_dir" ]]; then
@@ -165,8 +165,8 @@ for target_dir in "${manifest_dirs[@]}"; do
   install_atomic "$manifest_path" "$target_dir/$history_name"
 done
 
-# Each manifest points to the immutable domain APK. Switch the canonical
-# manifest last so new clients only see a release after every legacy entry is ready.
+# Switch the canonical backend manifest last so clients only see a release
+# after every available compatibility entry is ready.
 for target_dir in "${manifest_dirs[@]}"; do
   install_atomic "$manifest_path" "$target_dir/version.json"
 done
