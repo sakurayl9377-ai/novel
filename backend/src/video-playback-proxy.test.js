@@ -123,6 +123,14 @@ test('rewrites HLS playlists and relays segment range requests', async () => {
 });
 
 test('rejects unapproved upstream hosts and redirect escapes', async () => {
+  for (const url of [
+    'https://v.lzcdn31.com/path/index.m3u8',
+    'https://v.cdnlz22.com/path/index.m3u8',
+    'https://vip1.lz-cdn1.com/path/index.m3u8',
+    'https://v.lfthirtytwo.com/path/index.m3u8',
+  ]) {
+    assert.equal(videoPlaybackInternals.parseUpstreamUrl(url).toString(), url);
+  }
   assert.throws(
     () => videoPlaybackInternals.parseUpstreamUrl('http://v9.ppqrrs.com/a.m3u8'),
     /video_playback_host_not_allowed/,

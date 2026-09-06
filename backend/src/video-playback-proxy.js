@@ -11,6 +11,12 @@ const SOURCE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36';
 const SOURCE_REFERER = 'https://www.xinyegdchina.com/';
+const REQUIRED_HOST_SUFFIXES = [
+  'ppqrrs.com',
+  'adfg8.vip',
+  'lfthirtytwo.com',
+];
+const NUMBERED_CDN_HOST = /^(?:[a-z0-9-]+\.)*(?:lzcdn\d+|cdnlz\d+|lz-cdn\d+)\.com$/;
 const HLS_CONTENT_TYPES = [
   'application/vnd.apple.mpegurl',
   'application/x-mpegurl',
@@ -31,15 +37,16 @@ function allowedHostSuffixes() {
   const configured = Array.isArray(config.videoPlaybackAllowedHosts)
     ? config.videoPlaybackAllowedHosts
     : [];
-  return configured
+  return [...REQUIRED_HOST_SUFFIXES, ...configured]
     .map((item) => String(item || '').trim().toLowerCase())
     .map((item) => item.replace(/^\*\./, '').replace(/\.$/, ''))
-    .filter(Boolean);
+    .filter((item, index, items) => item && items.indexOf(item) === index);
 }
 
 function isAllowedHost(hostname) {
   const host = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
   if (!host) return false;
+  if (NUMBERED_CDN_HOST.test(host)) return true;
   return allowedHostSuffixes().some(
     (suffix) => host === suffix || host.endsWith(`.${suffix}`),
   );

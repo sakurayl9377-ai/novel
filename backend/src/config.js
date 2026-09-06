@@ -186,7 +186,15 @@ export const config = {
   ),
   videoPlaybackAllowedHosts: envList(
     'VIDEO_PLAYBACK_ALLOWED_HOSTS',
-    'ppqrrs.com,adfg8.vip',
+    'ppqrrs.com,adfg8.vip,lfthirtytwo.com',
+  ),
+  videoSourceOrigin: env(
+    'VIDEO_SOURCE_ORIGIN',
+    'https://www.xinyegdchina.com',
+  ),
+  videoSourceConnectHost: env(
+    'VIDEO_SOURCE_CONNECT_HOST',
+    'www.wuhandky.com',
   ),
   wenku8BaseUrl: env('WENKU8_BASE_URL', 'https://www.wenku8.cc'),
   wenku8Username: env('WENKU8_USERNAME'),

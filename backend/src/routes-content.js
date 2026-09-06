@@ -5,6 +5,7 @@ import { resolveVideoCover } from "./video-cover-resolver.js";
 import { ensureWenku8Cover } from "./wenku8-cover-cache.js";
 import { fetchWenku8Home, fetchWenku8Toplist } from "./wenku8-catalog.js";
 import { videoPlaybackRoutes } from "./video-playback-proxy.js";
+import { videoSourceRoutes } from "./video-source-proxy.js";
 import { createReadStream } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -26,6 +27,7 @@ const autoBilibiliCacheMaxEntries = 16;
 
 export async function contentRoutes(app) {
   videoPlaybackRoutes(app);
+  videoSourceRoutes(app);
 
   app.get("/video-covers/resolve", async (request, reply) => {
     const limited = enforceRateLimits(request, reply, [
