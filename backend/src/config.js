@@ -194,7 +194,7 @@ export const config = {
   ),
   videoSourceConnectHost: env(
     'VIDEO_SOURCE_CONNECT_HOST',
-    'www.wuhandky.com',
+    'www.xinyegdchina.com',
   ),
   wenku8BaseUrl: env('WENKU8_BASE_URL', 'https://www.wenku8.cc'),
   wenku8Username: env('WENKU8_USERNAME'),
