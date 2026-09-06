@@ -24,6 +24,10 @@ class WuhandkyService {
     'pic.monidai.com',
     'img.ukuapi.com',
   };
+  static const Set<String> _playbackProxyHostSuffixes = {
+    'ppqrrs.com',
+    'adfg8.vip',
+  };
   static final Uri siteUri = Uri.parse('https://www.wuhandky.com/');
   static const SiteDomainConfig _domain = SiteDomainConfig(
     key: 'video_wuhandky',
@@ -105,7 +109,34 @@ class WuhandkyService {
         !{'http', 'https'}.contains(uri.scheme)) {
       throw Exception('播放地址无效');
     }
-    return uri.toString();
+    return playbackProxyUrl(uri.toString());
+  }
+
+  /// The current source CDN accepts the production backend address but
+  /// rejects direct requests from mobile networks. Keep the source URL in a
+  /// constrained backend proxy query so every HLS child request uses the same
+  /// server egress IP.
+  static String playbackProxyUrl(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        !_isPlaybackProxyHost(uri.host)) {
+      return url;
+    }
+    final secureUri = uri.replace(scheme: 'https');
+    final apiBase = Uri.parse('${InteractionAuthService.baseUrl}/');
+    return apiBase
+        .resolve('video-playback')
+        .replace(queryParameters: {'url': secureUri.toString()})
+        .toString();
+  }
+
+  static bool _isPlaybackProxyHost(String host) {
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+    return _playbackProxyHostSuffixes.any(
+      (suffix) => normalized == suffix || normalized.endsWith('.$suffix'),
+    );
   }
 
   Future<String?> resolveCoverUrl({

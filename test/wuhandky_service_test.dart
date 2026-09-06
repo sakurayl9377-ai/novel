@@ -74,4 +74,32 @@ void main() {
       'https://www.wuhandky.com/album/demo-1-1.html',
     );
   });
+
+  test('routes current CDN playback through the backend proxy', () {
+    const sourceUrl =
+        'https://v9.ppqrrs.com/wjv9/202609/06/demo/video/index.m3u8';
+
+    final proxied = WuhandkyService.playbackProxyUrl(sourceUrl);
+    final proxyUri = Uri.parse(proxied);
+
+    expect(proxyUri.path, '/novel-api/video-playback');
+    expect(proxyUri.queryParameters['url'], sourceUrl);
+  });
+
+  test('leaves unrelated playback hosts unchanged', () {
+    const sourceUrl = 'https://media.example/video.m3u8';
+
+    expect(WuhandkyService.playbackProxyUrl(sourceUrl), sourceUrl);
+  });
+
+  test('upgrades a known CDN http URL before proxying it', () {
+    const sourceUrl = 'http://v9.adfg8.vip/wjv9/demo/video/index.m3u8';
+
+    final proxyUri = Uri.parse(WuhandkyService.playbackProxyUrl(sourceUrl));
+
+    expect(
+      proxyUri.queryParameters['url'],
+      'https://v9.adfg8.vip/wjv9/demo/video/index.m3u8',
+    );
+  });
 }

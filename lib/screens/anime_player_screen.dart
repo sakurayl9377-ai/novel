@@ -732,9 +732,17 @@ class _AnimePlayerScreenState extends State<AnimePlayerScreen>
   }
 
   VideoFormat? _videoFormatHint(String url) {
-    final path = Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase();
-    if (path.endsWith('.m3u8')) return VideoFormat.hls;
-    if (path.endsWith('.mpd')) return VideoFormat.dash;
+    final uri = Uri.tryParse(url);
+    final path = uri?.path.toLowerCase() ?? url.toLowerCase();
+    final proxiedPath = uri?.queryParameters['url'];
+    final sourcePath =
+        Uri.tryParse(proxiedPath ?? '')?.path.toLowerCase() ?? '';
+    if (path.endsWith('.m3u8') || sourcePath.endsWith('.m3u8')) {
+      return VideoFormat.hls;
+    }
+    if (path.endsWith('.mpd') || sourcePath.endsWith('.mpd')) {
+      return VideoFormat.dash;
+    }
     return null;
   }
 
