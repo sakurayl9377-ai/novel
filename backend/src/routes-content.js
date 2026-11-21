@@ -2,6 +2,8 @@ import { all, one, run } from "./db.js";
 import { grantReward } from "./rewards.js";
 import { enforceRateLimits } from "./rate-limit.js";
 import { resolveVideoCover } from "./video-cover-resolver.js";
+import { videoSourceRoutes } from "./video-source-proxy.js";
+import { videoPlaybackRoutes } from "./video-playback-proxy.js";
 import { ensureWenku8Cover } from "./wenku8-cover-cache.js";
 import { fetchWenku8Home, fetchWenku8Toplist } from "./wenku8-catalog.js";
 import { createReadStream } from "node:fs";
@@ -24,6 +26,9 @@ const autoBilibiliCacheTtlMs = 10 * 60 * 1000;
 const autoBilibiliCacheMaxEntries = 16;
 
 export async function contentRoutes(app) {
+  videoSourceRoutes(app);
+  videoPlaybackRoutes(app);
+
   app.get("/video-covers/resolve", async (request, reply) => {
     const limited = enforceRateLimits(request, reply, [
       {
