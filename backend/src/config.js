@@ -120,8 +120,8 @@ export const config = {
     30000,
     Math.min(600000, Math.trunc(envNumber('KDJX_PAYMENT_CLAIM_TTL_MS', 60000))),
   ),
-  videoSourceOrigin: env('VIDEO_SOURCE_ORIGIN', 'https://www.xinyegdchina.com'),
-  videoSourceConnectHost: env('VIDEO_SOURCE_CONNECT_HOST', 'www.xinyegdchina.com'),
+  videoSourceOrigin: env('VIDEO_SOURCE_ORIGIN', 'https://www.huahanjf.com'),
+  videoSourceConnectHost: env('VIDEO_SOURCE_CONNECT_HOST', 'www.huahanjf.com'),
   videoPlaybackAllowedHosts: envList(
     'VIDEO_PLAYBACK_ALLOWED_HOSTS',
     'ppqrrs.com,adfg8.vip,lfthirtytwo.com',
